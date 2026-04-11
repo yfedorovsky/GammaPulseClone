@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile server/config.py server/tickers.py server/gex.py server/cache.py server/snapshots.py server/tradier.py server/stream.py server/worker.py server/main.py)",
+      "Bash(node -e ':*)",
+      "Bash(npm view:*)",
+      "Bash(python -m py_compile server/gex.py)",
+      "Bash(curl -s -X POST http://localhost:8000/api/chains -H \"Content-Type: application/json\" -d \"{\\\\\"tickers\\\\\":[\\\\\"NVDA\\\\\",\\\\\"SPY\\\\\",\\\\\"TSLA\\\\\"],\\\\\"strikes\\\\\":60}\")",
+      "Bash(python -c ':*)",
+      "Bash(curl -s -X POST http://localhost:8000/api/chains -H \"Content-Type: application/json\" -d \"{\\\\\"tickers\\\\\":[\\\\\"NVDA\\\\\",\\\\\"SPY\\\\\"],\\\\\"strikes\\\\\":60}\")",
+      "WebSearch",
+      "WebFetch(domain:support.spotgamma.com)",
+      "WebFetch(domain:gexboard.com)",
+      "WebFetch(domain:spotgamma.com)",
+      "Bash(python -m py_compile server/main.py)",
+      "Bash(curl -s \"https://api.tradier.com/v1/markets/timesales?symbol=SPY&interval=5min&start=2026-04-07&end=2026-04-09\" -H \"Authorization: Bearer $\\(grep TRADIER_TOKEN C:/Dev/GammaPulse/.env)",
+      "Bash(curl -s \"https://api.tradier.com/v1/markets/history?symbol=SPY&interval=daily&start=2026-03-01&end=2026-04-09\" -H \"Authorization: Bearer $\\(grep TRADIER_TOKEN C:/Dev/GammaPulse/.env)",
+      "Bash(curl -s \"https://api.tradier.com/v1/markets/timesales?symbol=SPY&interval=5min&start=2026-04-08+09:30&end=2026-04-09+16:00\" -H \"Authorization: Bearer $\\(grep TRADIER_TOKEN C:/Dev/GammaPulse/.env)",
+      "Bash(node -e \"const s=require\\('fs'\\).readFileSync\\('src/tabs/OverlayTab.jsx','utf8'\\); const o=\\(s.match\\(/\\\\{/g\\)||[]\\).length; const c=\\(s.match\\(/\\\\}/g\\)||[]\\).length; console.log\\(o===c?'OK':'MISMATCH '+o+'/'+c\\)\")",
+      "Bash(node -e \"const s=require\\('fs'\\).readFileSync\\('src/tabs/ScannerTab.jsx','utf8'\\); const o=\\(s.match\\(/\\\\{/g\\)||[]\\).length; const c=\\(s.match\\(/\\\\}/g\\)||[]\\).length; console.log\\(o===c?'OK':'MISMATCH '+o+'/'+c\\)\")",
+      "Bash(curl -s -X POST http://localhost:8000/api/chains -H \"Content-Type: application/json\" -d \"{\\\\\"tickers\\\\\":[\\\\\"SPY\\\\\",\\\\\"QQQ\\\\\",\\\\\"NVDA\\\\\"],\\\\\"strikes\\\\\":60}\")",
+      "Bash(python -c \" import sys, json data = json.load\\(sys.stdin\\) for t in ['SPY','QQQ','NVDA']: d = data.get\\(t,{}\\) ek = [k for k in \\(d.get\\('exp_data'\\) or {}\\).keys\\(\\) if k.startswith\\('MACRO'\\)] mk = ek[0] if ek else list\\(\\(d.get\\('exp_data'\\) or {}\\).keys\\(\\)\\)[0] if d.get\\('exp_data'\\) else None if not mk: print\\(f'{t}: NO DATA'\\); continue ed = d['exp_data'][mk] strikes = ed.get\\('strikes',[]\\) ks = next\\(\\(s for s in strikes if s['node_type']=='king'\\), None\\) total = sum\\(abs\\(s['net_gex']\\) for s in strikes\\) or 1 kpct = round\\(abs\\(ks['net_gex']\\)/total*100\\) if ks else 0 pg = ed.get\\('pos_gex',0\\); ng = ed.get\\('neg_gex',0\\) regime = 'POS' if pg > abs\\(ng\\) else 'NEG' print\\(f'=== {t} ==='\\) print\\(f' spot={d.get\\(\\\\\"spot\\\\\"\\)} king={ed.get\\(\\\\\"king\\\\\"\\)} floor={ed.get\\(\\\\\"floor\\\\\"\\)} ceil={ed.get\\(\\\\\"ceiling\\\\\"\\)} zgl={ed.get\\(\\\\\"zgl\\\\\"\\)}'\\) print\\(f' kingGex={round\\(ks[\\\\\"net_gex\\\\\"]\\) if ks else 0} kingPos={ks[\\\\\"net_gex\\\\\"]>=0 if ks else True} kingPct={kpct}%'\\) print\\(f' regime={regime} posGex={round\\(pg\\)} negGex={round\\(ng\\)}'\\) print\\(f' delta={round\\(ed.get\\(\\\\\"net_delta\\\\\",0\\)\\)} vanna={round\\(ed.get\\(\\\\\"net_vanna\\\\\",0\\)\\)} iv={round\\(ed.get\\(\\\\\"iv\\\\\",0\\),1\\)}'\\) print\\(f' gatekeepers={ed.get\\(\\\\\"gatekeepers\\\\\"\\)}'\\) print\\(f' kingAbove={ed.get\\(\\\\\"king\\\\\",0\\) > d.get\\(\\\\\"spot\\\\\",0\\)}'\\) \")",
+      "Bash(curl -s http://localhost:8000/api/confluence)",
+      "Bash(node -e \"const s=require\\('fs'\\).readFileSync\\('src/components/HeatmapPanel.jsx','utf8'\\); const o=\\(s.match\\(/\\\\{/g\\)||[]\\).length; const c=\\(s.match\\(/\\\\}/g\\)||[]\\).length; console.log\\(o===c?'OK':'MISMATCH '+o+'/'+c\\)\")",
+      "Bash(node -e \"const s=require\\('fs'\\).readFileSync\\('src/tabs/MtfTab.jsx','utf8'\\); const o=\\(s.match\\(/\\\\{/g\\)||[]\\).length; const c=\\(s.match\\(/\\\\}/g\\)||[]\\).length; console.log\\(o===c?'OK':'MISMATCH '+o+'/'+c\\)\")",
+      "Bash(curl -s -X POST http://localhost:8000/api/chains -H \"Content-Type: application/json\" -d \"{\\\\\"tickers\\\\\":[\\\\\"SPY\\\\\"],\\\\\"strikes\\\\\":200}\")",
+      "Bash(node -e \"const s=require\\('fs'\\).readFileSync\\('src/tabs/FlowTab.jsx','utf8'\\); const o=\\(s.match\\(/\\\\{/g\\)||[]\\).length; const c=\\(s.match\\(/\\\\}/g\\)||[]\\).length; console.log\\(o===c?'OK':'MISMATCH '+o+'/'+c\\)\")",
+      "Bash(curl -s http://localhost:8000/api/scanner)",
+      "Bash(python -m py_compile server/worker.py)",
+      "Bash(curl -s \"https://api.tradier.com/v1/markets/options/chains?symbol=AAPL&greeks=true\" -H \"Authorization: Bearer $\\(grep TRADIER_TOKEN C:/Dev/GammaPulse/.env)",
+      "Bash(python -m py_compile server/trade_tracker.py server/flow_alerts.py server/main.py)",
+      "Bash(curl -s -X POST \"https://api.telegram.org/bot8792338760:AAHrAVijUGquNbwQjCZ2A5payE4z1qWHchU/sendMessage\" -H \"Content-Type: application/json\" -d \"{\\\\\"chat_id\\\\\":\\\\\"1696538158\\\\\",\\\\\"text\\\\\":\\\\\"🟢 GammaPulse Connected!\\\\\\\\n\\\\\\\\nFlow alerts are active. You'll receive:\\\\\\\\n\\\\\\\\n📍 ENTRY — unusual volume detected\\\\\\\\n🎯 KING_HIT — target reached\\\\\\\\n⚠️ FLOOR_BREAK — support lost\\\\\\\\n🔄 REGIME_FLIP — volatility changed\\\\\\\\n📉 IV_CRUSH — premium decaying\\\\\\\\n⏰ THETA — expiration approaching\\\\\\\\n\\\\\\\\nNext scan: market open tomorrow.\\\\\",\\\\\"parse_mode\\\\\":\\\\\"HTML\\\\\"}\")",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('Sent!' if d.get\\('ok'\\) else f'Error: {d}'\\)\")",
+      "Bash(python -m py_compile server/flow_alerts.py server/trade_tracker.py)",
+      "Bash(python -m py_compile server/flow_alerts.py)"
+    ]
+  }
+}
