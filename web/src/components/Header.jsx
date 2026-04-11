@@ -2,15 +2,17 @@ import React, { useState } from 'react';
 import { useStore } from '../store.js';
 import AlertPanel, { useAlertCount } from './AlertPanel.jsx';
 
-const TABS = ['HEATMAPS', 'OVERLAY', 'SCANNER', 'FLOW', 'HISTORY', 'MTF', 'EARNINGS', 'GUIDE'];
+const TABS = ['HEATMAPS', 'OVERLAY', 'SCANNER', 'FLOW', 'SECTORS', 'HISTORY', 'MTF', 'EARNINGS', 'NEWS', 'GUIDE'];
 const ICONS = {
   HEATMAPS: '🔥',
   OVERLAY: '📈',
   SCANNER: '🔎',
   FLOW: '🌊',
+  SECTORS: '🏢',
   HISTORY: '⏪',
   MTF: '📅',
   EARNINGS: '📊',
+  NEWS: '📰',
   GUIDE: '📖',
 };
 
@@ -34,6 +36,7 @@ export default function Header() {
     tab, setTab, zoom, setZoom, health, streamMode,
     focus, setFocus, panels, setPanels, fpanels, setFpanels,
     strikes, setStrikes, viewMode, setViewMode,
+    zeroDte, setZeroDte,
   } = useStore();
 
   const marketColor = health?.market?.color || '#ff6b6b';
@@ -99,6 +102,11 @@ export default function Header() {
             <button className={`ctrl-btn ${viewMode === 'bars' ? 'active' : ''}`} onClick={() => setViewMode('bars')}>BARS</button>
             <button className={`ctrl-btn ${viewMode === 'profile' ? 'active' : ''}`} onClick={() => setViewMode('profile')}>PROFILE</button>
           </div>
+          <button
+            className={`ctrl-btn ${zeroDte ? 'active' : ''}`}
+            style={zeroDte ? { background: 'rgba(255,86,86,0.2)', color: '#ff5656', fontWeight: 800 } : { color: '#ff5656' }}
+            onClick={() => setZeroDte(!zeroDte)}
+          >0DTE</button>
           {streamBadge && <span className="stream-inline">{streamBadge}</span>}
         </div>
       )}

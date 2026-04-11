@@ -26,6 +26,7 @@ export default function OverlayTab() {
   const [showSessions, setShowSessions] = useState(true);
   const [showVolume, setShowVolume] = useState(true);
   const [showIdeas, setShowIdeas] = useState(false);
+  const [showVision, setShowVision] = useState(false);
 
   const containerRef = useRef(null);
   const chartRef = useRef(null);
@@ -176,114 +177,164 @@ export default function OverlayTab() {
     linesRef.current = [];
 
     const data = chains[current];
-    if (!data) return; // no chain data yet — lines cleared, chart shows candles only
+    if (!data) return;
     const ed = data.exp_data?.[MACRO_KEY] || {};
     const king = ed.king;
-    const floor = ed.floor;
-    const ceiling = ed.ceiling;
+    const floorVal = ed.floor;
+    const ceilingVal = ed.ceiling;
     const zgl = ed.zgl;
     const gatekeepers = ed.gatekeepers || [];
     const strikesList = ed.strikes || [];
+    const spot = spotPrices[current] ?? data?.spot;
 
-    if (showLevels && king) {
-      const kingStrike = strikesList.find((s) => s.strike === king);
-      const totalGex = strikesList.reduce((sum, s) => sum + Math.abs(s.net_gex || 0), 0) || 1;
-      const kingPct = Math.round((Math.abs(kingStrike?.net_gex || 0) / totalGex) * 100);
-      linesRef.current.push(
-        candle.createPriceLine({
-          price: king,
-          color: (kingStrike?.net_gex || 0) >= 0 ? '#f4c430' : '#a24dff',
-          lineWidth: 2,
-          lineStyle: LineStyle.Solid,
-          axisLabelVisible: true,
-          title: `+GEX KING ${kingPct}%`,
-        }),
-      );
-    }
-    if (showLevels && floor) {
-      linesRef.current.push(
-        candle.createPriceLine({
-          price: floor,
-          color: '#10dc9a',
-          lineWidth: 1,
-          lineStyle: LineStyle.Dashed,
-          axisLabelVisible: true,
-          title: 'FLOOR',
-        }),
-      );
-    }
-    if (showLevels && ceiling && ceiling !== king) {
-      linesRef.current.push(
-        candle.createPriceLine({
-          price: ceiling,
-          color: '#ff5656',
-          lineWidth: 1,
-          lineStyle: LineStyle.Dashed,
-          axisLabelVisible: true,
-          title: 'CEILING',
-        }),
-      );
-    }
-    if (showZGL && zgl) {
-      linesRef.current.push(
-        candle.createPriceLine({
-          price: zgl,
-          color: '#ff3e3e',
-          lineWidth: 1,
-          lineStyle: LineStyle.Dotted,
-          axisLabelVisible: true,
-          title: 'ZGL',
-        }),
-      );
-    }
-    if (showGates) {
-      for (const gk of gatekeepers) {
-        if (gk === king || gk === floor || gk === ceiling) continue;
-        linesRef.current.push(
-          candle.createPriceLine({
-            price: gk,
-            color: 'rgba(162, 77, 255, 0.5)',
-            lineWidth: 1,
-            lineStyle: LineStyle.Dotted,
-            axisLabelVisible: false,
-            title: '',
-          }),
-        );
-      }
-    }
-    if (showOrbs) {
-      const top = [...strikesList].sort((a, b) => Math.abs(b.net_gex) - Math.abs(a.net_gex)).slice(0, 30);
+    if (showVision) {
+      // VISION MODE: aura bands, pulsing king, labeled levels
+      const maxGex = strikesList.reduce((m, s) => Math.max(m, Math.abs(s.net_gex || 0)), 1);
+      const top = [...strikesList].sort((a, b) => Math.abs(b.net_gex) - Math.abs(a.net_gex)).slice(0, 25);
+
       for (const s of top) {
-        if (s.strike === king) continue;
-        const color = s.net_gex >= 0 ? 'rgba(16,220,154,0.35)' : 'rgba(255,86,86,0.35)';
-        const lw = Math.max(1, Math.round((s.ratio || 0) * 4));
+        const isKing = s.strike === king;
+        const isFloor = s.strike === floorVal;
+        const isCeil = s.strike === ceilingVal;
+        const intensity = Math.abs(s.net_gex) / maxGex;
+        const isPos = s.net_gex >= 0;
+        const lw = isKing ? 4 : Math.max(1, Math.round(intensity * 3));
+        const alpha = isKing ? 0.85 : 0.25 + intensity * 0.45;
+
+        let color, title;
+        if (isKing) {
+          color = isPos ? `rgba(244,196,48,${alpha})` : `rgba(162,77,255,${alpha})`;
+          const pct = Math.round(intensity * 100);
+          title = `KING $${s.strike} ${pct}%`;
+        } else if (isFloor) {
+          color = `rgba(16,220,154,${alpha})`;
+          title = `FLR $${s.strike}`;
+        } else if (isCeil) {
+          color = `rgba(255,86,86,${alpha})`;
+          title = `CEIL $${s.strike}`;
+        } else {
+          color = isPos ? `rgba(244,196,48,${alpha * 0.6})` : `rgba(162,77,255,${alpha * 0.6})`;
+          title = '';
+        }
+
+        // VEX arrow
+        const vexArrow = s.net_vex > 0 ? ' ↑' : s.net_vex < 0 ? ' ↓' : '';
+
         linesRef.current.push(
           candle.createPriceLine({
             price: s.strike,
             color,
             lineWidth: lw,
-            lineStyle: LineStyle.Solid,
-            axisLabelVisible: false,
-            title: '',
+            lineStyle: isKing ? LineStyle.Solid : LineStyle.Solid,
+            axisLabelVisible: isKing || isFloor || isCeil,
+            title: title + vexArrow,
           }),
         );
       }
+
+      // ZGL in vision mode (thinner, labeled)
+      if (zgl) {
+        linesRef.current.push(
+          candle.createPriceLine({
+            price: zgl,
+            color: 'rgba(255,62,62,0.4)',
+            lineWidth: 1,
+            lineStyle: LineStyle.Dotted,
+            axisLabelVisible: true,
+            title: 'ZGL',
+          }),
+        );
+      }
+
+      // Confidence cone: upper and lower bounds using IV expected move
+      if (spot && data.iv) {
+        const ivAnnual = data.iv;
+        // Project 1-5 days based on timeframe
+        const projDays = tf.days <= 1 ? 1 : tf.days <= 5 ? 3 : tf.days <= 30 ? 10 : 20;
+        const em = spot * ivAnnual * Math.sqrt(projDays / 252);
+        const upper = spot + em;
+        const lower = spot - em;
+        linesRef.current.push(
+          candle.createPriceLine({
+            price: upper,
+            color: 'rgba(244,196,48,0.25)',
+            lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: `+1σ $${upper.toFixed(0)}`,
+          }),
+        );
+        linesRef.current.push(
+          candle.createPriceLine({
+            price: lower,
+            color: 'rgba(244,196,48,0.25)',
+            lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: `-1σ $${lower.toFixed(0)}`,
+          }),
+        );
+      }
+    } else {
+      // STANDARD MODE: discrete lines
+      if (showLevels && king) {
+        const kingStrike = strikesList.find((s) => s.strike === king);
+        const totalGex = strikesList.reduce((sum, s) => sum + Math.abs(s.net_gex || 0), 0) || 1;
+        const kingPct = Math.round((Math.abs(kingStrike?.net_gex || 0) / totalGex) * 100);
+        linesRef.current.push(
+          candle.createPriceLine({
+            price: king,
+            color: (kingStrike?.net_gex || 0) >= 0 ? '#f4c430' : '#a24dff',
+            lineWidth: 2,
+            lineStyle: LineStyle.Solid,
+            axisLabelVisible: true,
+            title: `+GEX KING ${kingPct}%`,
+          }),
+        );
+      }
+      if (showLevels && floorVal) {
+        linesRef.current.push(
+          candle.createPriceLine({ price: floorVal, color: '#10dc9a', lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: 'FLOOR' }),
+        );
+      }
+      if (showLevels && ceilingVal && ceilingVal !== king) {
+        linesRef.current.push(
+          candle.createPriceLine({ price: ceilingVal, color: '#ff5656', lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: 'CEILING' }),
+        );
+      }
+      if (showZGL && zgl) {
+        linesRef.current.push(
+          candle.createPriceLine({ price: zgl, color: '#ff3e3e', lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: true, title: 'ZGL' }),
+        );
+      }
+      if (showGates) {
+        for (const gk of gatekeepers) {
+          if (gk === king || gk === floorVal || gk === ceilingVal) continue;
+          linesRef.current.push(
+            candle.createPriceLine({ price: gk, color: 'rgba(162,77,255,0.5)', lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: false, title: '' }),
+          );
+        }
+      }
+      if (showOrbs) {
+        const top = [...strikesList].sort((a, b) => Math.abs(b.net_gex) - Math.abs(a.net_gex)).slice(0, 30);
+        for (const s of top) {
+          if (s.strike === king) continue;
+          const color = s.net_gex >= 0 ? 'rgba(16,220,154,0.35)' : 'rgba(255,86,86,0.35)';
+          const lw = Math.max(1, Math.round((s.ratio || 0) * 4));
+          linesRef.current.push(
+            candle.createPriceLine({ price: s.strike, color, lineWidth: lw, lineStyle: LineStyle.Solid, axisLabelVisible: false, title: '' }),
+          );
+        }
+      }
     }
-    // Spot marker
-    const spot = spotPrices[current] ?? data?.spot;
+
+    // Spot marker (both modes)
     if (spot) {
       linesRef.current.push(
-        candle.createPriceLine({
-          price: spot,
-          color: 'rgba(255,255,255,0.5)',
-          lineWidth: 1,
-          lineStyle: LineStyle.Dotted,
-          axisLabelVisible: true,
-          title: '◀ SPOT',
-        }),
+        candle.createPriceLine({ price: spot, color: 'rgba(255,255,255,0.5)', lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: true, title: '◀ SPOT' }),
       );
     }
-  }, [chains, current, showLevels, showZGL, showGates, showOrbs, spotPrices]);
+  }, [chains, current, showLevels, showZGL, showGates, showOrbs, showVision, spotPrices, tf]);
 
   useEffect(() => {
     drawLevels();
@@ -329,6 +380,11 @@ export default function OverlayTab() {
         <span>Floor ${floor} · Ceil ${ceiling}</span>
         <span className="sep">·</span>
         {rr != null && <span style={{ color: rr >= 1 ? '#10dc9a' : '#ff7070' }}>R:R {rr.toFixed(2)}</span>}
+        {showVision && (
+          <span style={{ padding: '2px 6px', borderRadius: 4, background: 'rgba(162,77,255,0.15)', color: '#bb7cff', fontSize: 10, fontWeight: 800, letterSpacing: '0.5px' }}>
+            VISION {chains[current]?.net_vanna > 0 ? 'VANNA ↑' : chains[current]?.net_vanna < 0 ? 'VANNA ↓' : ''}
+          </span>
+        )}
       </div>
 
       {/* Toolbar */}
@@ -343,10 +399,12 @@ export default function OverlayTab() {
             <option key={i} value={i}>{t.label}</option>
           ))}
         </select>
-        <label className="ov-check"><input type="checkbox" checked={showLevels} onChange={(e) => setShowLevels(e.target.checked)} /> <span className="check-label" style={{ color: '#10dc9a' }}>GEX Levels</span></label>
-        <label className="ov-check"><input type="checkbox" checked={showZGL} onChange={(e) => setShowZGL(e.target.checked)} /> <span className="check-label">ZGL</span></label>
-        <label className="ov-check"><input type="checkbox" checked={showGates} onChange={(e) => setShowGates(e.target.checked)} /> <span className="check-label">Gates</span></label>
-        <label className="ov-check"><input type="checkbox" checked={showOrbs} onChange={(e) => setShowOrbs(e.target.checked)} /> <span className="check-label">Orbs</span></label>
+        <label className="ov-check"><input type="checkbox" checked={showVision} onChange={(e) => setShowVision(e.target.checked)} /> <span className="check-label" style={{ color: '#a24dff', fontWeight: 800 }}>VISION</span></label>
+        <span style={{ width: 1, height: 16, background: 'var(--border-faint)', margin: '0 4px' }} />
+        <label className="ov-check" style={{ opacity: showVision ? 0.3 : 1 }}><input type="checkbox" checked={showLevels} disabled={showVision} onChange={(e) => setShowLevels(e.target.checked)} /> <span className="check-label" style={{ color: '#10dc9a' }}>GEX Levels</span></label>
+        <label className="ov-check" style={{ opacity: showVision ? 0.3 : 1 }}><input type="checkbox" checked={showZGL} disabled={showVision} onChange={(e) => setShowZGL(e.target.checked)} /> <span className="check-label">ZGL</span></label>
+        <label className="ov-check" style={{ opacity: showVision ? 0.3 : 1 }}><input type="checkbox" checked={showGates} disabled={showVision} onChange={(e) => setShowGates(e.target.checked)} /> <span className="check-label">Gates</span></label>
+        <label className="ov-check" style={{ opacity: showVision ? 0.3 : 1 }}><input type="checkbox" checked={showOrbs} disabled={showVision} onChange={(e) => setShowOrbs(e.target.checked)} /> <span className="check-label">Orbs</span></label>
         <label className="ov-check"><input type="checkbox" checked={showSidebar} onChange={(e) => setShowSidebar(e.target.checked)} /> <span className="check-label" style={{ color: '#10dc9a' }}>Sidebar</span></label>
         <label className="ov-check"><input type="checkbox" checked={showSessions} onChange={(e) => setShowSessions(e.target.checked)} /> <span className="check-label" style={{ color: '#10dc9a' }}>Sessions</span></label>
         <label className="ov-check"><input type="checkbox" checked={showVolume} onChange={(e) => setShowVolume(e.target.checked)} /> <span className="check-label" style={{ color: '#10dc9a' }}>Volume</span></label>

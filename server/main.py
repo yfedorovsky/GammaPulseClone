@@ -509,18 +509,14 @@ async def flow_detail(ticker: str):
 
 
 @app.get("/api/earnings")
-async def earnings_calendar():
-    """Weekly earnings calendar filtered to our ticker universe.
-
-    Uses Tradier's calendar or a static approach. Since Tradier doesn't have
-    a dedicated earnings endpoint, we'll provide a placeholder that can be
-    replaced with a Nasdaq/Yahoo scraper later.
-    """
+async def earnings_calendar(week_offset: int = 0):
+    """Weekly calendar: earnings from Finnhub + hardcoded economic events."""
     import datetime
 
     today = datetime.date.today()
-    # Find Monday of this week
-    monday = today - datetime.timedelta(days=today.weekday())
+    monday = today - datetime.timedelta(days=today.weekday()) + datetime.timedelta(weeks=week_offset)
+    friday = monday + datetime.timedelta(days=4)
+
     days = []
     for i in range(5):
         day = monday + datetime.timedelta(days=i)
@@ -528,14 +524,119 @@ async def earnings_calendar():
             "date": day.isoformat(),
             "weekday": ["MON", "TUE", "WED", "THU", "FRI"][i],
             "is_today": day == today,
-            "tickers": [],  # populated by earnings data source
+            "tickers": [],
         })
+
+    # Fetch earnings from Finnhub if API key is set
+    s = get_settings()
+    our_tickers = set(t.upper() for t in all_tickers())
+
+    if s.finnhub_api_key:
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    "https://finnhub.io/api/v1/calendar/earnings",
+                    params={
+                        "from": monday.isoformat(),
+                        "to": friday.isoformat(),
+                        "token": s.finnhub_api_key,
+                    },
+                    timeout=15,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for ec in data.get("earningsCalendar", []):
+                        sym = ec.get("symbol", "").upper()
+                        if sym not in our_tickers:
+                            continue
+                        edate = ec.get("date", "")
+                        for d in days:
+                            if d["date"] == edate:
+                                timing = "bmo" if ec.get("hour") == "bmo" else "amc" if ec.get("hour") == "amc" else ec.get("hour", "")
+                                result = None
+                                if ec.get("epsActual") is not None and ec.get("epsEstimate") is not None:
+                                    result = "beat" if ec["epsActual"] > ec["epsEstimate"] else "miss"
+                                d["tickers"].append({
+                                    "ticker": sym,
+                                    "timing": timing,
+                                    "result": result,
+                                    "eps_actual": ec.get("epsActual"),
+                                    "eps_estimate": ec.get("epsEstimate"),
+                                })
+                                break
+        except Exception as e:
+            print(f"[EARNINGS] Finnhub fetch failed: {e}")
+
+    # Economic events (hardcoded major events)
+    economic_events = _get_economic_events(monday, friday)
+
     return {
         "week_start": monday.isoformat(),
-        "week_end": (monday + datetime.timedelta(days=4)).isoformat(),
+        "week_end": friday.isoformat(),
         "days": days,
-        "source": "Placeholder — connect a Nasdaq or Yahoo earnings feed for real data",
+        "economic_events": economic_events,
+        "source": "Finnhub" if s.finnhub_api_key else "No API key — add FINNHUB_API_KEY to .env",
     }
+
+
+def _get_economic_events(monday, friday):
+    """Return major economic events that fall within the given week."""
+    import datetime
+
+    # Known recurring economic event dates for 2026
+    # OPEX = 3rd Friday of each month
+    events = []
+    year = monday.year
+
+    # FOMC meeting dates (approximate — 8 meetings per year)
+    fomc_dates = [
+        (1, 28), (3, 18), (5, 6), (6, 17), (7, 29), (9, 16), (11, 4), (12, 16),
+    ]
+    for m, d in fomc_dates:
+        try:
+            dt = datetime.date(year, m, d)
+            if monday <= dt <= friday:
+                events.append({"name": "FOMC Decision", "date": dt.isoformat(), "time": "2:00 PM ET", "icon": "🏛", "impact": "high"})
+        except ValueError:
+            pass
+
+    # CPI: usually 2nd week of month
+    for m in range(1, 13):
+        try:
+            dt = datetime.date(year, m, 12)
+            if monday <= dt <= friday:
+                events.append({"name": "CPI Report", "date": dt.isoformat(), "time": "8:30 AM ET", "icon": "📊", "impact": "high"})
+        except ValueError:
+            pass
+
+    # PPI: usually day after CPI
+    for m in range(1, 13):
+        try:
+            dt = datetime.date(year, m, 13)
+            if monday <= dt <= friday:
+                events.append({"name": "PPI Report", "date": dt.isoformat(), "time": "8:30 AM ET", "icon": "📊", "impact": "high"})
+        except ValueError:
+            pass
+
+    # Jobs Report: 1st Friday of month
+    for m in range(1, 13):
+        first = datetime.date(year, m, 1)
+        first_friday = first + datetime.timedelta(days=(4 - first.weekday()) % 7)
+        if monday <= first_friday <= friday:
+            events.append({"name": "Jobs Report / NFP", "date": first_friday.isoformat(), "time": "8:30 AM ET", "icon": "👷", "impact": "high"})
+
+    # OPEX: 3rd Friday of month
+    for m in range(1, 13):
+        first = datetime.date(year, m, 1)
+        first_friday = first + datetime.timedelta(days=(4 - first.weekday()) % 7)
+        third_friday = first_friday + datetime.timedelta(weeks=2)
+        if monday <= third_friday <= friday:
+            # Quad witching in March, June, Sept, Dec
+            label = "Quad Witching OPEX" if m in (3, 6, 9, 12) else "Monthly OPEX"
+            events.append({"name": label, "date": third_friday.isoformat(), "time": "Market Close", "icon": "📅", "impact": "medium"})
+
+    return events
 
 
 @app.get("/api/flow/scan")
@@ -620,6 +721,274 @@ async def tickers_remove(req: TickerModReq):
                 removed.append(sym)
                 break
     return {"removed": removed, "total": len(all_tickers())}
+
+
+# --- News ---
+
+_BULLISH_KW = {
+    "beat", "surge", "upgrade", "approval", "record", "raises", "bullish",
+    "growth", "outperform", "buy", "strong", "soar", "rally", "jumps", "breakout",
+}
+_BEARISH_KW = {
+    "miss", "plunge", "downgrade", "lawsuit", "recall", "cuts", "bearish",
+    "decline", "underperform", "sell", "weak", "crash", "drops", "warning", "layoff",
+}
+
+
+def _tag_sentiment(headline: str) -> str:
+    words = set(headline.lower().split())
+    if words & _BULLISH_KW:
+        return "BULLISH"
+    if words & _BEARISH_KW:
+        return "BEARISH"
+    return "NEUTRAL"
+
+
+@app.get("/api/news/{ticker}")
+async def news(ticker: str):
+    import datetime
+    import httpx
+
+    api_key = get_settings().finnhub_api_key
+    if not api_key:
+        return JSONResponse(
+            {"error": "FINNHUB_API_KEY not configured", "articles": []},
+            status_code=200,
+        )
+
+    sym = ticker.upper()
+    today = datetime.date.today()
+    week_ago = today - datetime.timedelta(days=7)
+
+    url = (
+        f"https://finnhub.io/api/v1/company-news"
+        f"?symbol={sym}&from={week_ago.isoformat()}&to={today.isoformat()}&token={api_key}"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            raw: list[dict] = resp.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Finnhub error: {exc}") from exc
+
+    articles = []
+    for item in raw[:50]:  # cap at 50
+        articles.append(
+            {
+                "id": item.get("id"),
+                "headline": item.get("headline", ""),
+                "summary": item.get("summary", ""),
+                "source": item.get("source", ""),
+                "url": item.get("url", ""),
+                "image": item.get("image", ""),
+                "category": item.get("category", ""),
+                "datetime": item.get("datetime"),
+                "sentiment": _tag_sentiment(item.get("headline", "")),
+            }
+        )
+
+    return {"ticker": sym, "articles": articles}
+
+
+# --- Sectors ---
+
+SECTORS: dict[str, dict] = {
+    "XLK":  {"name": "Technology",    "weight": 31.0, "holdings": ["AAPL","MSFT","NVDA","AVGO","CRM","ADBE","AMD","ORCL","CSCO","INTC"]},
+    "XLF":  {"name": "Financials",    "weight": 13.0, "holdings": ["BRK.B","JPM","V","MA","BAC","WFC","GS","MS","AXP","SCHW"]},
+    "XLV":  {"name": "Health Care",   "weight": 12.0, "holdings": ["UNH","JNJ","LLY","ABBV","MRK","PFE","TMO","ABT","AMGN","DHR"]},
+    "XLE":  {"name": "Energy",        "weight":  3.5, "holdings": ["XOM","CVX","COP","SLB","EOG","MPC","PSX","VLO","OXY","WMB"]},
+    "XLI":  {"name": "Industrials",   "weight":  8.5, "holdings": ["GE","CAT","UNP","HON","RTX","BA","DE","LMT","UPS","ADP"]},
+    "XLY":  {"name": "Cons. Disc.",   "weight": 10.0, "holdings": ["AMZN","TSLA","HD","MCD","NKE","LOW","SBUX","TJX","BKNG","CMG"]},
+    "XLC":  {"name": "Comm. Svc.",    "weight":  9.0, "holdings": ["META","GOOGL","GOOG","NFLX","DIS","CMCSA","T","VZ","TMUS","EA"]},
+    "XLP":  {"name": "Cons. Staples", "weight":  6.0, "holdings": ["PG","KO","PEP","COST","WMT","PM","MO","CL","MDLZ","GIS"]},
+    "XLRE": {"name": "Real Estate",   "weight":  2.5, "holdings": ["PLD","AMT","CCI","EQIX","PSA","SPG","O","WELL","DLR","AVB"]},
+    "XLU":  {"name": "Utilities",     "weight":  2.5, "holdings": ["NEE","SO","DUK","CEG","SRE","AEP","D","EXC","XEL","WEC"]},
+    "XLB":  {"name": "Materials",     "weight":  2.0, "holdings": ["LIN","APD","SHW","FCX","ECL","NEM","NUE","VMC","MLM","DOW"]},
+}
+
+# In-memory caches for sector data
+_sector_price_cache: dict[str, Any] = {}
+_sector_holdings_cache: dict[str, Any] = {}
+
+
+async def _fetch_daily_history(tradier: TradierClient, symbol: str, days: int = 35) -> list[float]:
+    """Return list of daily close prices (most recent last)."""
+    import datetime
+    end = datetime.date.today()
+    start = end - datetime.timedelta(days=days + 15)
+    try:
+        bars = await tradier.history(symbol, interval="daily", start=start.isoformat(), end=end.isoformat())
+        return [b["close"] for b in bars if b.get("close") is not None]
+    except Exception:
+        return []
+
+
+def _rs_ratio_momentum(sector_closes: list[float], spy_closes: list[float]) -> tuple[float, float]:
+    """Compute RS-Ratio and RS-Momentum centred at 100."""
+    def _ret(closes: list[float], n: int) -> float | None:
+        if len(closes) < n + 1:
+            return None
+        old = closes[-(n + 1)]
+        new_val = closes[-1]
+        if old == 0:
+            return None
+        return (new_val - old) / old
+
+    ret20_sec = _ret(sector_closes, 20)
+    ret20_spy = _ret(spy_closes, 20)
+    if ret20_sec is None or ret20_spy is None or ret20_spy == 0:
+        rs_ratio = 100.0
+    else:
+        rs_ratio = round((ret20_sec / ret20_spy) * 100, 2)
+
+    if len(sector_closes) >= 26 and len(spy_closes) >= 26:
+        sec_5ago = sector_closes[:-5] if len(sector_closes) > 5 else sector_closes
+        spy_5ago = spy_closes[:-5] if len(spy_closes) > 5 else spy_closes
+        ret20_sec_5ago = _ret(sec_5ago, 20)
+        ret20_spy_5ago = _ret(spy_5ago, 20)
+        if ret20_sec_5ago is not None and ret20_spy_5ago is not None and ret20_spy_5ago != 0:
+            rs_ratio_5ago = (ret20_sec_5ago / ret20_spy_5ago) * 100
+        else:
+            rs_ratio_5ago = 100.0
+        rs_momentum = round(rs_ratio - rs_ratio_5ago + 100, 2)
+    else:
+        rs_momentum = 100.0
+
+    return rs_ratio, rs_momentum
+
+
+@app.get("/api/sectors")
+async def sectors_list():
+    """Return sector data: weight, price change, RS-ratio, RS-momentum. Cached 5 min."""
+    now = time.time()
+    cached = _sector_price_cache.get("data")
+    if cached and now - _sector_price_cache.get("ts", 0) < 300:
+        return {"sectors": cached, "cached": True}
+
+    tradier = TradierClient()
+    try:
+        all_syms = list(SECTORS.keys()) + ["SPY"]
+        history_tasks = [_fetch_daily_history(tradier, sym) for sym in all_syms]
+        histories = await asyncio.gather(*history_tasks, return_exceptions=True)
+        quotes = await tradier.quotes(all_syms)
+    finally:
+        await tradier.close()
+
+    spy_idx = all_syms.index("SPY")
+    spy_closes = histories[spy_idx] if not isinstance(histories[spy_idx], Exception) else []
+
+    result = []
+    for sym in list(SECTORS.keys()):
+        meta = SECTORS[sym]
+        idx = all_syms.index(sym)
+        closes = histories[idx] if not isinstance(histories[idx], Exception) else []
+
+        spot = quotes.get(sym)
+        if closes and len(closes) >= 2:
+            prev = closes[-2]
+            curr = spot if spot else closes[-1]
+            pct_change = round((curr - prev) / prev * 100, 2) if prev else 0.0
+        elif spot and closes:
+            prev = closes[-1]
+            pct_change = round((spot - prev) / prev * 100, 2) if prev else 0.0
+        else:
+            pct_change = 0.0
+
+        rs_ratio, rs_momentum = _rs_ratio_momentum(closes, spy_closes)
+
+        result.append({
+            "ticker": sym,
+            "name": meta["name"],
+            "weight": meta["weight"],
+            "pct_change": pct_change,
+            "spot": spot,
+            "rs_ratio": rs_ratio,
+            "rs_momentum": rs_momentum,
+        })
+
+    _sector_price_cache["data"] = result
+    _sector_price_cache["ts"] = now
+    return {"sectors": result, "cached": False}
+
+
+@app.get("/api/sectors/{sector}")
+async def sector_detail(sector: str):
+    """Return top 10 holdings of a sector with GEX data from cache. Cached 5 min."""
+    sym = sector.upper()
+    if sym not in SECTORS:
+        raise HTTPException(404, f"Unknown sector {sym}")
+
+    now = time.time()
+    cached_entry = _sector_holdings_cache.get(sym)
+    if cached_entry and now - cached_entry.get("ts", 0) < 300:
+        return {**cached_entry["data"], "cached": True}
+
+    meta = SECTORS[sym]
+    holdings = meta["holdings"]
+
+    tasks = [cache.get(h) for h in holdings]
+    states = await asyncio.gather(*tasks, return_exceptions=True)
+
+    tradier = TradierClient()
+    try:
+        spot_map = await tradier.quotes(holdings)
+    finally:
+        await tradier.close()
+
+    holding_rows: list[dict[str, Any]] = []
+    total_weight = 0.0
+    weighted_king_dist_num = 0.0
+    regime_votes: dict[str, float] = {}
+    n = len(holdings)
+
+    for i, h in enumerate(holdings):
+        state = states[i]
+        if isinstance(state, Exception):
+            state = None
+        spot = spot_map.get(h) or (state.get("actual_spot") or state.get("_spot") if state else None)
+        king = state.get("king") if state else None
+        signal = state.get("signal", "–") if state else "–"
+        regime = state.get("regime", "–") if state else "–"
+        floor_val = state.get("floor") if state else None
+        ceiling_val = state.get("ceiling") if state else None
+
+        king_dist = None
+        if spot and king and spot > 0:
+            king_dist = round((king - spot) / spot * 100, 2)
+
+        w = 1.0 / n
+        total_weight += w
+        if king_dist is not None:
+            weighted_king_dist_num += king_dist * w
+        if regime and regime != "–":
+            regime_votes[regime] = regime_votes.get(regime, 0) + w
+
+        holding_rows.append({
+            "ticker": h,
+            "spot": round(spot, 2) if spot else None,
+            "king": king,
+            "signal": signal,
+            "regime": regime,
+            "floor": floor_val,
+            "ceiling": ceiling_val,
+            "king_dist": king_dist,
+        })
+
+    agg_king_dist = round(weighted_king_dist_num / total_weight, 2) if total_weight > 0 else None
+    agg_regime = max(regime_votes, key=lambda k: regime_votes[k]) if regime_votes else "–"
+
+    data: dict[str, Any] = {
+        "sector": sym,
+        "name": meta["name"],
+        "holdings": holding_rows,
+        "aggregate": {
+            "regime": agg_regime,
+            "king_dist": agg_king_dist,
+        },
+    }
+    _sector_holdings_cache[sym] = {"data": data, "ts": now}
+    return {**data, "cached": False}
 
 
 # Root for convenience

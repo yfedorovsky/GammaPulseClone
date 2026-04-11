@@ -31,8 +31,11 @@ export const api = {
   tickers: () => json('GET', '/api/tickers'),
   addTickers: (tickers) => json('POST', '/api/tickers/add', { tickers }),
   removeTickers: (tickers) => json('POST', '/api/tickers/remove', { tickers }),
-  earnings: () => json('GET', '/api/earnings'),
+  earnings: (weekOffset = 0) => json('GET', `/api/earnings?week_offset=${weekOffset}`),
   alerts: (since = 0) => json('GET', `/api/alerts?since=${since}&limit=50`),
+  news: (ticker) => json('GET', '/api/news/' + encodeURIComponent(ticker)),
+  sectors: () => json('GET', '/api/sectors'),
+  sectorDetail: (sector) => json('GET', `/api/sectors/${encodeURIComponent(sector)}`),
 };
 
 /**

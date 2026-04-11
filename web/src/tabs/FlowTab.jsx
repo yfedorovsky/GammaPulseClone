@@ -3,20 +3,177 @@ import { api } from '../api.js';
 import { fmtBig, fmtPrice } from '../lib/format.js';
 
 const SENTIMENTS = ['ALL', 'BULLISH', 'BEARISH', 'NEUTRAL'];
+const CONVICTIONS = ['ALL', 'HIGH', 'MEDIUM', 'LOW'];
+
+const STATUS_ICON = {
+  OPEN: '🟢', APPROACHING: '🟡', KING_HIT: '✅', KING_BREAK: '🚀',
+  FLOOR_HIT: '⚠️', EXPIRED: '⏰',
+};
+const CONV_STYLE = {
+  HIGH: { border: '1px solid #f4c430', background: 'rgba(244,196,48,0.08)' },
+  MEDIUM: { border: '1px solid var(--border-mid)', background: 'transparent' },
+  LOW: { border: '1px solid var(--border-faint)', background: 'transparent' },
+};
+
+function AlertsView({ alerts, sentFilter, setSentFilter, convFilter, setConvFilter, onClickTicker }) {
+  const filtered = useMemo(() => {
+    let rows = [...alerts];
+    if (sentFilter !== 'ALL') rows = rows.filter((a) => a.sentiment === sentFilter);
+    if (convFilter !== 'ALL') rows = rows.filter((a) => a.conviction === convFilter);
+    return rows;
+  }, [alerts, sentFilter, convFilter]);
+
+  const sentCounts = useMemo(() => {
+    const c = { ALL: alerts.length, BULLISH: 0, BEARISH: 0, NEUTRAL: 0 };
+    for (const a of alerts) { c[a.sentiment] = (c[a.sentiment] || 0) + 1; }
+    return c;
+  }, [alerts]);
+
+  const convCounts = useMemo(() => {
+    const c = { ALL: alerts.length, HIGH: 0, MEDIUM: 0, LOW: 0 };
+    for (const a of alerts) { c[a.conviction || 'LOW'] = (c[a.conviction || 'LOW'] || 0) + 1; }
+    return c;
+  }, [alerts]);
+
+  // Stats: win rate per conviction
+  const stats = useMemo(() => {
+    const buckets = { HIGH: { wins: 0, total: 0 }, MEDIUM: { wins: 0, total: 0 }, LOW: { wins: 0, total: 0 } };
+    for (const a of alerts) {
+      const conv = a.conviction || 'LOW';
+      const status = a.status || 'OPEN';
+      if (status !== 'OPEN' && status !== 'APPROACHING') {
+        buckets[conv].total++;
+        if (status === 'KING_HIT' || status === 'KING_BREAK') buckets[conv].wins++;
+      }
+    }
+    return buckets;
+  }, [alerts]);
+
+  const timeAgo = (ts) => {
+    const diff = Math.floor(Date.now() / 1000) - ts;
+    if (diff < 60) return `${diff}s ago`;
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return `${Math.floor(diff / 86400)}d ago`;
+  };
+
+  return (
+    <div>
+      {/* Stats bar */}
+      <div style={{ display: 'flex', gap: 16, padding: '10px 14px', borderBottom: '1px solid var(--border-faint)', background: 'var(--bg-1)', fontSize: 'var(--fs-xxs)', fontFamily: 'var(--mono)', color: 'var(--text-2)' }}>
+        <span>7-Day Win Rate:</span>
+        {['HIGH', 'MEDIUM', 'LOW'].map((c) => {
+          const b = stats[c];
+          const rate = b.total > 0 ? ((b.wins / b.total) * 100).toFixed(0) : '--';
+          return (
+            <span key={c} style={{ color: c === 'HIGH' ? '#f4c430' : c === 'MEDIUM' ? 'var(--text-1)' : 'var(--text-3)' }}>
+              {c}: {rate}% ({b.wins}/{b.total})
+            </span>
+          );
+        })}
+      </div>
+
+      {/* Filter pills */}
+      <div style={{ display: 'flex', gap: 6, padding: '8px 14px', flexWrap: 'wrap', alignItems: 'center' }}>
+        <span style={{ fontSize: 'var(--fs-xxs)', color: 'var(--text-3)', marginRight: 4 }}>Sentiment:</span>
+        {SENTIMENTS.map((s) => (
+          <button key={s} className={`ctrl-btn ${sentFilter === s ? 'active' : ''}`} onClick={() => setSentFilter(s)}
+            style={{ background: sentFilter === s ? (s === 'BULLISH' ? 'rgba(16,220,154,0.15)' : s === 'BEARISH' ? 'rgba(255,86,86,0.15)' : 'rgba(255,255,255,0.08)') : undefined }}>
+            {s} ({sentCounts[s] || 0})
+          </button>
+        ))}
+        <span style={{ fontSize: 'var(--fs-xxs)', color: 'var(--text-3)', marginLeft: 12, marginRight: 4 }}>Conviction:</span>
+        {CONVICTIONS.map((c) => (
+          <button key={c} className={`ctrl-btn ${convFilter === c ? 'active' : ''}`} onClick={() => setConvFilter(c)}
+            style={{ color: convFilter === c && c === 'HIGH' ? '#f4c430' : undefined }}>
+            {c} ({convCounts[c] || 0})
+          </button>
+        ))}
+      </div>
+
+      {/* Alert list */}
+      <div style={{ padding: '0 14px' }}>
+        {filtered.length === 0 && (
+          <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-3)' }}>
+            No flow alerts yet. Alerts fire during market hours when unusual volume is detected.
+          </div>
+        )}
+        {filtered.map((a, i) => {
+          const isCall = a.option_type === 'call';
+          const emoji = a.sentiment === 'BULLISH' ? '🟢' : a.sentiment === 'BEARISH' ? '🔴' : '🟡';
+          const statusIcon = STATUS_ICON[a.status] || '🟢';
+          const convStyle = CONV_STYLE[a.conviction] || CONV_STYLE.LOW;
+          return (
+            <div key={a.id || i} className="flow-alert-row" style={convStyle} onClick={() => onClickTicker(a.ticker)}>
+              <div className="flow-alert-top">
+                <span>{emoji}</span>
+                <span className="alert-ticker">{a.ticker}</span>
+                <span className="alert-strike" style={{ color: isCall ? '#10dc9a' : '#ff5656' }}>
+                  ${a.strike} {a.option_type?.toUpperCase()} {a.expiration}
+                </span>
+                <span style={{ flex: 1 }} />
+                {a.conviction && (
+                  <span style={{ fontSize: 'var(--fs-xxs)', fontWeight: 800, color: a.conviction === 'HIGH' ? '#f4c430' : a.conviction === 'MEDIUM' ? 'var(--text-1)' : 'var(--text-3)', letterSpacing: '0.5px' }}>
+                    {a.conviction}
+                  </span>
+                )}
+                <span style={{ fontSize: 'var(--fs-xxs)', marginLeft: 8 }}>{statusIcon} {a.status || 'OPEN'}</span>
+                <span className="alert-time">{timeAgo(a.ts)}</span>
+              </div>
+              <div className="flow-alert-bottom">
+                <span>Vol: {(a.volume || 0).toLocaleString()}</span>
+                <span>OI: {(a.oi || 0).toLocaleString()}</span>
+                <span style={{ color: '#ff5656' }}>{a.vol_oi}x</span>
+                <span>Side: <strong style={{ color: a.side === 'ASK' ? '#10dc9a' : a.side === 'BID' ? '#ff5656' : 'var(--text-2)' }}>{a.side}</strong></span>
+                <span style={{ color: a.sentiment === 'BULLISH' ? '#10dc9a' : a.sentiment === 'BEARISH' ? '#ff5656' : 'var(--text-2)' }}>{a.sentiment}</span>
+                <span>${(a.last_price || 0).toFixed(2)}</span>
+                <span>{fmtBig(a.notional)}</span>
+                <span>IV: {a.iv}%</span>
+                {a.king && <span style={{ color: 'var(--king-pos)' }}>King ${a.king}</span>}
+                {a.signal && <span className="signal-pill" data-signal={a.signal} style={{ padding: '1px 5px', fontSize: '9px' }}>{a.signal}</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 export default function FlowTab() {
-  const [mode, setMode] = useState('detail'); // scan | detail
+  const [mode, setMode] = useState('alerts'); // alerts | scan | detail
   const [ticker, setTicker] = useState('SPY');
   const [detail, setDetail] = useState(null);
   const [scanResults, setScanResults] = useState(null);
   const [loading, setLoading] = useState(false);
   const [sentFilter, setSentFilter] = useState('ALL');
+  const [convFilter, setConvFilter] = useState('ALL');
+  const [alerts, setAlerts] = useState([]);
+  const [alertSince, setAlertSince] = useState(0);
 
   useEffect(() => {
     if (mode === 'scan') loadScan();
-    else loadDetail(ticker);
+    else if (mode === 'detail') loadDetail(ticker);
+    else if (mode === 'alerts') loadAlerts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
+
+  // Auto-refresh alerts every 15s
+  useEffect(() => {
+    if (mode !== 'alerts') return;
+    const iv = setInterval(loadAlerts, 15_000);
+    return () => clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
+
+  async function loadAlerts() {
+    try {
+      const d = await api.alerts(0);
+      setAlerts(d.alerts || []);
+    } catch (e) {
+      console.warn(e);
+    }
+  }
 
   async function loadScan() {
     setLoading(true);
@@ -84,7 +241,8 @@ export default function FlowTab() {
       <div className="ctrl-bar" style={{ gap: 14 }}>
         <strong style={{ fontSize: 15, marginRight: 6 }}>Options Flow</strong>
         <div className="ctrl-group">
-          <button className={`ctrl-btn ${mode === 'scan' ? 'active' : ''}`} onClick={() => setMode('scan')}>SCAN ALL</button>
+          <button className={`ctrl-btn ${mode === 'alerts' ? 'active' : ''}`} onClick={() => setMode('alerts')}>ALERTS</button>
+          <button className={`ctrl-btn ${mode === 'scan' ? 'active' : ''}`} onClick={() => setMode('scan')}>SCAN</button>
           <button className={`ctrl-btn ${mode === 'detail' ? 'active' : ''}`} onClick={() => setMode('detail')}>DETAIL</button>
         </div>
         <div style={{ flex: 1 }} />
@@ -105,7 +263,9 @@ export default function FlowTab() {
       </div>
 
       <div style={{ overflow: 'auto', padding: 0 }}>
-        {mode === 'detail' && detail ? (
+        {mode === 'alerts' ? (
+          <AlertsView alerts={alerts} sentFilter={sentFilter} setSentFilter={setSentFilter} convFilter={convFilter} setConvFilter={setConvFilter} onClickTicker={(t) => { setTicker(t); setMode('detail'); loadDetail(t); }} />
+        ) : mode === 'detail' && detail ? (
           <div>
             {/* Summary cards */}
             <div className="flow-cards">

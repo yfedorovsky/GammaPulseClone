@@ -42,7 +42,14 @@ CREATE TABLE IF NOT EXISTS flow_alerts (
   iv REAL,
   delta REAL,
   notional REAL,
-  spot REAL
+  spot REAL,
+  conviction TEXT DEFAULT 'LOW',
+  status TEXT DEFAULT 'OPEN',
+  king REAL,
+  floor_level REAL,
+  ceiling_level REAL,
+  signal TEXT,
+  regime TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_flow_ts ON flow_alerts(ts);
 CREATE INDEX IF NOT EXISTS idx_flow_ticker ON flow_alerts(ticker, ts);
@@ -68,13 +75,54 @@ def init_alert_db() -> None:
         c.executescript(ALERT_SCHEMA)
 
 
-def insert_alert(alert: dict[str, Any]) -> None:
+def _compute_conviction(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) -> str:
+    """Score conviction: HIGH / MEDIUM / LOW based on volume, notional, and GEX alignment."""
+    score = 0
+    vol = alert.get("volume", 0)
+    notional = alert.get("notional", 0)
+    vol_oi = alert.get("vol_oi", 0)
+
+    # Volume tier
+    if vol >= 5000: score += 2
+    elif vol >= 2000: score += 1
+
+    # Notional tier
+    if notional >= 5_000_000: score += 2
+    elif notional >= 1_000_000: score += 1
+
+    # V/OI ratio
+    if vol_oi >= 10: score += 1
+
+    # GEX alignment: does the flow direction match the GEX signal?
+    if gex_info:
+        signal = gex_info.get("signal", "")
+        sentiment = alert.get("sentiment", "")
+        otype = alert.get("option_type", "")
+        # Bullish call flow in MAGNET UP / SUPPORT = aligned
+        if sentiment == "BULLISH" and otype == "call" and signal in ("MAGNET UP", "SUPPORT"):
+            score += 2
+        # Bearish put flow in AIR POCKET / RESISTANCE = aligned
+        elif sentiment == "BEARISH" and otype == "put" and signal in ("AIR POCKET", "RESISTANCE"):
+            score += 2
+        # Neutral pinning flow
+        elif signal == "PINNING":
+            score += 1
+
+    if score >= 5: return "HIGH"
+    if score >= 3: return "MEDIUM"
+    return "LOW"
+
+
+def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) -> None:
+    conviction = _compute_conviction(alert, gex_info)
+    alert["conviction"] = conviction
     with _conn() as c:
         c.execute(
             """INSERT INTO flow_alerts
             (ts, ticker, strike, expiration, option_type, volume, oi, vol_oi,
-             last_price, bid, ask, side, sentiment, iv, delta, notional, spot)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             last_price, bid, ask, side, sentiment, iv, delta, notional, spot,
+             conviction, status, king, floor_level, ceiling_level, signal, regime)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 int(time.time()),
                 alert["ticker"],
@@ -93,6 +141,13 @@ def insert_alert(alert: dict[str, Any]) -> None:
                 alert.get("delta"),
                 alert.get("notional"),
                 alert.get("spot"),
+                conviction,
+                "OPEN",
+                gex_info.get("king") if gex_info else None,
+                gex_info.get("floor") if gex_info else None,
+                gex_info.get("ceiling") if gex_info else None,
+                gex_info.get("signal") if gex_info else None,
+                gex_info.get("regime") if gex_info else None,
             ),
         )
 
@@ -256,20 +311,19 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
                 "notional": round(notional),
                 "spot": spot,
             }
-            insert_alert(alert)
+            gex_info = {
+                "king": state.get("king") if state else None,
+                "floor": state.get("floor") if state else None,
+                "ceiling": state.get("ceiling") if state else None,
+                "regime": state.get("regime") if state else None,
+                "signal": state.get("signal") if state else None,
+            }
+            insert_alert(alert, gex_info)
             new_alerts.append(alert)
 
             # Auto-track for exit signals
             try:
                 from .trade_tracker import create_trade
-
-                gex_info = {
-                    "king": state.get("king") if state else None,
-                    "floor": state.get("floor") if state else None,
-                    "ceiling": state.get("ceiling") if state else None,
-                    "regime": state.get("regime") if state else None,
-                    "signal": state.get("signal") if state else None,
-                }
                 create_trade(alert, gex_info)
             except Exception:
                 pass

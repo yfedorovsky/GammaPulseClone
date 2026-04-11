@@ -19,17 +19,26 @@ export default function HeatmapPanel({ ticker, panelIdx, expLabelOverride }) {
     activeWL,
     updateWatchlist,
     editMode,
+    zeroDte,
   } = useStore();
 
   const data = chains[ticker];
   const expKey = `${ticker}-${panelIdx}`;
-  const currentExp = expLabelOverride || exps[expKey] || MACRO_KEY;
+  const expList = data?.exps || [MACRO_KEY];
+
+  // 0DTE mode: find today's expiration date
+  const todayExp = useMemo(() => {
+    if (!zeroDte) return null;
+    const today = new Date().toISOString().slice(0, 10);
+    return expList.find((e) => e === today || e.startsWith(today));
+  }, [zeroDte, expList]);
+
+  const currentExp = todayExp || expLabelOverride || exps[expKey] || MACRO_KEY;
   const spot = spotPrices[ticker] ?? data?.spot;
   const prev = prevSpotPrices[ticker];
   const dir =
     spot != null && prev != null && spot !== prev ? (spot > prev ? 'up' : 'down') : '';
 
-  const expList = data?.exps || [MACRO_KEY];
   const exp_data =
     data?.exp_data?.[currentExp] || data?.exp_data?.[MACRO_KEY] || {};
   const rawStrikes = exp_data.strikes || [];
@@ -87,6 +96,14 @@ export default function HeatmapPanel({ ticker, panelIdx, expLabelOverride }) {
 
   // Expected-range indicator for the header (floor–ceiling)
   const rangeText = floor && ceiling ? `$${floor}–$${ceiling}` : '';
+
+  // Expected Move: spot * IV * sqrt(1/252)
+  const iv = exp_data.iv || data?.iv || 0;
+  const expectedMove = useMemo(() => {
+    if (!spot || !iv) return null;
+    const em = spot * iv * Math.sqrt(1 / 252);
+    return { dollars: em, pct: (em / spot) * 100 };
+  }, [spot, iv]);
 
   // Dynamic prose strip
   const stripText = useMemo(
@@ -179,7 +196,13 @@ export default function HeatmapPanel({ ticker, panelIdx, expLabelOverride }) {
             </span>
           )}
           {regime && <span className="regime-pill">{regime} γ</span>}
+          {expectedMove && (
+            <span className="em-badge">
+              EM {'\u00b1'}${expectedMove.dollars.toFixed(2)} ({expectedMove.pct.toFixed(1)}%)
+            </span>
+          )}
           <div style={{ flex: 1 }} />
+          {zeroDte && <span className="dte-badge">0DTE</span>}
           {rangeText && <span className="panel-range">{rangeText}</span>}
         </div>
 

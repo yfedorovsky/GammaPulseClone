@@ -133,6 +133,10 @@ export const useStore = create((set, get) => ({
   editMode: false,
   setEditMode: (v) => set({ editMode: v }),
 
+  // 0DTE mode: when on, all panels switch to today's expiration
+  zeroDte: false,
+  setZeroDte: (v) => set({ zeroDte: v }),
+
   // Streaming transport mode: 'ws' | 'sse' | 'poll' | 'offline'
   streamMode: 'offline',
   setStreamMode: (streamMode) => set({ streamMode }),
