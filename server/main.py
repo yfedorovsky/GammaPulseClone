@@ -21,6 +21,7 @@ from sse_starlette.sse import EventSourceResponse
 from .cache import cache
 from .config import get_settings
 from .flow_alerts import init_alert_db, get_alerts as get_flow_alerts, run_flow_scanner
+from .discipline import init_discipline_db, get_ticker_stats, compute_kelly_size, get_circuit_breaker, log_trade
 from .signals import init_signals_db, get_signals, get_signal_stats, run_signal_engine
 from .trade_tracker import init_tracker_db, get_all_trades, run_position_monitor
 from .gex import compute_exp_data, build_signal
@@ -47,6 +48,7 @@ async def lifespan(app: FastAPI):
     init_alert_db()
     init_tracker_db()
     init_signals_db()
+    init_discipline_db()
     await streamer.ensure_running()
     global _worker_task, _flow_task, _monitor_task, _signal_task
     _worker_task = asyncio.create_task(run_worker(_stop))
@@ -1005,6 +1007,49 @@ async def signals_list(limit: int = 50, status: str = "", grade: str = ""):
 async def signals_stats():
     """Get win rate stats by conviction grade."""
     return get_signal_stats()
+
+
+@app.get("/api/discipline/tiers")
+async def discipline_tiers():
+    """Get base rate tiers for all tickers with trade history."""
+    return {"tickers": get_ticker_stats()}
+
+
+@app.get("/api/discipline/kelly/{ticker}")
+async def discipline_kelly(ticker: str, is_0dte: bool = False, account_value: float = 10000):
+    """Compute Quarter-Kelly position size for a ticker."""
+    return compute_kelly_size(ticker.upper(), is_0dte, account_value)
+
+
+@app.get("/api/discipline/circuit-breaker")
+async def discipline_cb():
+    """Get current circuit breaker state."""
+    return get_circuit_breaker()
+
+
+class TradeLogReq(BaseModel):
+    ticker: str
+    outcome: str  # WIN | LOSS
+    pnl_pct: float
+    option_type: str = ""
+    strike: float = 0
+    expiration: str = ""
+    entry_price: float = 0
+    exit_price: float = 0
+    is_0dte: bool = False
+    signal_id: int | None = None
+
+
+@app.post("/api/discipline/log-trade")
+async def discipline_log(req: TradeLogReq):
+    """Log a completed trade for base rate tracking + circuit breaker."""
+    log_trade(
+        ticker=req.ticker, outcome=req.outcome, pnl_pct=req.pnl_pct,
+        option_type=req.option_type, strike=req.strike, expiration=req.expiration,
+        entry_price=req.entry_price, exit_price=req.exit_price,
+        is_0dte=req.is_0dte, signal_id=req.signal_id,
+    )
+    return {"ok": True, "ticker": req.ticker, "outcome": req.outcome}
 
 
 # Root for convenience

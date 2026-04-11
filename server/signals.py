@@ -497,6 +497,13 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
             "status": "PENDING",
         }
 
+        # Enrich with discipline layer (sizing, tier, circuit breaker)
+        try:
+            from .discipline import enrich_signal
+            sig = enrich_signal(sig)
+        except Exception:
+            pass
+
         # Insert into DB
         _insert_signal(sig)
         _seen_signals.add(hour_key)
