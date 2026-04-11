@@ -280,7 +280,52 @@ async def _check_exit_signals(tradier: TradierClient) -> list[dict[str, Any]]:
         except Exception:
             pass
 
-        # 8. PRICE_UPDATE — spot moved significantly from entry (>2%)
+        # 8. EXIT LADDER — systematic profit taking based on spot move from entry
+        if entry_spot and entry_spot > 0:
+            spot_gain_pct = ((spot - entry_spot) / entry_spot) * 100
+            is_0dte_trade = False
+            try:
+                from datetime import datetime as dt
+                exp = dt.strptime(expiration, "%Y-%m-%d").date()
+                is_0dte_trade = exp == dt.now().date()
+            except Exception:
+                pass
+
+            if is_0dte_trade:
+                # 0DTE ladder
+                if spot_gain_pct >= 100:
+                    msg = f"🎯 EXIT LADDER +{spot_gain_pct:.0f}%: {ticker} — sell 75%, let rest ride at $0 cost basis"
+                    if add_signal(trade_id, "LADDER_100", msg, spot):
+                        new_signals.append({"trade_id": trade_id, "type": "LADDER_100", "msg": msg, "ticker": ticker})
+                elif spot_gain_pct >= 50:
+                    msg = f"🎯 EXIT LADDER +{spot_gain_pct:.0f}%: {ticker} — sell 50%, move stop to breakeven"
+                    if add_signal(trade_id, "LADDER_50", msg, spot):
+                        new_signals.append({"trade_id": trade_id, "type": "LADDER_50", "msg": msg, "ticker": ticker})
+                if spot_gain_pct <= -50:
+                    msg = f"🛑 0DTE HARD STOP -{abs(spot_gain_pct):.0f}%: {ticker} — exit 100%, no recovery time"
+                    if add_signal(trade_id, "HARD_STOP_0DTE", msg, spot):
+                        new_signals.append({"trade_id": trade_id, "type": "HARD_STOP_0DTE", "msg": msg, "ticker": ticker})
+                        close_trade(trade_id, "CLOSED_STOP")
+            else:
+                # Multi-week ladder
+                if spot_gain_pct >= 200:
+                    msg = f"🚀 EXIT LADDER +{spot_gain_pct:.0f}%: {ticker} — trail remaining 25% with stop at +100%"
+                    if add_signal(trade_id, "LADDER_200", msg, spot):
+                        new_signals.append({"trade_id": trade_id, "type": "LADDER_200", "msg": msg, "ticker": ticker})
+                elif spot_gain_pct >= 150:
+                    msg = f"🎯 EXIT LADDER +{spot_gain_pct:.0f}%: {ticker} — sell 25% more (75% total exited)"
+                    if add_signal(trade_id, "LADDER_150", msg, spot):
+                        new_signals.append({"trade_id": trade_id, "type": "LADDER_150", "msg": msg, "ticker": ticker})
+                elif spot_gain_pct >= 100:
+                    msg = f"🎯 EXIT LADDER +{spot_gain_pct:.0f}%: {ticker} — sell 25% more (50% total), trail stop → +50%"
+                    if add_signal(trade_id, "LADDER_100", msg, spot):
+                        new_signals.append({"trade_id": trade_id, "type": "LADDER_100", "msg": msg, "ticker": ticker})
+                elif spot_gain_pct >= 50:
+                    msg = f"🎯 EXIT LADDER +{spot_gain_pct:.0f}%: {ticker} — sell 25%, move stop to breakeven"
+                    if add_signal(trade_id, "LADDER_50", msg, spot):
+                        new_signals.append({"trade_id": trade_id, "type": "LADDER_50", "msg": msg, "ticker": ticker})
+
+        # 9. PRICE_UPDATE — spot moved significantly from entry (>2%)
         if entry_spot:
             move_pct = (spot - entry_spot) / entry_spot
             if abs(move_pct) > 0.02:
@@ -301,6 +346,8 @@ async def _send_exit_telegram(signal: dict[str, Any]) -> None:
         "KING_HIT": "🎯", "KING_SHIFT": "👑", "FLOOR_BREAK": "⚠️",
         "CEIL_BREAK": "⚠️", "REGIME_FLIP": "🔄", "IV_CRUSH": "📉",
         "THETA_WARNING": "⏰", "MOVE_UP": "📈", "MOVE_DOWN": "📉",
+        "LADDER_50": "🎯", "LADDER_100": "🎯", "LADDER_150": "🎯",
+        "LADDER_200": "🚀", "HARD_STOP_0DTE": "🛑",
     }.get(signal["type"], "📍")
     text = f"{emoji} {signal['type']}: {signal['ticker']}\n{signal['msg']}"
     try:

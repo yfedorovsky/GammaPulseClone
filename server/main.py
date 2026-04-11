@@ -1040,6 +1040,121 @@ class TradeLogReq(BaseModel):
     signal_id: int | None = None
 
 
+class MirSignalReq(BaseModel):
+    """Inbound Mir signal from Discord listener webhook."""
+    signal_type: str  # ENTRY | WATCH | ADD | PARTIAL | EXIT | STOP
+    ticker: str
+    strike: float | None = None
+    option_type: str = ""  # CALL | PUT
+    expiry: str = ""
+    entry_price: float | None = None
+    stop_price: float | None = None
+    conviction: str = "MEDIUM"  # HIGH | MEDIUM | LOW
+    raw_signal: str = ""
+    source: str = "discord"  # discord | telegram
+
+
+@app.post("/api/signals/mir")
+async def ingest_mir_signal(req: MirSignalReq):
+    """Webhook endpoint for Discord listener to POST Mir's signals.
+
+    Receives parsed signals from the Discord bot, enriches with GEX context,
+    and stores alongside SOE signals for confluence detection.
+    """
+    t = req.ticker.upper()
+    state = await _get_or_compute(t)
+
+    gex_context = {}
+    if state:
+        gex_context = {
+            "king": state.get("king"),
+            "floor": state.get("floor"),
+            "ceiling": state.get("ceiling"),
+            "regime": state.get("regime"),
+            "signal": state.get("signal"),
+            "iv": state.get("iv"),
+            "spot": state.get("actual_spot"),
+        }
+
+    mir_entry = {
+        "ts": int(time.time()),
+        "signal_type": req.signal_type,
+        "ticker": t,
+        "strike": req.strike,
+        "option_type": req.option_type,
+        "expiry": req.expiry,
+        "entry_price": req.entry_price,
+        "stop_price": req.stop_price,
+        "conviction": req.conviction,
+        "raw_signal": req.raw_signal,
+        "source": req.source,
+        "gex_context": gex_context,
+    }
+
+    # Store in memory for confluence detection
+    if not hasattr(app.state, "mir_signals"):
+        app.state.mir_signals = []
+    app.state.mir_signals.append(mir_entry)
+    # Keep last 100
+    if len(app.state.mir_signals) > 100:
+        app.state.mir_signals = app.state.mir_signals[-100:]
+
+    return {"ok": True, "ticker": t, "signal_type": req.signal_type, "gex_context": gex_context}
+
+
+@app.get("/api/signals/confluence")
+async def signal_confluence():
+    """Detect when multiple signal sources converge on the same ticker.
+
+    Returns tickers where 2+ of {SOE signal, flow alert, Mir signal} fired
+    within the last 60 minutes. This is the highest-conviction event.
+    """
+    cutoff = int(time.time()) - 3600  # last 60 min
+
+    # SOE signals
+    soe_tickers: set[str] = set()
+    try:
+        from .signals import get_signals
+        for s in get_signals(limit=50):
+            if s.get("ts", 0) >= cutoff:
+                soe_tickers.add(s["ticker"])
+    except Exception:
+        pass
+
+    # Flow alerts
+    flow_tickers: set[str] = set()
+    for a in get_flow_alerts(since_ts=cutoff, limit=50):
+        flow_tickers.add(a["ticker"])
+
+    # Mir signals
+    mir_tickers: set[str] = set()
+    for m in getattr(app.state, "mir_signals", []):
+        if m.get("ts", 0) >= cutoff and m.get("signal_type") in ("ENTRY", "ADD"):
+            mir_tickers.add(m["ticker"])
+
+    # Find convergence
+    all_tickers = soe_tickers | flow_tickers | mir_tickers
+    confluences = []
+    for t in all_tickers:
+        sources = []
+        if t in soe_tickers:
+            sources.append("SOE")
+        if t in flow_tickers:
+            sources.append("FLOW")
+        if t in mir_tickers:
+            sources.append("MIR")
+        if len(sources) >= 2:
+            confluences.append({
+                "ticker": t,
+                "sources": sources,
+                "count": len(sources),
+                "max_conviction": len(sources) == 3,
+            })
+
+    confluences.sort(key=lambda c: c["count"], reverse=True)
+    return {"confluences": confluences, "cutoff_minutes": 60}
+
+
 @app.post("/api/discipline/log-trade")
 async def discipline_log(req: TradeLogReq):
     """Log a completed trade for base rate tracking + circuit breaker."""

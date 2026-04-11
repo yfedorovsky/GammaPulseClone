@@ -207,7 +207,44 @@ function SignalCard({ sig, expanded, onToggle }) {
           <span style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xxs)' }}>IV</span><br />
           <span style={{ color: '#10dc9a', fontWeight: 700 }}>{sig.iv ? (sig.iv * 100).toFixed(1) + '%' : '-'}</span>
         </div>
+        {/* Discipline fields */}
+        {sig.base_rate_tier && (
+          <div>
+            <span style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xxs)' }}>TIER</span><br />
+            <span style={{ padding: '1px 6px', borderRadius: 4, fontSize: 'var(--fs-xxs)', fontWeight: 800,
+              background: sig.base_rate_tier === 'PROVEN' ? 'rgba(16,220,154,0.15)' : sig.base_rate_tier === 'DEVELOPING' ? 'rgba(244,196,48,0.15)' : 'rgba(255,255,255,0.06)',
+              color: sig.base_rate_tier === 'PROVEN' ? '#10dc9a' : sig.base_rate_tier === 'DEVELOPING' ? '#f4c430' : 'var(--text-3)' }}>
+              {sig.base_rate_tier}
+            </span>
+          </div>
+        )}
+        {sig.kelly_size_pct != null && (
+          <div>
+            <span style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xxs)' }}>SIZE</span><br />
+            <span style={{ fontWeight: 700, color: '#f4c430' }}>{sig.kelly_size_pct}%</span>
+          </div>
+        )}
+        {sig.gate_score != null && (
+          <div>
+            <span style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xxs)' }}>GATE</span><br />
+            <span style={{ fontWeight: 700, color: sig.gate_label === 'VALID' ? '#10dc9a' : sig.gate_label === 'WEAK' ? '#f4c430' : '#ff5656' }}>
+              {sig.gate_score}/{sig.gate_max}
+            </span>
+          </div>
+        )}
       </div>
+
+      {/* Discipline warnings */}
+      {sig.discipline_note && (
+        <div style={{ padding: '4px 16px 8px', fontSize: 'var(--fs-xxs)', fontFamily: 'var(--mono)', color: sig.discipline_grade === 'SKIP' || sig.discipline_grade === 'BLOCKED' ? '#ff5656' : '#f4c430' }}>
+          ⚠ {sig.discipline_note}
+        </div>
+      )}
+      {sig.earnings_blocked && (
+        <div style={{ padding: '4px 16px 8px', fontSize: 'var(--fs-xxs)', fontFamily: 'var(--mono)', color: '#ff5656', fontWeight: 800 }}>
+          🚫 TOXIC LIST: Earnings proximity — do not trade
+        </div>
+      )}
 
       {/* Expanded detail */}
       {expanded && (
@@ -265,6 +302,43 @@ function SignalCard({ sig, expanded, onToggle }) {
               </div>
             ))}
           </div>
+
+          {/* 5-Factor Gate */}
+          {sig.gate_factors && (
+            <div style={{ marginTop: 14, padding: 12, background: 'var(--bg-2)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-faint)' }}>
+              <div style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, color: 'var(--text-2)', marginBottom: 8 }}>
+                5-FACTOR GATE: <span style={{ color: sig.gate_label === 'VALID' ? '#10dc9a' : sig.gate_label === 'WEAK' ? '#f4c430' : '#ff5656' }}>
+                  {sig.gate_score}/{sig.gate_max} {sig.gate_label}
+                </span>
+                <span style={{ color: 'var(--text-3)', marginLeft: 8 }}>{sig.gate_action}</span>
+              </div>
+              {sig.gate_factors.map((f, i) => (
+                <div key={i} style={{ fontSize: 'var(--fs-xxs)', fontFamily: 'var(--mono)', color: f.pass ? '#10dc9a' : '#ff5656', lineHeight: 1.8 }}>
+                  {f.pass ? '✓' : '✗'} {f.name}: {f.detail}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Exit Ladder */}
+          {sig.exit_ladder && (
+            <div style={{ marginTop: 14, padding: 12, background: 'var(--bg-2)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-faint)' }}>
+              <div style={{ fontSize: 'var(--fs-xs)', fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>EXIT LADDER</div>
+              {sig.exit_ladder.map((lvl, i) => (
+                <div key={i} style={{ fontSize: 'var(--fs-xxs)', fontFamily: 'var(--mono)', color: 'var(--text-2)', lineHeight: 1.8 }}>
+                  +{lvl.gain_pct}% → {lvl.label}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Kelly sizing detail */}
+          {sig.kelly_reason && (
+            <div style={{ marginTop: 10, fontSize: 'var(--fs-xxs)', fontFamily: 'var(--mono)', color: 'var(--text-3)' }}>
+              Position: {sig.kelly_reason}
+              {sig.kelly_capped_by && <span style={{ color: '#f4c430' }}> (capped: {sig.kelly_capped_by})</span>}
+            </div>
+          )}
         </div>
       )}
     </div>

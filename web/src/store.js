@@ -141,6 +141,10 @@ export const useStore = create((set, get) => ({
   streamMode: 'offline',
   setStreamMode: (streamMode) => set({ streamMode }),
 
+  // Earnings data for badge display
+  earningsThisWeek: {}, // { ticker: { date, timing } }
+  setEarningsThisWeek: (e) => set({ earningsThisWeek: e }),
+
   // Selected scanner row (for MTF side panel)
   selectedRow: null,
   setSelectedRow: (r) => set({ selectedRow: r }),

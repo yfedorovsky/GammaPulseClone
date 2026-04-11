@@ -73,6 +73,11 @@ function AlertsView({ alerts, sentFilter, setSentFilter, convFilter, setConvFilt
         })}
       </div>
 
+      {/* Factor 3 of 5 warning */}
+      <div style={{ padding: '6px 14px', fontSize: 'var(--fs-xxs)', fontFamily: 'var(--mono)', color: '#f4c430', background: 'rgba(244,196,48,0.06)', borderBottom: '1px solid var(--border-faint)' }}>
+        ⚠ Flow is Factor 3 of 5. Verify: Mir/SOE signal + technical setup + macro context + catalyst before entry.
+      </div>
+
       {/* Filter pills */}
       <div style={{ display: 'flex', gap: 6, padding: '8px 14px', flexWrap: 'wrap', alignItems: 'center' }}>
         <span style={{ fontSize: 'var(--fs-xxs)', color: 'var(--text-3)', marginRight: 4 }}>Sentiment:</span>

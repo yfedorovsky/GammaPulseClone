@@ -406,9 +406,202 @@ def check_0dte_time_gate(soe_score: float = 0) -> dict[str, Any]:
     return {"allowed": False, "reason": "Market closed", "window": "CLOSED"}
 
 
+# ── 5-Factor Gate (PLAYBOOK) ───────────────────────────────────────────
+#
+# SOE 8-factor = WHERE the levels are (signal generator)
+# 5-factor gate = WHETHER to take the trade (decision layer)
+# Both coexist. A signal can be SOE A+ but fail the gate.
+
+def run_five_factor_gate(
+    signal: dict[str, Any],
+    flow_confirmed: bool | None = None,
+    mir_signal: dict[str, Any] | None = None,
+    earnings_dates: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    """Evaluate the PLAYBOOK 5-factor entry gate.
+
+    Returns {score, max: 5, factors: [...], label, action}.
+    SOE score is NOT touched — this is a separate layer.
+    """
+    import datetime
+
+    ticker = signal.get("ticker", "")
+    factors: list[dict[str, Any]] = []
+    score = 0
+
+    # Factor 1 — Mir Conviction (or SOE grade as proxy when no Mir signal)
+    if mir_signal:
+        conv = mir_signal.get("conviction", "LOW")
+        if conv == "HIGH":
+            score += 1
+            factors.append({"name": "Mir Conviction", "pass": True, "detail": f"HIGH — {mir_signal.get('raw', '')[:60]}"})
+        elif conv == "MEDIUM":
+            score += 1
+            factors.append({"name": "Mir Conviction", "pass": True, "detail": "MEDIUM — clean entry"})
+        else:
+            factors.append({"name": "Mir Conviction", "pass": False, "detail": "LOW — watch only"})
+    else:
+        # No Mir signal: use SOE grade as proxy (A+/A = pass, B+/B/C = fail)
+        soe_grade = signal.get("grade", "C")
+        if soe_grade in ("A+", "A"):
+            score += 1
+            factors.append({"name": "Mir Conviction (SOE proxy)", "pass": True, "detail": f"SOE grade {soe_grade} used as conviction proxy"})
+        else:
+            factors.append({"name": "Mir Conviction (SOE proxy)", "pass": False, "detail": f"SOE grade {soe_grade} — not high enough to substitute for Mir"})
+
+    # Factor 2 — Technical Setup (GEX structure = dealer-defined S/R)
+    # SOE already scored this via king/floor/ceiling. Pass if score ≥ 5/8.
+    soe_score = signal.get("score", 0)
+    if soe_score >= 5:
+        score += 1
+        factors.append({"name": "Technical Setup", "pass": True, "detail": f"GEX structure score {soe_score}/8 — levels confirmed"})
+    else:
+        factors.append({"name": "Technical Setup", "pass": False, "detail": f"GEX structure score {soe_score}/8 — weak setup"})
+
+    # Factor 3 — Options Flow Confirmation
+    if flow_confirmed is True:
+        score += 1
+        factors.append({"name": "Options Flow", "pass": True, "detail": "Unusual volume confirmed direction"})
+    elif flow_confirmed is None:
+        # No data = NEUTRAL, not fail
+        score += 0.5
+        factors.append({"name": "Options Flow", "pass": True, "detail": "No flow data — neutral (not disqualifying)"})
+    else:
+        factors.append({"name": "Options Flow", "pass": False, "detail": "Flow neutral or opposite direction"})
+
+    # Factor 4 — Macro Context (earnings proximity + day-of-week)
+    macro_pass = True
+    macro_details = []
+
+    # Earnings proximity check (TOXIC LIST RULE)
+    if earnings_dates:
+        today = datetime.date.today()
+        ticker_earnings = earnings_dates.get(ticker.upper(), [])
+        for ed_str in ticker_earnings:
+            try:
+                ed = datetime.date.fromisoformat(ed_str)
+                days_to_earnings = (ed - today).days
+                exp_str = signal.get("expiration", "")
+                if exp_str:
+                    try:
+                        exp_date = datetime.date.fromisoformat(exp_str)
+                        days_exp_to_earnings = (ed - exp_date).days
+                        # Toxic: options expiring day of or day before earnings
+                        if -1 <= days_exp_to_earnings <= 0:
+                            macro_pass = False
+                            macro_details.append(f"TOXIC: {ticker} earnings {ed_str}, option expires {exp_str} — IV crush risk")
+                    except ValueError:
+                        pass
+                # Also flag same-day 0DTE into earnings
+                if days_to_earnings == 0 and (signal.get("dte") or 999) == 0:
+                    macro_pass = False
+                    macro_details.append(f"TOXIC: {ticker} earnings TODAY — no 0DTE entries")
+            except ValueError:
+                pass
+
+    # Day-of-week modifiers
+    dow = datetime.date.today().weekday()
+    if dow == 4:  # Friday
+        macro_details.append("Friday: theta acceleration on 0DTE, be cautious")
+    # OPEX week check (3rd Friday of month)
+    today = datetime.date.today()
+    first_of_month = today.replace(day=1)
+    first_friday = first_of_month + datetime.timedelta(days=(4 - first_of_month.weekday()) % 7)
+    opex_friday = first_friday + datetime.timedelta(weeks=2)
+    if abs((today - opex_friday).days) <= 2:
+        macro_details.append("OPEX week — elevated pin risk and gamma")
+
+    if not macro_details:
+        macro_details.append("No macro event risk in trade window")
+
+    if macro_pass:
+        score += 1
+        factors.append({"name": "Macro Context", "pass": True, "detail": "; ".join(macro_details)})
+    else:
+        factors.append({"name": "Macro Context", "pass": False, "detail": "; ".join(macro_details)})
+
+    # Factor 5 — Catalyst Timing
+    # For now: pass if DTE > 3 (multi-week has time for catalyst) or if earnings confirmed as catalyst
+    dte = signal.get("dte") or 0
+    if dte == 0:
+        # 0DTE: momentum is the catalyst
+        score += 0.5
+        factors.append({"name": "Catalyst Timing", "pass": True, "detail": "0DTE — intraday momentum is the catalyst"})
+    elif dte >= 7:
+        score += 1
+        factors.append({"name": "Catalyst Timing", "pass": True, "detail": f"{dte} DTE — time for catalyst to develop"})
+    else:
+        score += 0.5
+        factors.append({"name": "Catalyst Timing", "pass": True, "detail": f"{dte} DTE — short window, momentum dependent"})
+
+    # Label
+    if score >= 4:
+        label = "VALID"
+        action = "Full Quarter-Kelly size"
+    elif score >= 3:
+        label = "WEAK"
+        action = "Half size — requires user override"
+    else:
+        label = "INVALID"
+        action = "Do not trade — log only"
+
+    return {
+        "score": round(score, 1),
+        "max": 5,
+        "factors": factors,
+        "label": label,
+        "action": action,
+        "earnings_blocked": not macro_pass,
+    }
+
+
+# ── 0DTE Power Hour Conditional Rules ──────────────────────────────────
+
+def check_0dte_power_hour(signal: dict[str, Any]) -> dict[str, Any]:
+    """Stricter conditions for 3:00-4:15 0DTE entries.
+
+    Power hour is ALLOWED but only for:
+    - PROVEN tickers
+    - SOE grade A or A+
+    - Regime aligned with direction
+    """
+    tier_info = get_tier(signal.get("ticker", ""))
+    soe_grade = signal.get("grade", "C")
+    regime = signal.get("regime", "")
+    direction = signal.get("direction", "")
+    is_bull = direction == "▲"
+
+    conditions = []
+    allowed = True
+
+    if tier_info["tier"] != "PROVEN":
+        conditions.append(f"Ticker is {tier_info['tier']} — PROVEN required for power hour")
+        allowed = False
+
+    if soe_grade not in ("A+", "A"):
+        conditions.append(f"SOE grade {soe_grade} — need A or A+ for power hour")
+        allowed = False
+
+    regime_aligned = (is_bull and regime == "POS") or (not is_bull and regime == "NEG")
+    if not regime_aligned:
+        conditions.append(f"Regime {regime} not aligned with {direction} direction")
+        allowed = False
+
+    if allowed:
+        conditions.append("Power hour conditions met: PROVEN + A grade + regime aligned ✅")
+
+    return {"allowed": allowed, "conditions": conditions}
+
+
 # ── Enrichment: Add discipline fields to SOE signal ────────────────────
 
-def enrich_signal(signal: dict[str, Any], account_value: float = 10000) -> dict[str, Any]:
+def enrich_signal(
+    signal: dict[str, Any],
+    account_value: float = 10000,
+    flow_confirmed: bool | None = None,
+    mir_signal: dict[str, Any] | None = None,
+    earnings_dates: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
     """Add discipline layer fields to a raw SOE signal. Non-destructive — only adds keys."""
     ticker = signal.get("ticker", "")
     is_0dte = (signal.get("dte") or 999) == 0
@@ -438,32 +631,74 @@ def enrich_signal(signal: dict[str, Any], account_value: float = 10000) -> dict[
     else:
         enriched["circuit_breaker_blocked"] = False
 
-    # 4. 0DTE time gate (if applicable)
+    # 4. 0DTE time gate
     if is_0dte:
         gate = check_0dte_time_gate(signal.get("score", 0))
         enriched["time_gate_allowed"] = gate["allowed"]
         enriched["time_gate_reason"] = gate["reason"]
         enriched["time_gate_window"] = gate["window"]
 
+        # Power hour conditional gates (3:00-4:15)
+        if gate.get("window") in ("POWER_HOUR", "CLOSE"):
+            ph = check_0dte_power_hour(signal)
+            enriched["power_hour_allowed"] = ph["allowed"]
+            enriched["power_hour_conditions"] = ph["conditions"]
+            if not ph["allowed"]:
+                enriched["time_gate_allowed"] = False
+                enriched["time_gate_reason"] = "Power hour — " + "; ".join(ph["conditions"])
+
     # 5. Exit ladder
     enriched["exit_ladder"] = EXIT_LADDER_0DTE if is_0dte else EXIT_LADDER_MULTI
 
-    # 6. Combined grade — SOE score + discipline adjustment
-    # SOE grade stays as-is. Add a "discipline_grade" that factors in tier.
+    # 6. 5-Factor Gate (PLAYBOOK decision layer)
+    gate_result = run_five_factor_gate(
+        signal,
+        flow_confirmed=flow_confirmed,
+        mir_signal=mir_signal,
+        earnings_dates=earnings_dates,
+    )
+    enriched["gate_score"] = gate_result["score"]
+    enriched["gate_max"] = gate_result["max"]
+    enriched["gate_factors"] = gate_result["factors"]
+    enriched["gate_label"] = gate_result["label"]
+    enriched["gate_action"] = gate_result["action"]
+    enriched["earnings_blocked"] = gate_result.get("earnings_blocked", False)
+
+    # 7. Day-of-week modifier
+    import datetime
+    dow = datetime.date.today().weekday()
+    enriched["day_of_week"] = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"][dow]
+    if dow == 4 and is_0dte:
+        enriched["friday_warning"] = "Friday 0DTE: accelerated theta, tight stops"
+
+    # 8. Combined discipline grade
+    # SOE grade stays as-is. Discipline grade = min(SOE adjustments, gate outcome)
     soe_grade = signal.get("grade", "C")
-    if tier_info["tier"] == "BELOW_FLOOR":
-        enriched["discipline_grade"] = "SKIP"
-        enriched["discipline_note"] = "Below floor base rate — skip or justify"
+    downgrade = {"A+": "A", "A": "B+", "B+": "B", "B": "C", "C": "C"}
+
+    discipline_grade = soe_grade
+    discipline_notes: list[str] = []
+
+    if gate_result.get("earnings_blocked"):
+        discipline_grade = "SKIP"
+        discipline_notes.append("TOXIC: earnings proximity violation")
+    elif tier_info["tier"] == "BELOW_FLOOR":
+        discipline_grade = "SKIP"
+        discipline_notes.append("Below floor base rate — skip or justify")
     elif cb["level"] >= 3:
-        enriched["discipline_grade"] = "BLOCKED"
-        enriched["discipline_note"] = f"Circuit breaker L3 — no trades until {cb.get('reset_after', 'next week')}"
+        discipline_grade = "BLOCKED"
+        discipline_notes.append(f"Circuit breaker L3 — no trades until {cb.get('reset_after', 'next week')}")
+    elif gate_result["label"] == "INVALID":
+        discipline_grade = "SKIP"
+        discipline_notes.append(f"5-factor gate: {gate_result['score']}/5 INVALID")
+    elif gate_result["label"] == "WEAK":
+        discipline_grade = downgrade.get(soe_grade, "C")
+        discipline_notes.append(f"5-factor gate: {gate_result['score']}/5 WEAK — half size")
     elif cb["level"] >= 1:
-        # Downgrade by one level during circuit breaker
-        downgrade = {"A+": "A", "A": "B+", "B+": "B", "B": "C", "C": "C"}
-        enriched["discipline_grade"] = downgrade.get(soe_grade, "C")
-        enriched["discipline_note"] = f"Circuit breaker L{cb['level']} — grade reduced, size halved"
-    else:
-        enriched["discipline_grade"] = soe_grade
-        enriched["discipline_note"] = None
+        discipline_grade = downgrade.get(soe_grade, "C")
+        discipline_notes.append(f"Circuit breaker L{cb['level']} — grade reduced")
+
+    enriched["discipline_grade"] = discipline_grade
+    enriched["discipline_note"] = "; ".join(discipline_notes) if discipline_notes else None
 
     return enriched

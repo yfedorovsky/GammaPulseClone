@@ -29,6 +29,7 @@ export default function App() {
     setConfluence,
     bulkSetSpots,
     setStreamMode,
+    setEarningsThisWeek,
   } = useStore();
 
   const streamRef = React.useRef(null);
@@ -68,6 +69,24 @@ export default function App() {
       clearInterval(iv);
     };
   }, [setConfluence]);
+
+  // Earnings fetch (once on load for badge display)
+  useEffect(() => {
+    async function loadEarnings() {
+      try {
+        const data = await api.earnings(0);
+        const map = {};
+        for (const day of data.days || []) {
+          for (const t of day.tickers || []) {
+            const ticker = typeof t === 'string' ? t : t.ticker;
+            if (ticker) map[ticker] = { date: day.date, timing: t.timing || '' };
+          }
+        }
+        setEarningsThisWeek(map);
+      } catch {}
+    }
+    loadEarnings();
+  }, [setEarningsThisWeek]);
 
   // Price stream — WebSocket first, SSE second, polling last
   useEffect(() => {

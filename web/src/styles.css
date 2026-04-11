@@ -947,6 +947,15 @@ input, select { font-family: inherit; }
   padding: 0 4px;
 }
 
+/* === Earnings badge (small, on panel header) === */
+.earnings-badge-sm {
+  font-size: 12px;
+  padding: 1px 4px;
+  background: rgba(255, 170, 51, 0.15);
+  border-radius: 4px;
+  cursor: help;
+}
+
 /* === Flow Alert rows === */
 .flow-alert-row {
   padding: 10px 14px;

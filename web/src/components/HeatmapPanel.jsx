@@ -20,6 +20,7 @@ export default function HeatmapPanel({ ticker, panelIdx, expLabelOverride }) {
     updateWatchlist,
     editMode,
     zeroDte,
+    earningsThisWeek,
   } = useStore();
 
   const data = chains[ticker];
@@ -171,6 +172,11 @@ export default function HeatmapPanel({ ticker, panelIdx, expLabelOverride }) {
           </>
         ) : (
           <span className="panel-ticker">{ticker}</span>
+          {earningsThisWeek[ticker] && (
+            <span className="earnings-badge-sm" title={`Earnings ${earningsThisWeek[ticker].date} ${earningsThisWeek[ticker].timing === 'bmo' ? 'Before Open' : earningsThisWeek[ticker].timing === 'amc' ? 'After Close' : ''}`}>
+              📅
+            </span>
+          )}
         )}
         <select
           className="ctrl-select"
