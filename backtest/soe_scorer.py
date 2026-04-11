@@ -26,6 +26,18 @@ def score_to_grade(score: float, max_score: float = 8.0) -> str:
 
 MIN_SCORE_THRESHOLD = 3.5  # minimum to generate a signal
 
+# Signal type historical performance (from initial backtest)
+# Higher-performing signals get a score boost, underperformers get penalized
+SIGNAL_TYPE_MODIFIER = {
+    "BREAKDOWN_ACCELERATOR": +0.5,   # 72.4% WR — strong edge
+    "PINNING_PREMIUM_SELL": +0.5,    # 68.2% WR — strong edge
+    "RESISTANCE_FADE": +0.25,        # high WR (small sample)
+    "SUPPORT_BOUNCE": 0.0,           # neutral
+    "POST_BOTTOM_LAUNCH": 0.0,       # keep neutral — don't suppress
+    "MAGNET_BREAKOUT": -0.25,        # slight penalty, don't kill
+    "DIRECTIONAL": 0.0,
+}
+
 
 def determine_direction(state: dict[str, Any]) -> str | None:
     """Determine trade direction from GEX structure."""
@@ -174,6 +186,32 @@ def score_signal(
         score += 1
         reasons.append(f"Put wall at ${put_wall} (-{((spot-put_wall)/spot)*100:.1f}%) = downside target")
 
+    # 9. Signal-type historical performance modifier
+    # Determines signal type to apply the modifier
+    signal = state.get("signal", "")
+    kd = abs(king - spot) / spot if spot else 0
+    if signal == "PINNING":
+        sig_type = "PINNING_PREMIUM_SELL"
+    elif signal == "MAGNET UP":
+        sig_type = "MAGNET_BREAKOUT" if kd > 0.02 else "POST_BOTTOM_LAUNCH"
+    elif signal == "SUPPORT":
+        sig_type = "SUPPORT_BOUNCE"
+    elif signal == "AIR POCKET":
+        sig_type = "BREAKDOWN_ACCELERATOR"
+    elif signal == "RESISTANCE":
+        sig_type = "RESISTANCE_FADE"
+    else:
+        sig_type = "DIRECTIONAL"
+
+    modifier = SIGNAL_TYPE_MODIFIER.get(sig_type, 0)
+    if modifier != 0:
+        score += modifier
+        if modifier > 0:
+            reasons.append(f"Signal type {sig_type} historically strong (+{modifier})")
+        else:
+            reasons.append(f"Signal type {sig_type} historically weak ({modifier})")
+
+    score = max(0, score)  # don't go below 0
     grade = score_to_grade(score)
     return score, grade, reasons
 
@@ -251,17 +289,51 @@ def select_contract(
     selected = candidates[idx]
     strike = selected["strike"]
 
-    # Targets and stops
+    # Targets and stops — balanced approach
+    # King = primary magnet but enforce minimum 2% move for meaningful P&L.
+    # Use king if it gives >= 2% move, otherwise use fixed 2% target.
+    # Stop = floor/ceiling or 1.5% (tighter than target for positive R:R).
+    king = state.get("king", 0)
+
     if direction == "BULL":
-        target = king if king > spot else spot * 1.02
-        target_label = "King (magnet)" if king > spot else "+2%"
-        stop = state.get("floor", spot * 0.98) or spot * 0.98
-        stop_label = "Floor break"
+        king_dist = ((king - spot) / spot) if king > spot else 0
+        if king > spot and king_dist >= 0.02:
+            target = king
+            target_label = f"King ${king} (+{king_dist*100:.1f}%)"
+        elif king > spot:
+            # King is close — extend to minimum 2%
+            target = spot * 1.02
+            target_label = f"+2% (king ${king} too close)"
+        else:
+            target = spot * 1.02
+            target_label = "+2%"
+
+        floor = state.get("floor", 0)
+        if floor and floor > spot * 0.97 and floor < spot:
+            stop = floor
+            stop_label = f"Floor ${floor}"
+        else:
+            stop = spot * 0.985
+            stop_label = "-1.5%"
     else:
-        target = king if king < spot else spot * 0.98
-        target_label = "King (breakdown)" if king < spot else "-2%"
-        stop = state.get("ceiling", spot * 1.02) or spot * 1.02
-        stop_label = "Ceiling break"
+        king_dist = ((spot - king) / spot) if king < spot else 0
+        if king < spot and king_dist >= 0.02:
+            target = king
+            target_label = f"King ${king} (-{king_dist*100:.1f}%)"
+        elif king < spot:
+            target = spot * 0.98
+            target_label = f"-2% (king ${king} too close)"
+        else:
+            target = spot * 0.98
+            target_label = "-2%"
+
+        ceiling = state.get("ceiling", 0)
+        if ceiling and ceiling < spot * 1.03 and ceiling > spot:
+            stop = ceiling
+            stop_label = f"Ceiling ${ceiling}"
+        else:
+            stop = spot * 1.015
+            stop_label = "+1.5%"
 
     reward = abs(target - spot)
     risk = abs(stop - spot) or 1

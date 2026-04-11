@@ -167,37 +167,37 @@ def print_report(stats: dict[str, Any]) -> None:
     print(f"  Final Account: ${s.get('final_account', 0):,.2f}  |  Return: {s.get('total_return', 0):.1f}%")
     print(f"  Max Drawdown: {s.get('max_drawdown', 0):.1f}%")
 
-    print("\n── Win Rate by Grade ──")
+    print("\n-- Win Rate by Grade --")
     for grade in ["A+", "A", "B+", "B", "C"]:
         g = stats.get("by_grade", {}).get(grade)
         if g:
             print(f"  {grade:3s}  {g['win_rate']:5.1f}%  ({g['wins']}W / {g['losses']}L / {g['trades']}T)  avg {g['avg_pnl']:+.1f}%")
 
-    print("\n── Win Rate by Ticker (top 10) ──")
+    print("\n-- Win Rate by Ticker (top 10) --")
     by_t = stats.get("by_ticker", {})
     top = sorted(by_t.items(), key=lambda x: x[1]["trades"], reverse=True)[:10]
     for t, v in top:
         print(f"  {t:6s}  {v['win_rate']:5.1f}%  ({v['wins']}W / {v['trades']}T)  avg {v['avg_pnl']:+.1f}%")
 
-    print("\n── Win Rate by Day ──")
+    print("\n-- Win Rate by Day --")
     for dow in ["MON", "TUE", "WED", "THU", "FRI"]:
         d = stats.get("by_day_of_week", {}).get(dow)
         if d:
             print(f"  {dow}  {d['win_rate']:5.1f}%  ({d['wins']}W / {d['trades']}T)")
 
-    print("\n── Win Rate by Signal Type ──")
+    print("\n-- Win Rate by Signal Type --")
     for st, v in stats.get("by_signal_type", {}).items():
         print(f"  {st:25s}  {v['win_rate']:5.1f}%  ({v['wins']}W / {v['trades']}T)")
 
-    print("\n── P&L Distribution ──")
+    print("\n-- P&L Distribution --")
     d = stats.get("pnl_distribution", {})
     print(f"  Min: {d.get('min', 0):.1f}%  |  P10: {d.get('p10', 0):.1f}%  |  P25: {d.get('p25', 0):.1f}%  |  Median: {d.get('median', 0):.1f}%  |  P75: {d.get('p75', 0):.1f}%  |  P90: {d.get('p90', 0):.1f}%  |  Max: {d.get('max', 0):.1f}%")
 
     els = stats.get("exit_ladder_stats", {})
-    print(f"\n── Exit Ladder ──")
+    print(f"\n-- Exit Ladder --")
     print(f"  Avg MFE: {els.get('avg_max_favorable_excursion', 0):.1f}%  |  Capture Rate: {els.get('avg_capture_rate', 0):.1f}%")
 
-    print("\n── Exit Reasons ──")
+    print("\n-- Exit Reasons --")
     for reason, count in sorted(stats.get("by_exit_reason", {}).items(), key=lambda x: x[1], reverse=True):
         print(f"  {reason:20s}  {count}")
     print("=" * 70)

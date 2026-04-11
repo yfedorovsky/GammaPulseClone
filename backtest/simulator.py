@@ -285,6 +285,45 @@ class BacktestEngine:
 
         return day_signals
 
+    @staticmethod
+    def _option_pnl(spot_move_pct: float, dte_at_entry: int, iv: float = 0.25) -> float:
+        """Estimate option P&L from spot move using delta-gamma leverage.
+
+        A slightly OTM option (~0.30 delta) has roughly these characteristics:
+          - Spot move × delta × (spot/option_price) = option P&L
+          - Simplified: ~4x leverage for 10-20 DTE slightly OTM
+          - Gamma adds convexity: winners accelerate, losers decelerate
+
+        This is a simplified model — real P&L depends on exact IV, time decay,
+        and gamma, but it's far more realistic than raw spot P&L.
+
+        Returns option P&L as percentage.
+        """
+        # Base leverage: shorter DTE = higher leverage (gamma ramp)
+        if dte_at_entry <= 1:
+            leverage = 8.0   # 0DTE: extreme gamma
+        elif dte_at_entry <= 5:
+            leverage = 6.0   # weekly: high gamma
+        elif dte_at_entry <= 14:
+            leverage = 4.5   # 2 weeks: moderate
+        elif dte_at_entry <= 28:
+            leverage = 3.5   # monthly: lower
+        else:
+            leverage = 2.5   # LEAPS: lowest
+
+        # Gamma convexity: winners get extra boost, losers get cushion
+        if spot_move_pct > 0:
+            # Winning: delta increases as option goes ITM (gamma effect)
+            convexity = 1.0 + abs(spot_move_pct) * 0.15
+        else:
+            # Losing: delta decreases as option goes further OTM (gamma cushion)
+            convexity = 1.0 - abs(spot_move_pct) * 0.08
+
+        option_pnl = spot_move_pct * leverage * convexity
+
+        # Cap at -100% (can't lose more than premium paid)
+        return max(-100.0, option_pnl)
+
     def _check_exits(
         self,
         ticker: str,
@@ -304,6 +343,9 @@ class BacktestEngine:
                 continue
 
             is_0dte = False
+            days_held = (date - pos.entry_date).days
+            remaining_dte = max(0, pos.dte - days_held)
+
             try:
                 exp_date = datetime.date.fromisoformat(pos.expiration)
                 is_0dte = exp_date == date
@@ -312,54 +354,59 @@ class BacktestEngine:
                     pos.exit_spot = spot
                     pos.exit_reason = "EXPIRED"
                     pos.outcome = "LOSS"
-                    pos.pnl_pct = -100
+                    pos.pnl_pct = -100  # option expires worthless
                     to_close.append(pos)
                     continue
             except ValueError:
                 pass
 
-            # Track max favorable excursion
+            # Track max favorable excursion (in option terms)
             if pos.direction == "BULL":
-                fav = ((high - pos.entry_spot) / pos.entry_spot) * 100
+                fav_spot = ((high - pos.entry_spot) / pos.entry_spot) * 100
             else:
-                fav = ((pos.entry_spot - low) / pos.entry_spot) * 100
-            pos.max_favorable = max(pos.max_favorable, fav)
+                fav_spot = ((pos.entry_spot - low) / pos.entry_spot) * 100
+            fav_opt = self._option_pnl(fav_spot, pos.dte)
+            pos.max_favorable = max(pos.max_favorable, fav_opt)
 
-            # Check target hit
+            # Check target hit (spot reaches target price)
             if pos.direction == "BULL" and high >= pos.target:
+                spot_move = ((pos.target - pos.entry_spot) / pos.entry_spot) * 100
                 pos.exit_date = date
                 pos.exit_spot = pos.target
                 pos.exit_reason = "TARGET_HIT"
                 pos.outcome = "WIN"
-                pos.pnl_pct = ((pos.target - pos.entry_spot) / pos.entry_spot) * 100
+                pos.pnl_pct = self._option_pnl(spot_move, pos.dte)
                 to_close.append(pos)
                 continue
 
             if pos.direction == "BEAR" and low <= pos.target:
+                spot_move = ((pos.entry_spot - pos.target) / pos.entry_spot) * 100
                 pos.exit_date = date
                 pos.exit_spot = pos.target
                 pos.exit_reason = "TARGET_HIT"
                 pos.outcome = "WIN"
-                pos.pnl_pct = ((pos.entry_spot - pos.target) / pos.entry_spot) * 100
+                pos.pnl_pct = self._option_pnl(spot_move, pos.dte)
                 to_close.append(pos)
                 continue
 
             # Check stop hit
             if pos.direction == "BULL" and low <= pos.stop:
+                spot_move = ((pos.stop - pos.entry_spot) / pos.entry_spot) * 100
                 pos.exit_date = date
                 pos.exit_spot = pos.stop
                 pos.exit_reason = "STOP_HIT"
                 pos.outcome = "LOSS"
-                pos.pnl_pct = ((pos.stop - pos.entry_spot) / pos.entry_spot) * 100
+                pos.pnl_pct = self._option_pnl(spot_move, pos.dte)
                 to_close.append(pos)
                 continue
 
             if pos.direction == "BEAR" and high >= pos.stop:
+                spot_move = ((pos.entry_spot - pos.stop) / pos.entry_spot) * 100
                 pos.exit_date = date
                 pos.exit_spot = pos.stop
                 pos.exit_reason = "STOP_HIT"
                 pos.outcome = "LOSS"
-                pos.pnl_pct = ((pos.entry_spot - pos.stop) / pos.entry_spot) * 100
+                pos.pnl_pct = self._option_pnl(spot_move, pos.dte)
                 to_close.append(pos)
                 continue
 
@@ -368,9 +415,10 @@ class BacktestEngine:
                 pos.exit_date = date
                 pos.exit_spot = spot
                 if pos.direction == "BULL":
-                    pos.pnl_pct = ((spot - pos.entry_spot) / pos.entry_spot) * 100
+                    spot_move = ((spot - pos.entry_spot) / pos.entry_spot) * 100
                 else:
-                    pos.pnl_pct = ((pos.entry_spot - spot) / pos.entry_spot) * 100
+                    spot_move = ((pos.entry_spot - spot) / pos.entry_spot) * 100
+                pos.pnl_pct = self._option_pnl(spot_move, 0)  # 0DTE = max leverage
                 pos.exit_reason = "0DTE_CLOSE"
                 pos.outcome = "WIN" if pos.pnl_pct > 0 else "LOSS"
                 to_close.append(pos)

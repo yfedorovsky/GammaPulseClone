@@ -49,18 +49,25 @@ def load_chain_csv(path: str | Path) -> dict[str, dict[str, list[dict]]]:
             ticker = row.get("ticker", "").upper()
             if not date or not ticker:
                 continue
+            def sf(v):
+                """Safe float — handles empty strings and None."""
+                try:
+                    return float(v) if v not in (None, "") else 0.0
+                except (ValueError, TypeError):
+                    return 0.0
+
             data[date][ticker].append({
-                "strike": float(row.get("strike", 0)),
-                "oi": float(row.get("oi") or row.get("open_interest", 0)),
-                "gamma": float(row.get("gamma", 0)),
-                "delta": float(row.get("delta", 0)),
-                "vega": float(row.get("vega", 0)),
-                "iv": float(row.get("iv") or row.get("mid_iv", 0)),
+                "strike": sf(row.get("strike")),
+                "oi": sf(row.get("oi") or row.get("open_interest")),
+                "gamma": sf(row.get("gamma")),
+                "delta": sf(row.get("delta")),
+                "vega": sf(row.get("vega")),
+                "iv": sf(row.get("iv") or row.get("mid_iv")),
                 "option_type": row.get("option_type", "").lower(),
-                "volume": float(row.get("volume", 0)),
-                "bid": float(row.get("bid", 0)),
-                "ask": float(row.get("ask", 0)),
-                "last": float(row.get("last", 0)),
+                "volume": sf(row.get("volume")),
+                "bid": sf(row.get("bid")),
+                "ask": sf(row.get("ask")),
+                "last": sf(row.get("last")),
                 "expiration": row.get("expiration", ""),
             })
 
@@ -142,7 +149,7 @@ def run_backtest(
     ]
 
     print(f"Backtest: {len(tickers)} tickers, {len(trading_dates)} trading days")
-    print(f"Period: {start_date} → {end_date}")
+    print(f"Period: {start_date} -> {end_date}")
     print(f"Account: ${account_value:,.0f}")
     print()
 
