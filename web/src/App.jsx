@@ -11,6 +11,7 @@ import HeatmapsTab from './tabs/HeatmapsTab.jsx';
 import OverlayTab from './tabs/OverlayTab.jsx';
 import ScannerTab from './tabs/ScannerTab.jsx';
 import FlowTab from './tabs/FlowTab.jsx';
+import SignalsTab from './tabs/SignalsTab.jsx';
 import SectorsTab from './tabs/SectorsTab.jsx';
 import HistoryTab from './tabs/HistoryTab.jsx';
 import MtfTab from './tabs/MtfTab.jsx';
@@ -113,6 +114,7 @@ export default function App() {
         {tab === 'OVERLAY' && <OverlayTab />}
         {tab === 'SCANNER' && <ScannerTab />}
         {tab === 'FLOW' && <FlowTab />}
+        {tab === 'SIGNALS' && <SignalsTab />}
         {tab === 'SECTORS' && <SectorsTab />}
         {tab === 'HISTORY' && <HistoryTab />}
         {tab === 'MTF' && <MtfTab />}

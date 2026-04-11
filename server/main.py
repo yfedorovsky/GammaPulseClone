@@ -21,6 +21,7 @@ from sse_starlette.sse import EventSourceResponse
 from .cache import cache
 from .config import get_settings
 from .flow_alerts import init_alert_db, get_alerts as get_flow_alerts, run_flow_scanner
+from .signals import init_signals_db, get_signals, get_signal_stats, run_signal_engine
 from .trade_tracker import init_tracker_db, get_all_trades, run_position_monitor
 from .gex import compute_exp_data, build_signal
 from .snapshots import init_db, series as snapshot_series
@@ -37,6 +38,7 @@ _worker_task: asyncio.Task | None = None
 
 _flow_task: asyncio.Task | None = None
 _monitor_task: asyncio.Task | None = None
+_signal_task: asyncio.Task | None = None
 
 
 @asynccontextmanager
@@ -44,17 +46,19 @@ async def lifespan(app: FastAPI):
     init_db()
     init_alert_db()
     init_tracker_db()
+    init_signals_db()
     await streamer.ensure_running()
-    global _worker_task, _flow_task, _monitor_task
+    global _worker_task, _flow_task, _monitor_task, _signal_task
     _worker_task = asyncio.create_task(run_worker(_stop))
     _flow_task = asyncio.create_task(run_flow_scanner(_stop))
     _monitor_task = asyncio.create_task(run_position_monitor(_stop))
+    _signal_task = asyncio.create_task(run_signal_engine(_stop))
     try:
         yield
     finally:
         _stop.set()
         await streamer.stop()
-        for task in (_worker_task, _flow_task, _monitor_task):
+        for task in (_worker_task, _flow_task, _monitor_task, _signal_task):
             if task:
                 try:
                     await asyncio.wait_for(task, timeout=5)
@@ -989,6 +993,18 @@ async def sector_detail(sector: str):
     }
     _sector_holdings_cache[sym] = {"data": data, "ts": now}
     return {**data, "cached": False}
+
+
+@app.get("/api/signals")
+async def signals_list(limit: int = 50, status: str = "", grade: str = ""):
+    """Get SOE trade signals with optional filters."""
+    return {"signals": get_signals(limit, status, grade)}
+
+
+@app.get("/api/signals/stats")
+async def signals_stats():
+    """Get win rate stats by conviction grade."""
+    return get_signal_stats()
 
 
 # Root for convenience
