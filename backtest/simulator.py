@@ -138,6 +138,9 @@ class BacktestEngine:
         # Pending signals: computed on day T, executed on day T+1
         # This prevents data leakage (using same-day chain + same-day price)
         self._pending_entries: list[dict] = []
+        # Full spot history per ticker: {ticker: [(date, open, high, low, close), ...]}
+        # Used for honest benchmark computation in results.py
+        self._spot_series: dict[str, list[tuple]] = {}
 
     def set_confluence(self, spy_state: dict, qqq_state: dict, iwm_state: dict) -> None:
         """Set the confluence data for the current day."""
@@ -194,6 +197,17 @@ class BacktestEngine:
         self._spot_history[ticker].append(spot)
         if len(self._spot_history[ticker]) > 30:
             self._spot_history[ticker] = self._spot_history[ticker][-30:]
+
+        # Record full spot series for benchmark computation
+        if ticker not in self._spot_series:
+            self._spot_series[ticker] = []
+        self._spot_series[ticker].append((
+            date.isoformat(),
+            daily_open or 0,
+            daily_high or spot,
+            daily_low or spot,
+            spot,  # close
+        ))
 
         # 3. Generate new signals
         day_signals = []
@@ -546,4 +560,5 @@ class BacktestEngine:
             "starting_value": self.starting_value,
             "return_pct": ((self.account_value - self.starting_value) / self.starting_value) * 100,
             "circuit_breaker": {"losses": self.circuit_breaker.consecutive_losses, "level": self.circuit_breaker.level},
+            "spots_data": self._spot_series,  # full price history for honest benchmarks
         }

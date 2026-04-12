@@ -191,13 +191,17 @@ def compute_stats(results: dict[str, Any]) -> dict[str, Any]:
 
 
 def _compute_benchmark(traded: list, spots_data: dict | None = None) -> dict[str, Any]:
-    """Compare SOE returns vs buy-and-hold and random entry.
+    """Compare SOE returns vs buy-and-hold and random entry using REAL spot history.
+
+    Uses the full spot series from the simulator (not trade record spots) for
+    honest benchmark computation. This fixes the previous version which used
+    approximate B&H from trade spots and a rough random-entry proxy.
 
     For each ticker:
-    - SOE avg return: avg P&L of all SOE-scored trades
-    - Buy-and-hold: if you held from first signal date to last signal date
-    - Random entry: avg of 100 random entry/exit windows with same avg hold period
-    - Alpha: SOE return minus buy-and-hold return (positive = GEX adds value)
+    - SOE: actual cumulative P&L from all trades
+    - B&H: real close-to-close return from first trade date to last trade date
+    - Random: 100 random entry points in the spot series, same avg hold period,
+      using actual close prices (not option P&L -- underlying return baseline)
     """
     if not traded:
         return {"tickers": {}, "overall_alpha": 0}
@@ -216,43 +220,77 @@ def _compute_benchmark(traded: list, spots_data: dict | None = None) -> dict[str
     ticker_count = 0
 
     for ticker, trades in by_ticker.items():
-        if len(trades) < 3:
-            continue  # need minimum trades for meaningful comparison
+        if len(trades) < 2:
+            continue
 
-        # SOE average return
+        # SOE cumulative return
         pnls = [t.pnl_pct if hasattr(t, "pnl_pct") else t.get("pnl_pct", 0) for t in trades]
         soe_avg = sum(pnls) / len(pnls)
         soe_total = sum(pnls)
 
-        # Buy-and-hold: first entry spot to last exit spot
-        first_spot = trades[0].spot if hasattr(trades[0], "spot") else trades[0].get("spot", 0)
-        last_trade = trades[-1]
-        last_spot = first_spot  # fallback
-        if hasattr(last_trade, "exit_date") and last_trade.exit_date:
-            # Use the spot at exit
-            last_spot = first_spot * (1 + sum(pnls) / (len(pnls) * 100))  # rough estimate
-        # Better: calculate from first to last trade date spot change
-        spots = [t.spot if hasattr(t, "spot") else t.get("spot", 0) for t in trades]
-        if spots[0] > 0 and spots[-1] > 0:
-            bh_return = ((spots[-1] - spots[0]) / spots[0]) * 100
-        else:
-            bh_return = 0
+        # Get real spot series for this ticker
+        ticker_spots = spots_data.get(ticker, []) if spots_data else []
 
-        # Alpha = SOE cumulative return minus buy-and-hold
-        alpha = soe_total - bh_return
+        if ticker_spots and len(ticker_spots) >= 5:
+            # spots_data format: [(date_str, open, high, low, close), ...]
+            closes = [row[4] for row in ticker_spots if row[4] > 0]
 
-        # Random entry simulation: pick random dates, hold for avg trade duration
-        avg_hold = len(trades)  # rough proxy
-        random_returns = []
-        if len(spots) > 2:
-            random.seed(42)  # reproducible
+            # B&H: first close to last close over the period where we traded
+            first_trade_date = str(trades[0].date) if hasattr(trades[0], "date") else ""
+            last_trade_date = str(trades[-1].date) if hasattr(trades[-1], "date") else ""
+
+            # Find the close on first and last trade dates
+            first_close = 0
+            last_close = 0
+            for row in ticker_spots:
+                if row[0] == first_trade_date and row[4] > 0:
+                    first_close = row[4]
+                if row[0] == last_trade_date and row[4] > 0:
+                    last_close = row[4]
+            if not first_close:
+                first_close = closes[0] if closes else 0
+            if not last_close:
+                last_close = closes[-1] if closes else 0
+
+            bh_return = ((last_close - first_close) / first_close * 100) if first_close > 0 else 0
+
+            # Random entry: 100 random entry points, hold for avg trade duration
+            # Compute actual avg hold period from trades
+            hold_days = []
+            for t in trades:
+                entry = t.date if hasattr(t, "date") else None
+                exit_d = t.exit_date if hasattr(t, "exit_date") else None
+                if entry and exit_d and isinstance(exit_d, str):
+                    try:
+                        import datetime
+                        ed = datetime.date.fromisoformat(exit_d)
+                        hd = (ed - entry).days
+                        if hd > 0:
+                            hold_days.append(hd)
+                    except (ValueError, TypeError):
+                        pass
+            avg_hold_days = int(sum(hold_days) / len(hold_days)) if hold_days else 7
+
+            random.seed(42)
+            random_returns = []
             for _ in range(100):
-                i = random.randint(0, len(spots) - 2)
-                j = min(i + max(1, avg_hold // len(trades)), len(spots) - 1)
-                if spots[i] > 0:
-                    r = ((spots[j] - spots[i]) / spots[i]) * 100
+                i = random.randint(0, max(0, len(closes) - avg_hold_days - 1))
+                j = min(i + avg_hold_days, len(closes) - 1)
+                if closes[i] > 0:
+                    r = ((closes[j] - closes[i]) / closes[i]) * 100
                     random_returns.append(r)
-        random_avg = (sum(random_returns) / len(random_returns)) if random_returns else 0
+            random_avg = (sum(random_returns) / len(random_returns)) if random_returns else 0
+
+        else:
+            # Fallback: use trade spots (less accurate but better than nothing)
+            spots = [t.spot if hasattr(t, "spot") else t.get("spot", 0) for t in trades]
+            if spots[0] > 0 and spots[-1] > 0:
+                bh_return = ((spots[-1] - spots[0]) / spots[0]) * 100
+            else:
+                bh_return = 0
+            random_avg = 0
+
+        alpha = soe_total - bh_return
 
         results[ticker] = {
             "trades": len(trades),

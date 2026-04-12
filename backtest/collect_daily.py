@@ -59,17 +59,37 @@ async def collect(tickers: list[str] | None = None, output_dir: str = "./data/da
 
     client = TradierClient()
     try:
-        # 1. Fetch spot prices
-        print("\nFetching spots...")
-        spots = await client.quotes(tickers)
+        # 1. Fetch spot prices with OHLCV (not just close)
+        # Uses Tradier /markets/history for real open/high/low/close
+        print("\nFetching OHLCV bars...")
+        spots = {}
         spots_path = out / "spots.csv"
         with open(spots_path, "w", newline="") as f:
             w = csv.writer(f)
-            w.writerow(["date", "ticker", "close"])
-            for t, price in spots.items():
-                if price:
-                    w.writerow([today, t, price])
-        print(f"  {len(spots)} spots saved")
+            w.writerow(["date", "ticker", "open", "high", "low", "close"])
+            for ticker in tickers:
+                try:
+                    bars = await client.history(ticker, interval="daily", start=today, end=today)
+                    if bars:
+                        bar = bars[-1]  # today's bar
+                        spots[ticker] = bar.get("close", 0)
+                        w.writerow([today, ticker, bar.get("open", 0), bar.get("high", 0), bar.get("low", 0), bar.get("close", 0)])
+                    else:
+                        # Fallback to quote if history not available yet
+                        q = await client.quotes([ticker])
+                        price = q.get(ticker, 0)
+                        if price:
+                            spots[ticker] = price
+                            w.writerow([today, ticker, price, price, price, price])
+                except Exception as e:
+                    print(f"  [WARN] {ticker} OHLCV: {e}")
+                    # Fallback
+                    q = await client.quotes([ticker])
+                    price = q.get(ticker, 0)
+                    if price:
+                        spots[ticker] = price
+                        w.writerow([today, ticker, price, price, price, price])
+        print(f"  {len(spots)} tickers with OHLCV")
 
         # 2. Fetch chains for each ticker
         summary = {}
@@ -193,12 +213,10 @@ def _append_to_merged(day_dir: Path, merged_dir: Path, today: str):
             if write_header:
                 writer.writeheader()
             for row in reader:
-                # WARNING: Tradier quotes only provide close, not OHLC.
-                # open/high/low set to 0 to make it explicit that intraday
-                # data is missing. The runner/simulator must handle 0 values.
                 writer.writerow({
                     "date": row["date"], "ticker": row["ticker"],
-                    "open": 0, "high": 0, "low": 0, "close": row["close"],
+                    "open": row.get("open", 0), "high": row.get("high", 0),
+                    "low": row.get("low", 0), "close": row.get("close", 0),
                 })
 
     # Append chains per ticker
