@@ -159,11 +159,11 @@ def five_factor_gate(
     factors = []
     score = 0.0
 
-    # Factor 1 — Conviction (SOE grade as proxy)
+    # Factor 1 — Conviction (A+ only — BSM-validated, non-negotiable)
     soe_grade = signal.get("grade", "C")
-    if soe_grade in ("A+", "A"):
+    if soe_grade == "A+":
         score += 1
-        factors.append({"name": "Conviction", "pass": True, "detail": f"SOE {soe_grade}"})
+        factors.append({"name": "Conviction", "pass": True, "detail": "SOE A+ (BSM-validated edge)"})
     else:
         factors.append({"name": "Conviction", "pass": False, "detail": f"SOE {soe_grade} — low"})
 
@@ -232,14 +232,14 @@ def five_factor_gate(
 # ── Exit Ladder ────────────────────────────────────────────────────────
 
 EXIT_LADDER_0DTE = [
-    {"gain_pct": 50, "sell_pct": 50, "label": "Sell 50%, stop → breakeven"},
-    {"gain_pct": 100, "sell_pct": 75, "label": "Sell 75%, let rest ride"},
+    {"gain_pct": 35, "sell_pct": 50, "label": "Sell 50%, stop to breakeven"},
+    {"gain_pct": 75, "sell_pct": 75, "label": "Sell 75%, let rest ride"},
 ]
 EXIT_LADDER_MULTI = [
-    {"gain_pct": 50, "sell_pct": 25, "label": "Sell 25%, stop → breakeven"},
-    {"gain_pct": 100, "sell_pct": 50, "label": "Sell 50%, trail → +50%"},
-    {"gain_pct": 150, "sell_pct": 75, "label": "Sell 75%"},
-    {"gain_pct": 200, "sell_pct": 100, "label": "Trail at +100%"},
+    {"gain_pct": 35, "sell_pct": 25, "label": "Sell 25%, stop to breakeven"},
+    {"gain_pct": 75, "sell_pct": 50, "label": "Sell 50%, trail to +35%"},
+    {"gain_pct": 125, "sell_pct": 75, "label": "Sell 75%"},
+    {"gain_pct": 175, "sell_pct": 100, "label": "Trail at +75%"},
 ]
 
 

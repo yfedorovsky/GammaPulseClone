@@ -24,7 +24,7 @@ def score_to_grade(score: float, max_score: float = 8.0) -> str:
     return "C"
 
 
-MIN_SCORE_THRESHOLD = 3.5  # minimum to generate a signal
+MIN_SCORE_THRESHOLD = 7.2  # A+ only (was 3.5 / B grade — BSM proved only A+ is profitable)
 PARABOLIC_THRESHOLD = 20.0  # 20% gain in 20 days = parabolic
 PARABOLIC_MIN_GRADE = "A"   # require A or A+ on parabolic names
 
@@ -326,21 +326,38 @@ def select_contract(
     if not target_exp:
         return None
 
-    # Select strike: slightly OTM
+    # Detect if this is a PINNING signal — needs different contract logic
+    signal = state.get("signal", "")
+    is_pinning = signal == "PINNING"
+
+    # Select strike
     otype = "CALL" if direction == "BULL" else "PUT"
     strikes = state.get("strikes", [])
 
-    if direction == "BULL":
-        candidates = sorted([s for s in strikes if s["strike"] >= spot], key=lambda s: s["strike"])
+    if is_pinning:
+        # PINNING: buy ATM (highest theta capture when price stays pinned)
+        # Use the nearest ATM strike for maximum theta decay profit
+        atm_candidates = sorted(strikes, key=lambda s: abs(s["strike"] - spot))
+        if not atm_candidates:
+            return None
+        selected = atm_candidates[0]
+        strike = selected["strike"]
+        # For pinning, direction doesn't matter much — pick call if king above, put if below
+        king = state.get("king", spot)
+        otype = "CALL" if king >= spot else "PUT"
     else:
-        candidates = sorted([s for s in strikes if s["strike"] <= spot], key=lambda s: s["strike"], reverse=True)
+        # Standard: slightly OTM directional
+        if direction == "BULL":
+            candidates = sorted([s for s in strikes if s["strike"] >= spot], key=lambda s: s["strike"])
+        else:
+            candidates = sorted([s for s in strikes if s["strike"] <= spot], key=lambda s: s["strike"], reverse=True)
 
-    idx = min(2, len(candidates) - 1) if candidates else -1
-    if idx < 0:
-        return None
+        idx = min(2, len(candidates) - 1) if candidates else -1
+        if idx < 0:
+            return None
 
-    selected = candidates[idx]
-    strike = selected["strike"]
+        selected = candidates[idx]
+        strike = selected["strike"]
 
     # Targets and stops — IV-derived expected move
     # 1-day expected move = spot * IV * sqrt(1/252)
@@ -355,6 +372,39 @@ def select_contract(
     daily_em_pct = daily_em / spot                    # as fraction
     hold_em = spot * iv * math.sqrt(max(target_dte, 1) / 252)  # hold-period EM
 
+    if is_pinning:
+        # PINNING: range-bound trade. Target is price staying near king (theta profit).
+        # Use tight target (0.5x daily EM) and wider stop (floor/ceiling break = pin failed).
+        floor = state.get("floor", 0)
+        ceiling = state.get("ceiling", 0)
+        target = spot + daily_em * 0.3 if otype == "CALL" else spot - daily_em * 0.3
+        target_label = f"Pin hold (+/-{daily_em*0.3/spot*100:.1f}%)"
+        # Stop = floor or ceiling break (structural level violated = pin broke)
+        if floor and ceiling and floor < spot and ceiling > spot:
+            stop = floor if otype == "CALL" else ceiling
+            stop_label = f"Pin break at ${stop}"
+        else:
+            stop = spot - daily_em * 2 if otype == "CALL" else spot + daily_em * 2
+            stop_label = f"Pin break (2x EM)"
+
+        reward = abs(target - spot)
+        risk = abs(stop - spot) or 1
+        rr = reward / risk
+
+        return {
+            "strike": strike,
+            "expiration": target_exp,
+            "option_type": otype,
+            "dte": target_dte,
+            "target": target,
+            "target_label": target_label,
+            "stop": stop,
+            "stop_label": stop_label,
+            "rr_ratio": round(rr, 1),
+            "is_pinning": True,
+        }
+
+    # DIRECTIONAL trades (non-pinning):
     # Minimum target = 1.5x daily EM (reachable within a few days)
     min_target_dist = max(daily_em * 1.5, spot * 0.012)  # at least 1.2%
     # Stop = 2.5x daily EM (wide enough to survive normal intraday noise)
