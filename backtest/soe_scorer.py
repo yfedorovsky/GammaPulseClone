@@ -30,10 +30,11 @@ PARABOLIC_MIN_GRADE = "A"   # require A or A+ on parabolic names
 
 # Signal type historical performance (from initial backtest)
 # Higher-performing signals get a score boost, underperformers get penalized
-# Only surviving signals. Dead families removed per ChatGPT review.
+# Signal type modifiers. SQUEEZE is experimental (separately tracked).
 SIGNAL_TYPE_MODIFIER = {
-    "BREAKDOWN_ACCELERATOR": +0.5,   # 57-64% WR across versions
+    "BREAKDOWN_ACCELERATOR": +0.5,   # 57-64% WR -- validated
     "RESISTANCE_FADE": +0.25,        # needs more data
+    "SQUEEZE_ACCELERATOR": 0.0,      # experimental -- no modifier until validated
 }
 
 
@@ -74,25 +75,40 @@ def determine_direction(state: dict[str, Any]) -> str | None:
     ChatGPT correctly flagged this as conceptually inconsistent with single-leg only.
     """
     signal = state.get("signal", "")
+
+    # BEARISH (validated): negative-gamma amplification
     if signal in ("AIR POCKET", "RESISTANCE"):
         return "BEAR"
-    # BREAKDOWN_ACCELERATOR + RESISTANCE_FADE are the only surviving signals.
-    # Everything else killed for cause:
-    # MAGNET UP / POST_BOTTOM_LAUNCH / MAGNET_BREAKOUT = weak WR, unproven edge
-    # SUPPORT_BOUNCE = 0% WR
-    # PINNING = conceptually broken for single-leg (needs spreads)
+
+    # BULLISH (experimental, separately tracked): positive-gamma squeeze
+    # Mirror of BREAKDOWN: dealers long gamma, forced to buy into strength.
+    # Re-added because:
+    # 1. Academic evidence supports amplification in BOTH directions
+    # 2. Original bullish signals failed with OLD scoring (no trend/dGEX/IV-RV)
+    # 3. Never tested with v3.0 improvements
+    # 4. Trader's primary edge is bullish momentum -- system should match the trader
+    # Tracked independently from BREAKDOWN in results. Will be killed again if
+    # grid search shows no edge.
+    if signal == "MAGNET UP":
+        return "BULL"
+
+    # Still killed:
+    # SUPPORT_BOUNCE = 0% WR, no clear mechanic
+    # PINNING = needs spreads, not single-leg
     # DANGER = too risky
     return None
 
 
 def determine_signal_type(state: dict[str, Any], direction: str) -> str:
-    """Determine the named signal type. Only surviving families."""
+    """Determine the named signal type."""
     signal = state.get("signal", "")
 
     if signal == "AIR POCKET":
         return "BREAKDOWN_ACCELERATOR"
     if signal == "RESISTANCE":
         return "RESISTANCE_FADE"
+    if signal == "MAGNET UP":
+        return "SQUEEZE_ACCELERATOR"  # bullish mirror of BREAKDOWN
     return "DIRECTIONAL"
 
 
@@ -252,19 +268,27 @@ def score_signal(
             score -= 1.0
             reasons.append(f"PARABOLIC: shorting a runner -- high risk")
 
-    # 11. TREND FILTER (ChatGPT recommendation)
-    # For bearish BREAKDOWN: only take when close < 10d MA AND 5d return <= 0
-    # "A lot of negative gamma bearish setup losses happen because you're
-    # trying to short a name that is still trending up"
-    if spot_history and len(spot_history) >= 10 and direction == "BEAR":
+    # 11. TREND FILTER -- works both directions
+    # BEAR: close < 10d MA AND 5d return <= 0 (confirms downtrend)
+    # BULL: close > 10d MA AND 5d return > 0 (confirms uptrend)
+    if spot_history and len(spot_history) >= 10:
         ma_10 = sum(spot_history[-10:]) / 10
         ret_5 = ((spot_history[-1] - spot_history[-5]) / spot_history[-5]) * 100 if len(spot_history) >= 5 and spot_history[-5] > 0 else 0
-        if spot < ma_10 and ret_5 <= 0:
-            score += 0.5
-            reasons.append(f"Trend confirms: below 10d MA, 5d return {ret_5:+.1f}%")
-        elif spot > ma_10:
-            score -= 0.5
-            reasons.append(f"Trend opposes: above 10d MA -- bearish signal in uptrend")
+
+        if direction == "BEAR":
+            if spot < ma_10 and ret_5 <= 0:
+                score += 0.5
+                reasons.append(f"Trend confirms bearish: below 10d MA, 5d {ret_5:+.1f}%")
+            elif spot > ma_10:
+                score -= 0.5
+                reasons.append(f"Trend opposes: above 10d MA -- bearish in uptrend")
+        elif direction == "BULL":
+            if spot > ma_10 and ret_5 > 0:
+                score += 0.5
+                reasons.append(f"Trend confirms bullish: above 10d MA, 5d {ret_5:+.1f}%")
+            elif spot < ma_10:
+                score -= 0.5
+                reasons.append(f"Trend opposes: below 10d MA -- bullish in downtrend")
 
     # 12. DAY-OVER-DAY GEX CHANGE (ChatGPT recommendation)
     # "A breakdown setup is much stronger when negative gamma is not just present,
@@ -275,10 +299,16 @@ def score_signal(
         prev_king = prev_state.get("king", 0)
         curr_king = state.get("king", 0)
 
-        # Negative GEX getting worse (more negative) = stronger breakdown signal
+        # dGEX directional confirmation
         if curr_neg < prev_neg and direction == "BEAR":
             score += 0.5
             reasons.append(f"dGEX: negative gamma WORSENING ({curr_neg/1e9:.1f}B vs {prev_neg/1e9:.1f}B)")
+
+        prev_pos = prev_state.get("pos_gex", 0)
+        curr_pos = state.get("pos_gex", 0)
+        if curr_pos > prev_pos and direction == "BULL":
+            score += 0.5
+            reasons.append(f"dGEX: positive gamma INCREASING ({curr_pos/1e9:.1f}B vs {prev_pos/1e9:.1f}B)")
 
         # King shifted = structural change (important either direction)
         if curr_king != prev_king and prev_king > 0:
