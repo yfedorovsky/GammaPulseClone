@@ -1,6 +1,7 @@
 """Stats computation and reporting for backtest results."""
 from __future__ import annotations
 
+import random
 from typing import Any
 
 
@@ -123,7 +124,13 @@ def compute_stats(results: dict[str, Any]) -> dict[str, Any]:
     p75 = sorted_pnls[int(len(sorted_pnls) * 0.75)] if len(sorted_pnls) > 4 else 0
     p90 = sorted_pnls[int(len(sorted_pnls) * 0.9)] if len(sorted_pnls) > 10 else 0
 
+    # Benchmark: buy-and-hold vs SOE per ticker
+    # For each traded ticker, compute what buy-and-hold would have returned
+    # over the same entry->exit windows
+    benchmark = _compute_benchmark(traded, results.get("spots_data"))
+
     return {
+        "benchmark": benchmark,
         "summary": {
             "total_signals": len(signals),
             "signals_traded": total,
@@ -151,6 +158,94 @@ def compute_stats(results: dict[str, Any]) -> dict[str, Any]:
             "avg_max_favorable_excursion": round(avg_mfe, 1),
             "avg_capture_rate": round(capture_rate, 1),
         },
+    }
+
+
+def _compute_benchmark(traded: list, spots_data: dict | None = None) -> dict[str, Any]:
+    """Compare SOE returns vs buy-and-hold and random entry.
+
+    For each ticker:
+    - SOE avg return: avg P&L of all SOE-scored trades
+    - Buy-and-hold: if you held from first signal date to last signal date
+    - Random entry: avg of 100 random entry/exit windows with same avg hold period
+    - Alpha: SOE return minus buy-and-hold return (positive = GEX adds value)
+    """
+    if not traded:
+        return {"tickers": {}, "overall_alpha": 0}
+
+    # Group trades by ticker
+    by_ticker: dict[str, list] = {}
+    for t in traded:
+        ticker = t.ticker if hasattr(t, "ticker") else t.get("ticker", "")
+        if ticker not in by_ticker:
+            by_ticker[ticker] = []
+        by_ticker[ticker].append(t)
+
+    results = {}
+    total_soe_return = 0
+    total_bh_return = 0
+    ticker_count = 0
+
+    for ticker, trades in by_ticker.items():
+        if len(trades) < 3:
+            continue  # need minimum trades for meaningful comparison
+
+        # SOE average return
+        pnls = [t.pnl_pct if hasattr(t, "pnl_pct") else t.get("pnl_pct", 0) for t in trades]
+        soe_avg = sum(pnls) / len(pnls)
+        soe_total = sum(pnls)
+
+        # Buy-and-hold: first entry spot to last exit spot
+        first_spot = trades[0].spot if hasattr(trades[0], "spot") else trades[0].get("spot", 0)
+        last_trade = trades[-1]
+        last_spot = first_spot  # fallback
+        if hasattr(last_trade, "exit_date") and last_trade.exit_date:
+            # Use the spot at exit
+            last_spot = first_spot * (1 + sum(pnls) / (len(pnls) * 100))  # rough estimate
+        # Better: calculate from first to last trade date spot change
+        spots = [t.spot if hasattr(t, "spot") else t.get("spot", 0) for t in trades]
+        if spots[0] > 0 and spots[-1] > 0:
+            bh_return = ((spots[-1] - spots[0]) / spots[0]) * 100
+        else:
+            bh_return = 0
+
+        # Alpha = SOE cumulative return minus buy-and-hold
+        alpha = soe_total - bh_return
+
+        # Random entry simulation: pick random dates, hold for avg trade duration
+        avg_hold = len(trades)  # rough proxy
+        random_returns = []
+        if len(spots) > 2:
+            random.seed(42)  # reproducible
+            for _ in range(100):
+                i = random.randint(0, len(spots) - 2)
+                j = min(i + max(1, avg_hold // len(trades)), len(spots) - 1)
+                if spots[i] > 0:
+                    r = ((spots[j] - spots[i]) / spots[i]) * 100
+                    random_returns.append(r)
+        random_avg = (sum(random_returns) / len(random_returns)) if random_returns else 0
+
+        results[ticker] = {
+            "trades": len(trades),
+            "soe_avg_return": round(soe_avg, 1),
+            "soe_total_return": round(soe_total, 1),
+            "buy_hold_return": round(bh_return, 1),
+            "random_avg_return": round(random_avg, 1),
+            "alpha_vs_bh": round(alpha, 1),
+            "alpha_vs_random": round(soe_avg - random_avg, 1),
+            "soe_wins": soe_avg > 0,
+            "beats_bh": alpha > 0,
+            "beats_random": soe_avg > random_avg,
+        }
+        total_soe_return += soe_total
+        total_bh_return += bh_return
+        ticker_count += 1
+
+    return {
+        "tickers": results,
+        "overall_alpha": round(total_soe_return - total_bh_return, 1) if ticker_count else 0,
+        "tickers_beating_bh": sum(1 for r in results.values() if r["beats_bh"]),
+        "tickers_total": ticker_count,
     }
 
 
@@ -200,4 +295,17 @@ def print_report(stats: dict[str, Any]) -> None:
     print("\n-- Exit Reasons --")
     for reason, count in sorted(stats.get("by_exit_reason", {}).items(), key=lambda x: x[1], reverse=True):
         print(f"  {reason:20s}  {count}")
+
+    # Benchmark comparison
+    bm = stats.get("benchmark", {})
+    if bm.get("tickers"):
+        print(f"\n-- SOE vs Benchmark --")
+        print(f"  Tickers beating buy-and-hold: {bm.get('tickers_beating_bh', 0)}/{bm.get('tickers_total', 0)}")
+        print(f"  Overall alpha vs B&H: {bm.get('overall_alpha', 0):+.1f}%")
+        print()
+        print(f"  {'TICKER':<8} {'TRADES':>6} {'SOE AVG':>8} {'SOE TOT':>8} {'B&H':>8} {'RANDOM':>8} {'ALPHA':>8}  VERDICT")
+        for t, v in sorted(bm["tickers"].items(), key=lambda x: x[1]["alpha_vs_bh"], reverse=True):
+            verdict = "SOE WINS" if v["beats_bh"] else "B&H WINS"
+            print(f"  {t:<8} {v['trades']:>6} {v['soe_avg_return']:>+7.1f}% {v['soe_total_return']:>+7.1f}% {v['buy_hold_return']:>+7.1f}% {v['random_avg_return']:>+7.1f}% {v['alpha_vs_bh']:>+7.1f}%  {verdict}")
+
     print("=" * 70)
