@@ -101,12 +101,14 @@ def score_signal(
     direction: str,
     confluence: dict[str, Any] | None = None,
     spot_history: list[float] | None = None,
+    prev_state: dict[str, Any] | None = None,
 ) -> tuple[float, str, list[str]]:
-    """Score a potential signal using the 8-factor SOE system.
+    """Score a potential signal using the enhanced factor system.
 
     Args:
         state: GEX levels dict from gex_engine.compute_levels()
                Must also contain 'spot' key.
+        prev_state: yesterday's GEX state (for day-over-day change factors)
         direction: "BULL" or "BEAR"
         confluence: dict of {SPY: state, QQQ: state, IWM: state} for factor 7
         spot_history: list of recent closing prices for parabolic detection
@@ -242,25 +244,71 @@ def score_signal(
             reasons.append(f"Signal type {sig_type} historically weak ({modifier})")
 
     # 10. Parabolic regime filter
-    # On stocks up >20% in 20 days, bullish GEX signals don't add edge — it's just beta.
-    # Don't penalize, but don't give extra credit either. Require higher minimum grade.
     parabolic = is_parabolic(spot_history)
     if parabolic:
         if direction == "BULL":
-            # Neutral — don't suppress but note the regime
-            reasons.append(f"PARABOLIC: ticker up >{PARABOLIC_THRESHOLD:.0f}% in 20d — bullish signal may be beta, not GEX edge")
+            reasons.append(f"PARABOLIC: up >{PARABOLIC_THRESHOLD:.0f}% in 20d")
         else:
-            # Counter-trend on a moonshot = dangerous, penalize
             score -= 1.0
-            reasons.append(f"PARABOLIC: shorting a >{PARABOLIC_THRESHOLD:.0f}% runner — high risk")
+            reasons.append(f"PARABOLIC: shorting a runner -- high risk")
 
-    score = max(0, score)  # don't go below 0
+    # 11. TREND FILTER (ChatGPT recommendation)
+    # For bearish BREAKDOWN: only take when close < 10d MA AND 5d return <= 0
+    # "A lot of negative gamma bearish setup losses happen because you're
+    # trying to short a name that is still trending up"
+    if spot_history and len(spot_history) >= 10 and direction == "BEAR":
+        ma_10 = sum(spot_history[-10:]) / 10
+        ret_5 = ((spot_history[-1] - spot_history[-5]) / spot_history[-5]) * 100 if len(spot_history) >= 5 and spot_history[-5] > 0 else 0
+        if spot < ma_10 and ret_5 <= 0:
+            score += 0.5
+            reasons.append(f"Trend confirms: below 10d MA, 5d return {ret_5:+.1f}%")
+        elif spot > ma_10:
+            score -= 0.5
+            reasons.append(f"Trend opposes: above 10d MA -- bearish signal in uptrend")
+
+    # 12. DAY-OVER-DAY GEX CHANGE (ChatGPT recommendation)
+    # "A breakdown setup is much stronger when negative gamma is not just present,
+    # but worsening"
+    if prev_state:
+        prev_neg = prev_state.get("neg_gex", 0)
+        curr_neg = state.get("neg_gex", 0)
+        prev_king = prev_state.get("king", 0)
+        curr_king = state.get("king", 0)
+
+        # Negative GEX getting worse (more negative) = stronger breakdown signal
+        if curr_neg < prev_neg and direction == "BEAR":
+            score += 0.5
+            reasons.append(f"dGEX: negative gamma WORSENING ({curr_neg/1e9:.1f}B vs {prev_neg/1e9:.1f}B)")
+
+        # King shifted = structural change (important either direction)
+        if curr_king != prev_king and prev_king > 0:
+            reasons.append(f"dKing: king shifted ${prev_king} -> ${curr_king}")
+
+    # 13. IV vs REALIZED VOL (ChatGPT recommendation)
+    # "Cheap options are not enough; they need to be underpricing movement"
+    if spot_history and len(spot_history) >= 10 and iv:
+        import math
+        # 10-day realized vol (annualized)
+        returns = [(spot_history[i] - spot_history[i-1]) / spot_history[i-1]
+                   for i in range(-9, 0) if spot_history[i-1] > 0]
+        if returns:
+            rv_daily = (sum(r**2 for r in returns) / len(returns)) ** 0.5
+            rv_annual = rv_daily * math.sqrt(252)
+            iv_rv_ratio = iv / rv_annual if rv_annual > 0 else 1.0
+
+            if iv_rv_ratio < 0.8:
+                score += 0.5
+                reasons.append(f"IV/RV: {iv_rv_ratio:.2f} -- IV underpricing movement")
+            elif iv_rv_ratio > 1.5:
+                score -= 0.25
+                reasons.append(f"IV/RV: {iv_rv_ratio:.2f} -- IV overpricing, options expensive")
+
+    score = max(0, score)
     grade = score_to_grade(score)
 
-    # On parabolic names, enforce minimum grade for entry
     if parabolic and direction == "BULL" and grade not in ("A+", "A"):
-        reasons.append(f"PARABOLIC GATE: requires {PARABOLIC_MIN_GRADE}+ grade, got {grade}")
-        grade = "C"  # force below threshold so it won't trade
+        reasons.append(f"PARABOLIC GATE: requires {PARABOLIC_MIN_GRADE}+")
+        grade = "C"
 
     return score, grade, reasons
 
@@ -270,6 +318,8 @@ def select_contract(
     direction: str,
     available_expirations: list[str],
     trade_date: datetime.date | None = None,
+    strike_offset: int = 2,      # 0=ATM, 1=1st OTM, 2=2nd OTM (default)
+    target_dte: int = 14,        # sweet spot DTE (7, 14, or 21)
 ) -> dict[str, Any] | None:
     """Select the optimal contract for the signal.
 
@@ -288,9 +338,9 @@ def select_contract(
 
     today = trade_date or datetime.date.today()
 
-    # Find expiration 7-28 DTE (sweet spot: 14 DTE)
-    target_exp = None
-    target_dte = 0
+    # Find expiration closest to target_dte (configurable: 7, 14, or 21)
+    best_exp = None
+    best_dte = 0
 
     for exp_str in available_expirations:
         if exp_str.startswith("MACRO"):
@@ -298,14 +348,14 @@ def select_contract(
         try:
             exp_date = datetime.date.fromisoformat(exp_str)
             dte = (exp_date - today).days
-            if 7 <= dte <= 28:
-                if target_exp is None or abs(dte - 14) < abs(target_dte - 14):
-                    target_exp = exp_str
-                    target_dte = dte
+            if 3 <= dte <= 35:
+                if best_exp is None or abs(dte - target_dte) < abs(best_dte - target_dte):
+                    best_exp = exp_str
+                    best_dte = dte
         except ValueError:
             continue
 
-    if not target_exp:
+    if not best_exp:
         for exp_str in available_expirations:
             if exp_str.startswith("MACRO"):
                 continue
@@ -313,13 +363,13 @@ def select_contract(
                 exp_date = datetime.date.fromisoformat(exp_str)
                 dte = (exp_date - today).days
                 if dte >= 3:
-                    target_exp = exp_str
-                    target_dte = dte
+                    best_exp = exp_str
+                    best_dte = dte
                     break
             except ValueError:
                 continue
 
-    if not target_exp:
+    if not best_exp:
         return None
 
     # Detect if this is a PINNING signal — needs different contract logic
@@ -348,7 +398,7 @@ def select_contract(
         else:
             candidates = sorted([s for s in strikes if s["strike"] <= spot], key=lambda s: s["strike"], reverse=True)
 
-        idx = min(2, len(candidates) - 1) if candidates else -1
+        idx = min(strike_offset, len(candidates) - 1) if candidates else -1
         if idx < 0:
             return None
 
@@ -366,7 +416,7 @@ def select_contract(
     import math
     daily_em = spot * iv * math.sqrt(1 / 252)       # 1-day expected move in $
     daily_em_pct = daily_em / spot                    # as fraction
-    hold_em = spot * iv * math.sqrt(max(target_dte, 1) / 252)  # hold-period EM
+    hold_em = spot * iv * math.sqrt(max(best_dte, 1) / 252)  # hold-period EM
 
     if is_pinning:
         # PINNING: range-bound trade. Target is price staying near king (theta profit).
@@ -389,9 +439,9 @@ def select_contract(
 
         return {
             "strike": strike,
-            "expiration": target_exp,
+            "expiration": best_exp,
             "option_type": otype,
-            "dte": target_dte,
+            "dte": best_dte,
             "target": target,
             "target_label": target_label,
             "stop": stop,
@@ -446,9 +496,9 @@ def select_contract(
 
     return {
         "strike": strike,
-        "expiration": target_exp,
+        "expiration": best_exp,
         "option_type": otype,
-        "dte": target_dte,
+        "dte": best_dte,
         "target": target,
         "target_label": target_label,
         "stop": stop,

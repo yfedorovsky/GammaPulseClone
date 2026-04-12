@@ -141,6 +141,7 @@ class BacktestEngine:
         # Full spot history per ticker: {ticker: [(date, open, high, low, close), ...]}
         # Used for honest benchmark computation in results.py
         self._spot_series: dict[str, list[tuple]] = {}
+        self._prev_gex_state: dict[str, dict] = {}  # ticker -> yesterday's GEX state
 
     def set_confluence(self, spy_state: dict, qqq_state: dict, iwm_state: dict) -> None:
         """Set the confluence data for the current day."""
@@ -226,7 +227,22 @@ class BacktestEngine:
             return day_signals
 
         # Score (with spot history for parabolic detection)
-        score, grade, reasons = score_signal(state, direction, self._confluence_cache, self._spot_history.get(ticker))
+        # Score with full context: confluence, spot history, previous GEX state
+        score, grade, reasons = score_signal(
+            state, direction,
+            confluence=self._confluence_cache,
+            spot_history=self._spot_history.get(ticker),
+            prev_state=self._prev_gex_state.get(ticker),
+        )
+
+        # Save current GEX state for tomorrow's dGEX comparison
+        self._prev_gex_state[ticker] = {
+            "king": state.get("king", 0),
+            "neg_gex": state.get("neg_gex", 0),
+            "pos_gex": state.get("pos_gex", 0),
+            "iv": state.get("iv", 0),
+            "regime": state.get("regime", ""),
+        }
 
         if score < MIN_SCORE_THRESHOLD:
             return day_signals
