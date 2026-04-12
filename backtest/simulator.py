@@ -19,6 +19,7 @@ from .gex_engine import compute_levels
 from .soe_scorer import (
     determine_direction,
     determine_signal_type,
+    is_parabolic,
     score_signal,
     select_contract,
     MIN_SCORE_THRESHOLD,
@@ -90,6 +91,7 @@ class SignalRecord:
     iv: float
     reasons: list[str]
     traded: bool  # whether we actually opened a position
+    is_parabolic: bool = False  # ticker was in parabolic mode at signal time
     outcome: str = ""
     pnl_pct: float = 0.0
     exit_reason: str = ""
@@ -127,7 +129,8 @@ class BacktestEngine:
 
         self._signal_id = 0
         self._confluence_cache: dict[str, dict] = {}
-        self._daily_signals_count: dict[str, int] = {}  # date → count (dedup)
+        self._daily_signals_count: dict[str, int] = {}
+        self._spot_history: dict[str, list[float]] = {}  # ticker -> last 30 closes for parabolic detection
 
     def set_confluence(self, spy_state: dict, qqq_state: dict, iwm_state: dict) -> None:
         """Set the confluence data for the current day."""
@@ -172,6 +175,13 @@ class BacktestEngine:
         # 2. Check existing positions for exit signals
         self._check_exits(ticker, date, spot, daily_high, daily_low, state)
 
+        # Track spot history for parabolic detection
+        if ticker not in self._spot_history:
+            self._spot_history[ticker] = []
+        self._spot_history[ticker].append(spot)
+        if len(self._spot_history[ticker]) > 30:
+            self._spot_history[ticker] = self._spot_history[ticker][-30:]
+
         # 3. Generate new signals
         day_signals = []
 
@@ -188,8 +198,8 @@ class BacktestEngine:
         if direction is None:
             return day_signals
 
-        # Score
-        score, grade, reasons = score_signal(state, direction, self._confluence_cache)
+        # Score (with spot history for parabolic detection)
+        score, grade, reasons = score_signal(state, direction, self._confluence_cache, self._spot_history.get(ticker))
 
         if score < MIN_SCORE_THRESHOLD:
             return day_signals
@@ -254,6 +264,7 @@ class BacktestEngine:
             iv=state.get("iv", 0),
             reasons=reasons,
             traded=traded,
+            is_parabolic=is_parabolic(self._spot_history.get(ticker)),
         )
 
         if traded:

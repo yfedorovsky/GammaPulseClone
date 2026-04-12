@@ -25,6 +25,8 @@ def score_to_grade(score: float, max_score: float = 8.0) -> str:
 
 
 MIN_SCORE_THRESHOLD = 3.5  # minimum to generate a signal
+PARABOLIC_THRESHOLD = 20.0  # 20% gain in 20 days = parabolic
+PARABOLIC_MIN_GRADE = "A"   # require A or A+ on parabolic names
 
 # Signal type historical performance (from initial backtest)
 # Higher-performing signals get a score boost, underperformers get penalized
@@ -37,6 +39,35 @@ SIGNAL_TYPE_MODIFIER = {
     "MAGNET_BREAKOUT": -0.25,        # slight penalty, don't kill
     "DIRECTIONAL": 0.0,
 }
+
+
+def is_parabolic(spot_history: list[float] | None = None, threshold: float = PARABOLIC_THRESHOLD) -> bool:
+    """Check if a ticker is in parabolic mode (up >20% in last 20 trading days).
+
+    Args:
+        spot_history: list of recent closing prices (most recent last), at least 20 entries
+        threshold: percentage gain that qualifies as parabolic
+    """
+    if not spot_history or len(spot_history) < 20:
+        return False
+    old = spot_history[-20]
+    current = spot_history[-1]
+    if old <= 0:
+        return False
+    gain_pct = ((current - old) / old) * 100
+    return gain_pct > threshold
+
+
+def dynamic_pinning_threshold(iv: float) -> float:
+    """Dynamic pinning threshold: 0.3% * (IV / 0.25).
+
+    Higher IV = wider pinning zone (volatile stocks need more room).
+    At 25% IV -> 0.3% (default). At 50% IV -> 0.6%. At 100% IV -> 1.2%.
+    """
+    base = 0.003  # 0.3%
+    if iv <= 0:
+        return base
+    return base * (iv / 0.25)
 
 
 def determine_direction(state: dict[str, Any]) -> str | None:
@@ -73,6 +104,7 @@ def score_signal(
     state: dict[str, Any],
     direction: str,
     confluence: dict[str, Any] | None = None,
+    spot_history: list[float] | None = None,
 ) -> tuple[float, str, list[str]]:
     """Score a potential signal using the 8-factor SOE system.
 
@@ -81,6 +113,7 @@ def score_signal(
                Must also contain 'spot' key.
         direction: "BULL" or "BEAR"
         confluence: dict of {SPY: state, QQQ: state, IWM: state} for factor 7
+        spot_history: list of recent closing prices for parabolic detection
 
     Returns: (score, grade, reasons)
     """
@@ -124,11 +157,12 @@ def score_signal(
         score += 0.5
         reasons.append(f"-GEX King ${king} above = resistance")
 
-    # 3. King distance (0.5-3% sweet spot)
+    # 3. King distance (0.5-3% sweet spot) with dynamic pinning threshold
+    pin_thresh = dynamic_pinning_threshold(iv)
     if 0.005 <= king_dist_pct <= 0.03:
         score += 1
         reasons.append(f"King distance {king_dist_pct*100:.1f}% in sweet spot")
-    elif king_dist_pct < 0.003:
+    elif king_dist_pct < pin_thresh:
         score += 0.5
 
     # 4. Floor/ceiling confirmation
@@ -211,8 +245,27 @@ def score_signal(
         else:
             reasons.append(f"Signal type {sig_type} historically weak ({modifier})")
 
+    # 10. Parabolic regime filter
+    # On stocks up >20% in 20 days, bullish GEX signals don't add edge — it's just beta.
+    # Don't penalize, but don't give extra credit either. Require higher minimum grade.
+    parabolic = is_parabolic(spot_history)
+    if parabolic:
+        if direction == "BULL":
+            # Neutral — don't suppress but note the regime
+            reasons.append(f"PARABOLIC: ticker up >{PARABOLIC_THRESHOLD:.0f}% in 20d — bullish signal may be beta, not GEX edge")
+        else:
+            # Counter-trend on a moonshot = dangerous, penalize
+            score -= 1.0
+            reasons.append(f"PARABOLIC: shorting a >{PARABOLIC_THRESHOLD:.0f}% runner — high risk")
+
     score = max(0, score)  # don't go below 0
     grade = score_to_grade(score)
+
+    # On parabolic names, enforce minimum grade for entry
+    if parabolic and direction == "BULL" and grade not in ("A+", "A"):
+        reasons.append(f"PARABOLIC GATE: requires {PARABOLIC_MIN_GRADE}+ grade, got {grade}")
+        grade = "C"  # force below threshold so it won't trade
+
     return score, grade, reasons
 
 

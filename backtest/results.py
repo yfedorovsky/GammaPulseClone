@@ -129,8 +129,30 @@ def compute_stats(results: dict[str, Any]) -> dict[str, Any]:
     # over the same entry->exit windows
     benchmark = _compute_benchmark(traded, results.get("spots_data"))
 
+    # Regime split: choppy vs parabolic
+    parabolic_trades = [s for s in traded if getattr(s, 'is_parabolic', False)]
+    choppy_trades = [s for s in traded if not getattr(s, 'is_parabolic', False)]
+
+    def _regime_stats(subset):
+        if not subset:
+            return {"trades": 0, "wins": 0, "win_rate": 0, "avg_pnl": 0}
+        w = sum(1 for s in subset if s.outcome == "WIN")
+        pnl_list = [s.pnl_pct for s in subset]
+        return {
+            "trades": len(subset),
+            "wins": w,
+            "win_rate": round(w / len(subset) * 100, 1),
+            "avg_pnl": round(sum(pnl_list) / len(pnl_list), 1),
+        }
+
+    regime_split = {
+        "choppy": _regime_stats(choppy_trades),
+        "parabolic": _regime_stats(parabolic_trades),
+    }
+
     return {
         "benchmark": benchmark,
+        "regime_split": regime_split,
         "summary": {
             "total_signals": len(signals),
             "signals_traded": total,
@@ -295,6 +317,15 @@ def print_report(stats: dict[str, Any]) -> None:
     print("\n-- Exit Reasons --")
     for reason, count in sorted(stats.get("by_exit_reason", {}).items(), key=lambda x: x[1], reverse=True):
         print(f"  {reason:20s}  {count}")
+
+    # Regime split
+    rs = stats.get("regime_split", {})
+    if rs:
+        print(f"\n-- Regime Split --")
+        for regime in ["choppy", "parabolic"]:
+            r = rs.get(regime, {})
+            if r.get("trades"):
+                print(f"  {regime.upper():<12} {r['win_rate']:5.1f}% WR  ({r['wins']}W / {r['trades']}T)  avg {r['avg_pnl']:+.1f}%")
 
     # Benchmark comparison
     bm = stats.get("benchmark", {})

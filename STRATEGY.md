@@ -294,10 +294,41 @@ Data format (CSV):
 
 ---
 
-## Open Questions for Review
+## Parabolic Regime Filter (NEW)
 
-1. Is the option P&L leverage model (3-8x based on DTE) realistic enough, or should we use Black-Scholes repricing?
-2. Should we add a momentum/trend filter to suppress bullish GEX signals on stocks already up >20% in 20 days?
-3. Is the 0.3% pinning threshold too tight or too loose?
-4. Should the signal-type modifier be adaptive (update from rolling backtest results) rather than static?
-5. How should we handle the photonics problem — stocks that went 100-500% where every bullish signal "worked" but GEX didn't add edge over buy-and-hold?
+Addresses the "photonics problem" — stocks up 100-500% where every bullish GEX signal "worked" but was just beta, not GEX edge.
+
+### Detection
+```python
+is_parabolic = (20-day return > 20%)
+```
+
+### Effect on Scoring
+- **Bullish signals on parabolic names**: No score bonus/penalty, but require minimum A grade to trade. B+ and below are suppressed.
+- **Bearish signals on parabolic names**: -1.0 score penalty (counter-trend on moonshot = dangerous).
+- **Choppy names**: No change — standard scoring applies.
+
+### Dynamic Pinning Threshold
+```python
+pinning_threshold = 0.3% * (IV / 25%)
+```
+At 25% IV -> 0.3% (default). At 50% IV -> 0.6%. At 100% IV -> 1.2%.
+Higher vol = wider pinning zone, prevents false pinning signals on volatile photonics names.
+
+### Regime Split Reporting
+Backtest results now report separately for choppy vs parabolic tickers:
+- **CHOPPY**: GEX defines real boundaries, king/floor/ceiling are structural. This is where the edge lives.
+- **PARABOLIC**: GEX levels get overrun by momentum. Signals may "work" but not better than buy-and-hold.
+
+### Benchmark Comparison
+Every backtest now includes per-ticker SOE vs buy-and-hold vs random entry comparison. If a ticker's A+ signals don't beat buy-and-hold, the engine should downweight or drop that ticker from strict GEX rules.
+
+---
+
+## Open Questions for Review (Updated)
+
+1. Is the option P&L leverage model (3-8x based on DTE) realistic enough, or should we use Black-Scholes repricing with EODHD Greeks?
+2. ~~Should we add a momentum/trend filter?~~ **DONE** — parabolic filter implemented (>20% in 20d).
+3. ~~Is the 0.3% pinning threshold too tight?~~ **DONE** — dynamic threshold: 0.3% * (IV/25%).
+4. Should the signal-type modifier be adaptive (update from rolling backtest results) rather than static? **Planned** — after every 20 trades per ticker, recompute WR and update modifiers.
+5. ~~How to handle photonics problem?~~ **DONE** — parabolic regime filter + benchmark comparison + require A+ grade on parabolic names.
