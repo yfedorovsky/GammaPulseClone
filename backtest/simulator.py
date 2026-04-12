@@ -152,6 +152,7 @@ class BacktestEngine:
         spot: float,
         daily_high: float | None = None,
         daily_low: float | None = None,
+        daily_open: float | None = None,
         available_expirations: list[str] | None = None,
         earnings_dates: dict[str, list[str]] | None = None,
     ) -> list[SignalRecord]:
@@ -177,8 +178,9 @@ class BacktestEngine:
         state["spot"] = spot
 
         # 2. Execute pending entries from YESTERDAY's signal (T+1 entry)
-        # This prevents data leakage: signal from day T, entry at day T+1 open
-        self._execute_pending_entries(ticker, date, spot)
+        # Uses TODAY'S OPEN price, not close, for realistic fill
+        entry_price = daily_open if daily_open and daily_open > 0 else spot
+        self._execute_pending_entries(ticker, date, entry_price)
 
         # 3. Check existing positions for exit signals
         self._check_exits(ticker, date, spot, daily_high, daily_low, state)
@@ -245,7 +247,11 @@ class BacktestEngine:
         # Per-ticker EV gate: block tickers with negative expectancy (5+ trades)
         ticker_ev_blocked = False
         if ts.trades >= 5:
-            ticker_ev = (ts.win_rate / 100 * actual_avg_win) - ((1 - ts.win_rate / 100) * actual_avg_loss)
+            t_win_pnls = [p for p in ts.pnls if p > 0]
+            t_loss_pnls = [p for p in ts.pnls if p <= 0]
+            t_avg_win = (sum(t_win_pnls) / len(t_win_pnls)) if t_win_pnls else 0
+            t_avg_loss = abs(sum(t_loss_pnls) / len(t_loss_pnls)) if t_loss_pnls else 100
+            ticker_ev = (ts.win_rate / 100 * t_avg_win) - ((1 - ts.win_rate / 100) * t_avg_loss)
             if ticker_ev < 0:
                 ticker_ev_blocked = True
 

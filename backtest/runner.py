@@ -202,6 +202,7 @@ def run_backtest(
                 spot=spot,
                 daily_high=spot_data.get("high"),
                 daily_low=spot_data.get("low"),
+                daily_open=spot_data.get("open"),
                 available_expirations=exps,
             )
 

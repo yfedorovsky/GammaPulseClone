@@ -30,14 +30,10 @@ PARABOLIC_MIN_GRADE = "A"   # require A or A+ on parabolic names
 
 # Signal type historical performance (from initial backtest)
 # Higher-performing signals get a score boost, underperformers get penalized
+# Only surviving signals. Dead families removed per ChatGPT review.
 SIGNAL_TYPE_MODIFIER = {
-    "BREAKDOWN_ACCELERATOR": +0.5,   # 72.4% WR — strong edge
-    "PINNING_PREMIUM_SELL": +0.5,    # 68.2% WR — strong edge
-    "RESISTANCE_FADE": +0.25,        # high WR (small sample)
-    "SUPPORT_BOUNCE": 0.0,           # neutral
-    "POST_BOTTOM_LAUNCH": 0.0,       # keep neutral — don't suppress
-    "MAGNET_BREAKOUT": -0.25,        # slight penalty, don't kill
-    "DIRECTIONAL": 0.0,
+    "BREAKDOWN_ACCELERATOR": +0.5,   # 57-64% WR across versions
+    "RESISTANCE_FADE": +0.25,        # needs more data
 }
 
 
@@ -90,18 +86,9 @@ def determine_direction(state: dict[str, Any]) -> str | None:
 
 
 def determine_signal_type(state: dict[str, Any], direction: str) -> str:
-    """Determine the named signal type."""
+    """Determine the named signal type. Only surviving families."""
     signal = state.get("signal", "")
-    spot = state.get("spot", 0)
-    king = state.get("king", 0)
-    king_dist = abs(king - spot) / spot if spot else 0
 
-    if signal == "PINNING":
-        return "PINNING_PREMIUM_SELL"
-    if signal == "MAGNET UP":
-        return "MAGNET_BREAKOUT" if king_dist > 0.02 else "POST_BOTTOM_LAUNCH"
-    if signal == "SUPPORT":
-        return "SUPPORT_BOUNCE"
     if signal == "AIR POCKET":
         return "BREAKDOWN_ACCELERATOR"
     if signal == "RESISTANCE":
