@@ -71,13 +71,20 @@ def dynamic_pinning_threshold(iv: float) -> float:
 
 
 def determine_direction(state: dict[str, Any]) -> str | None:
-    """Determine trade direction from GEX structure."""
+    """Determine trade direction from GEX structure.
+
+    PINNING excluded: it's a premium-selling structure (iron condors/butterflies),
+    NOT a directional single-leg trade. Buying ATM call/put when pinned = theta bleed.
+    ChatGPT correctly flagged this as conceptually inconsistent with single-leg only.
+    """
     signal = state.get("signal", "")
-    if signal in ("MAGNET UP", "SUPPORT", "PINNING"):
+    if signal in ("MAGNET UP", "SUPPORT"):
         return "BULL"
     elif signal in ("AIR POCKET", "RESISTANCE"):
         return "BEAR"
-    return None  # DANGER = too risky
+    # PINNING = skip (need multi-leg for premium selling)
+    # DANGER = skip (too risky)
+    return None
 
 
 def determine_signal_type(state: dict[str, Any], direction: str) -> str:

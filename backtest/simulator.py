@@ -226,13 +226,32 @@ class BacktestEngine:
         # 5-factor gate
         gate = five_factor_gate(sig_dict, flow_confirmed=None, earnings_dates=earnings_dates, trade_date=date)
 
-        # Kelly sizing
+        # Kelly sizing -- use actual BSM payoff ratio from ticker history
         ts = self.ticker_stats.get(ticker, TickerStats())
-        ks = kelly_size(ts.win_rate, ts.tier, is_0dte=(contract["dte"] == 0), cb_level=self.circuit_breaker.level)
+        win_pnls = [p for p in ts.pnls if p > 0]
+        loss_pnls = [p for p in ts.pnls if p <= 0]
+        actual_avg_win = (sum(win_pnls) / len(win_pnls)) if win_pnls else 46.3  # BSM default
+        actual_avg_loss = abs(sum(loss_pnls) / len(loss_pnls)) if loss_pnls else 78.7  # BSM default
+        ks = kelly_size(
+            ts.win_rate, ts.tier,
+            is_0dte=(contract["dte"] == 0),
+            cb_level=self.circuit_breaker.level,
+            avg_win=actual_avg_win,
+            avg_loss=actual_avg_loss,
+        )
+
+        # Per-ticker EV gate: block tickers with negative expectancy (5+ trades)
+        ticker_ev_blocked = False
+        if ts.trades >= 5:
+            ticker_ev = (ts.win_rate / 100 * actual_avg_win) - ((1 - ts.win_rate / 100) * actual_avg_loss)
+            if ticker_ev < 0:
+                ticker_ev_blocked = True
 
         # Determine if we trade
         traded = False
-        if gate["label"] != "INVALID" and not gate["earnings_blocked"]:
+        if ticker_ev_blocked:
+            pass  # skip -- negative expectancy on this ticker
+        elif gate["label"] != "INVALID" and not gate["earnings_blocked"]:
             if len(self.positions) < self.max_positions:
                 ticker_positions = sum(1 for p in self.positions if p.ticker == ticker)
                 if ticker_positions < self.max_per_ticker:

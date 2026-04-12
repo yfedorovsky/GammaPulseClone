@@ -10,9 +10,14 @@ from typing import Any
 
 # ── Base Rate Tiers ────────────────────────────────────────────────────
 
-PAYOFF_RATIOS = {"PROVEN": 12.0, "DEVELOPING": 4.4, "UNPROVEN": 2.2, "BELOW_FLOOR": 1.0}
+# OLD payoff ratios from leverage model -- DO NOT USE for Kelly
+# PAYOFF_RATIOS = {"PROVEN": 12.0, "DEVELOPING": 4.4, "UNPROVEN": 2.2, "BELOW_FLOOR": 1.0}
+
+# BSM-calibrated default payoff ratios (avg_win / avg_loss)
+# These are fallbacks -- actual per-ticker ratios computed from trade log when available
+PAYOFF_RATIOS = {"PROVEN": 0.8, "DEVELOPING": 0.6, "UNPROVEN": 0.5, "BELOW_FLOOR": 0.3}
 TIER_SIZE_MOD = {"PROVEN": 1.0, "DEVELOPING": 0.75, "UNPROVEN": 0.5, "BELOW_FLOOR": 0.0}
-KELLY_BASE_RATE = 0.239  # 23.9% account-wide floor
+KELLY_BASE_RATE = 0.60  # 60% -- BSM-calibrated A+ base rate (was 23.9% from old model)
 
 MAX_SINGLE = 15.0
 MAX_0DTE = 5.0
@@ -67,14 +72,16 @@ class CircuitBreaker:
             self.reset_after = None
         else:
             self.consecutive_losses += 1
-            if self.consecutive_losses >= 7:
+            # Tighter thresholds: with BSM-sized losses (-78% avg),
+            # each loss costs ~2-6% of account. Can't afford long streaks.
+            if self.consecutive_losses >= 5:
                 self.level = 3
                 today = datetime.date.today()
                 self.reset_after = today + datetime.timedelta(days=(7 - today.weekday()))
-            elif self.consecutive_losses >= 5:
-                self.level = 2
             elif self.consecutive_losses >= 3:
-                self.level = 1
+                self.level = 2  # half size
+            elif self.consecutive_losses >= 2:
+                self.level = 1  # reduced (was 3 -- now 2 for BSM-calibrated losses)
 
     def is_blocked(self) -> bool:
         if self.level >= 3:
@@ -94,14 +101,18 @@ def kelly_size(
     tier: str,
     is_0dte: bool = False,
     cb_level: int = 0,
+    avg_win: float = 0,
+    avg_loss: float = 0,
 ) -> dict[str, Any]:
-    """Compute Quarter-Kelly position size.
+    """Compute Quarter-Kelly position size using actual BSM payoff ratios.
 
     Args:
-        win_rate: historical win rate as percentage (e.g. 52.6)
+        win_rate: historical win rate as percentage (e.g. 65.3)
         tier: PROVEN / DEVELOPING / UNPROVEN / BELOW_FLOOR
         is_0dte: whether this is a 0DTE trade
         cb_level: circuit breaker level (0-3)
+        avg_win: actual average win % from trade log (e.g. 46.3)
+        avg_loss: actual average loss % from trade log (e.g. 78.7, positive number)
 
     Returns: {size_pct, capped_by, kelly_raw, quarter_kelly}
     """
@@ -110,13 +121,25 @@ def kelly_size(
 
     p = max(win_rate / 100, KELLY_BASE_RATE)
     q = 1 - p
-    b = PAYOFF_RATIOS.get(tier, 2.2)
+
+    # Use actual payoff ratio if available, else fallback to tier defaults
+    if avg_win > 0 and avg_loss > 0:
+        b = avg_win / avg_loss  # actual BSM-calibrated payoff
+    else:
+        b = PAYOFF_RATIOS.get(tier, 0.5)
 
     kelly_raw = max(0, (p * b - q) / b)
     quarter_kelly = kelly_raw * 0.25
     size_pct = quarter_kelly * 100 * TIER_SIZE_MOD.get(tier, 0.5)
 
-    capped_by = None
+    # Safety cap when payoff ratio < 1 (losses bigger than wins)
+    if b < 1.0 and size_pct > 2.5:
+        size_pct = 2.5
+        capped_by_reason = f"LOW_PAYOFF_CAP (b={b:.2f})"
+    else:
+        capped_by_reason = None
+
+    capped_by = capped_by_reason
     if is_0dte and size_pct > MAX_0DTE:
         size_pct = MAX_0DTE
         capped_by = "0DTE_CAP"
@@ -133,6 +156,10 @@ def kelly_size(
     elif cb_level >= 2:
         size_pct *= 0.5
         capped_by = f"CIRCUIT_BREAKER_L{cb_level}"
+    # Tighter circuit breaker when losses are bigger than wins
+    elif cb_level >= 1 and b < 1.0:
+        size_pct *= 0.5
+        capped_by = f"CB_L{cb_level}_LOW_PAYOFF"
 
     return {
         "size_pct": round(size_pct, 1),
