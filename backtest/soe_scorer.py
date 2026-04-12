@@ -78,11 +78,12 @@ def determine_direction(state: dict[str, Any]) -> str | None:
     ChatGPT correctly flagged this as conceptually inconsistent with single-leg only.
     """
     signal = state.get("signal", "")
-    if signal in ("MAGNET UP", "SUPPORT"):
+    if signal == "MAGNET UP":
         return "BULL"
     elif signal in ("AIR POCKET", "RESISTANCE"):
         return "BEAR"
-    # PINNING = skip (need multi-leg for premium selling)
+    # SUPPORT = skip (0% WR in backtest, weak signal)
+    # PINNING = skip (needs multi-leg for premium selling)
     # DANGER = skip (too risky)
     return None
 

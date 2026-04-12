@@ -131,7 +131,10 @@ class BacktestEngine:
         self._signal_id = 0
         self._confluence_cache: dict[str, dict] = {}
         self._daily_signals_count: dict[str, int] = {}
-        self._spot_history: dict[str, list[float]] = {}  # ticker -> last 30 closes for parabolic detection
+        self._spot_history: dict[str, list[float]] = {}
+        # Pending signals: computed on day T, executed on day T+1
+        # This prevents data leakage (using same-day chain + same-day price)
+        self._pending_entries: list[dict] = []
 
     def set_confluence(self, spy_state: dict, qqq_state: dict, iwm_state: dict) -> None:
         """Set the confluence data for the current day."""
@@ -173,7 +176,11 @@ class BacktestEngine:
         state = compute_levels(chain_contracts, spot)
         state["spot"] = spot
 
-        # 2. Check existing positions for exit signals
+        # 2. Execute pending entries from YESTERDAY's signal (T+1 entry)
+        # This prevents data leakage: signal from day T, entry at day T+1 open
+        self._execute_pending_entries(ticker, date, spot)
+
+        # 3. Check existing positions for exit signals
         self._check_exits(ticker, date, spot, daily_high, daily_low, state)
 
         # Track spot history for parabolic detection
@@ -288,27 +295,29 @@ class BacktestEngine:
         )
 
         if traded:
-            pos = Position(
-                signal_id=self._signal_id,
-                ticker=ticker,
-                direction=direction,
-                entry_date=date,
-                entry_spot=spot,
-                strike=contract["strike"],
-                expiration=contract["expiration"],
-                option_type=contract["option_type"],
-                dte=contract["dte"],
-                grade=grade,
-                score=score,
-                gate_label=gate["label"],
-                kelly_pct=ks["size_pct"],
-                target=contract["target"],
-                stop=contract["stop"],
-                rr_ratio=contract["rr_ratio"],
-                signal_type=signal_type,
-                reasons=reasons,
-            )
-            self.positions.append(pos)
+            # Queue for T+1 entry (prevents data leakage)
+            # Signal computed from today's EOD chain, entry at tomorrow's open
+            self._pending_entries.append({
+                "signal_id": self._signal_id,
+                "ticker": ticker,
+                "direction": direction,
+                "signal_date": date,  # day signal was generated
+                "entry_spot": spot,  # will be updated to T+1 open price
+                "strike": contract["strike"],
+                "expiration": contract["expiration"],
+                "option_type": contract["option_type"],
+                "dte": contract["dte"],
+                "grade": grade,
+                "score": score,
+                "gate_label": gate["label"],
+                "kelly_pct": ks["size_pct"],
+                "target": contract["target"],
+                "stop": contract["stop"],
+                "rr_ratio": contract["rr_ratio"],
+                "signal_type": signal_type,
+                "reasons": reasons,
+                "iv": state.get("iv", 0),
+            })
 
         self.signals.append(record)
         self._daily_signals_count[day_key] = self._daily_signals_count.get(day_key, 0) + 1
@@ -341,6 +350,50 @@ class BacktestEngine:
             iv=iv,
             option_type=pos.option_type,
         )
+
+    def _execute_pending_entries(self, ticker: str, date: datetime.date, spot: float) -> None:
+        """Execute pending entries from yesterday's signals at today's open price.
+
+        This enforces strict T+1 execution: signal from day T chain data,
+        entry at day T+1 open. Prevents data leakage.
+        """
+        remaining = []
+        for pending in self._pending_entries:
+            if pending["ticker"] != ticker:
+                remaining.append(pending)
+                continue
+
+            # Enter at today's open (approximated by today's spot for daily data)
+            # In production, this would be the actual open price
+            pos = Position(
+                signal_id=pending["signal_id"],
+                ticker=ticker,
+                direction=pending["direction"],
+                entry_date=date,  # T+1 (today), not signal date
+                entry_spot=spot,  # today's price, not yesterday's
+                strike=pending["strike"],
+                expiration=pending["expiration"],
+                option_type=pending["option_type"],
+                dte=max(pending["dte"] - 1, 0),  # one day less DTE
+                grade=pending["grade"],
+                score=pending["score"],
+                gate_label=pending["gate_label"],
+                kelly_pct=pending["kelly_pct"],
+                target=pending["target"],
+                stop=pending["stop"],
+                rr_ratio=pending["rr_ratio"],
+                signal_type=pending["signal_type"],
+                reasons=pending["reasons"],
+            )
+            self.positions.append(pos)
+
+            # Update the signal record with actual entry price
+            for sr in self.signals:
+                if sr.ticker == ticker and sr.traded and sr.date == pending["signal_date"]:
+                    sr.spot = spot  # update to actual entry price
+                    break
+
+        self._pending_entries = remaining
 
     def _check_exits(
         self,
