@@ -342,51 +342,57 @@ def select_contract(
     selected = candidates[idx]
     strike = selected["strike"]
 
-    # Targets and stops — balanced approach
-    # King = primary magnet but enforce minimum 2% move for meaningful P&L.
-    # Use king if it gives >= 2% move, otherwise use fixed 2% target.
-    # Stop = floor/ceiling or 1.5% (tighter than target for positive R:R).
+    # Targets and stops — IV-derived expected move
+    # 1-day expected move = spot * IV * sqrt(1/252)
+    # Multi-day EM = spot * IV * sqrt(DTE/252)
+    # Stop = 1.5x daily EM (gives room for normal noise)
+    # Target = king if >= 2x daily EM, else 2x daily EM
     king = state.get("king", 0)
+    iv = state.get("iv", 0) or 0.25  # fallback 25%
+
+    import math
+    daily_em = spot * iv * math.sqrt(1 / 252)       # 1-day expected move in $
+    daily_em_pct = daily_em / spot                    # as fraction
+    hold_em = spot * iv * math.sqrt(max(target_dte, 1) / 252)  # hold-period EM
+
+    # Minimum target = 1.5x daily EM (reachable within a few days)
+    min_target_dist = max(daily_em * 1.5, spot * 0.012)  # at least 1.2%
+    # Stop = 2.5x daily EM (wide enough to survive normal intraday noise)
+    stop_dist = max(daily_em * 2.5, spot * 0.015)        # at least 1.5%
 
     if direction == "BULL":
-        king_dist = ((king - spot) / spot) if king > spot else 0
-        if king > spot and king_dist >= 0.02:
+        king_dist_abs = king - spot if king > spot else 0
+        if king > spot and king_dist_abs >= min_target_dist:
             target = king
-            target_label = f"King ${king} (+{king_dist*100:.1f}%)"
-        elif king > spot:
-            # King is close — extend to minimum 2%
-            target = spot * 1.02
-            target_label = f"+2% (king ${king} too close)"
+            target_label = f"King ${king} (+{king_dist_abs/spot*100:.1f}%)"
         else:
-            target = spot * 1.02
-            target_label = "+2%"
+            target = spot + min_target_dist
+            target_label = f"+{min_target_dist/spot*100:.1f}% (2x EM)"
 
         floor = state.get("floor", 0)
-        if floor and floor > spot * 0.97 and floor < spot:
+        # Use floor if it's between spot and stop_dist (structural support)
+        if floor and (spot - floor) <= stop_dist * 1.2 and floor < spot and floor > spot * 0.95:
             stop = floor
-            stop_label = f"Floor ${floor}"
+            stop_label = f"Floor ${floor} (-{(spot-floor)/spot*100:.1f}%)"
         else:
-            stop = spot * 0.985
-            stop_label = "-1.5%"
+            stop = spot - stop_dist
+            stop_label = f"-{stop_dist/spot*100:.1f}% (1.5x EM)"
     else:
-        king_dist = ((spot - king) / spot) if king < spot else 0
-        if king < spot and king_dist >= 0.02:
+        king_dist_abs = spot - king if king < spot else 0
+        if king < spot and king_dist_abs >= min_target_dist:
             target = king
-            target_label = f"King ${king} (-{king_dist*100:.1f}%)"
-        elif king < spot:
-            target = spot * 0.98
-            target_label = f"-2% (king ${king} too close)"
+            target_label = f"King ${king} (-{king_dist_abs/spot*100:.1f}%)"
         else:
-            target = spot * 0.98
-            target_label = "-2%"
+            target = spot - min_target_dist
+            target_label = f"-{min_target_dist/spot*100:.1f}% (2x EM)"
 
         ceiling = state.get("ceiling", 0)
-        if ceiling and ceiling < spot * 1.03 and ceiling > spot:
+        if ceiling and (ceiling - spot) <= stop_dist * 1.2 and ceiling > spot and ceiling < spot * 1.05:
             stop = ceiling
-            stop_label = f"Ceiling ${ceiling}"
+            stop_label = f"Ceiling ${ceiling} (+{(ceiling-spot)/spot*100:.1f}%)"
         else:
-            stop = spot * 1.015
-            stop_label = "+1.5%"
+            stop = spot + stop_dist
+            stop_label = f"+{stop_dist/spot*100:.1f}% (1.5x EM)"
 
     reward = abs(target - spot)
     risk = abs(stop - spot) or 1
