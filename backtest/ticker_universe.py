@@ -18,7 +18,7 @@ UNIVERSE = {
         "GOOGL", "ASTS", "VOYG", "RKLB", "SATL",
     ],
     "AI / Data Center Infra": [
-        "ANET", "PLTR", "SNOW", "NET",
+        "ANET", "VRT", "NET", "SNOW", "PLTR",
     ],
     "Index ETFs": [
         "SPY", "QQQ", "SMH",
