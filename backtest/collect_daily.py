@@ -193,10 +193,12 @@ def _append_to_merged(day_dir: Path, merged_dir: Path, today: str):
             if write_header:
                 writer.writeheader()
             for row in reader:
+                # WARNING: Tradier quotes only provide close, not OHLC.
+                # open/high/low set to 0 to make it explicit that intraday
+                # data is missing. The runner/simulator must handle 0 values.
                 writer.writerow({
                     "date": row["date"], "ticker": row["ticker"],
-                    "open": row["close"], "high": row["close"],
-                    "low": row["close"], "close": row["close"],
+                    "open": 0, "high": 0, "low": 0, "close": row["close"],
                 })
 
     # Append chains per ticker

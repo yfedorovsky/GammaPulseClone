@@ -54,6 +54,8 @@ class Position:
     stop: float
     rr_ratio: float
     signal_type: str
+    signal_date: datetime.date | None = None  # day signal was computed (T)
+    entry_iv: float = 0.25  # IV at signal time for BSM repricing
     reasons: list[str] = field(default_factory=list)
 
     # Tracking
@@ -68,8 +70,9 @@ class Position:
 @dataclass
 class SignalRecord:
     """A logged signal (whether traded or not)."""
-    date: datetime.date
-    ticker: str
+    signal_id: int = 0
+    date: datetime.date = None
+    ticker: str = ""
     direction: str
     signal_type: str
     grade: str
@@ -268,6 +271,7 @@ class BacktestEngine:
         self._signal_id += 1
 
         record = SignalRecord(
+            signal_id=self._signal_id,
             date=date,
             ticker=ticker,
             direction=direction,
@@ -331,16 +335,10 @@ class BacktestEngine:
     ) -> float:
         """Calculate option P&L using Black-Scholes repricing.
 
-        Uses BSM to compute entry and exit option prices from the position's
-        strike, DTE, IV, and spot movement. Far more accurate than the
-        leverage approximation, especially on high-vol names.
+        Uses pos.entry_iv directly (stored at signal time) instead of
+        trying to match by date which was broken (signal_date != entry_date).
         """
-        iv = 0.25  # default
-        # Try to get IV from the position's entry state
-        for sr in self.signals:
-            if sr.date == pos.entry_date and sr.ticker == pos.ticker and sr.traded:
-                iv = sr.iv or 0.25
-                break
+        iv = pos.entry_iv or 0.25
 
         return estimate_option_pnl(
             entry_spot=pos.entry_spot,
@@ -371,13 +369,15 @@ class BacktestEngine:
                 ticker=ticker,
                 direction=pending["direction"],
                 entry_date=date,  # T+1 (today), not signal date
-                entry_spot=spot,  # today's price, not yesterday's
+                entry_spot=spot,  # today's open, not yesterday's close
                 strike=pending["strike"],
                 expiration=pending["expiration"],
                 option_type=pending["option_type"],
                 dte=max(pending["dte"] - 1, 0),  # one day less DTE
                 grade=pending["grade"],
                 score=pending["score"],
+                signal_date=pending["signal_date"],  # day T (when signal was computed)
+                entry_iv=pending.get("iv", 0.25),    # IV from signal day chain
                 gate_label=pending["gate_label"],
                 kelly_pct=pending["kelly_pct"],
                 target=pending["target"],
@@ -390,7 +390,7 @@ class BacktestEngine:
 
             # Update the signal record with actual entry price
             for sr in self.signals:
-                if sr.ticker == ticker and sr.traded and sr.date == pending["signal_date"]:
+                if sr.signal_id == pending["signal_id"]:
                     sr.spot = spot  # update to actual entry price
                     break
 
@@ -507,9 +507,9 @@ class BacktestEngine:
             self.ticker_stats[pos.ticker].record(pos.pnl_pct, pos.outcome == "WIN")
             self.circuit_breaker.record_outcome(pos.outcome == "WIN")
 
-            # Update the signal record
+            # Update the signal record by signal_id (not date -- dates differ T vs T+1)
             for sr in self.signals:
-                if sr.date == pos.entry_date and sr.ticker == pos.ticker and sr.traded:
+                if sr.signal_id == pos.signal_id:
                     sr.outcome = pos.outcome
                     sr.pnl_pct = pos.pnl_pct
                     sr.exit_reason = pos.exit_reason
@@ -522,13 +522,12 @@ class BacktestEngine:
             self.account_value += position_value * (pos.pnl_pct / 100)
 
     def force_close_all(self, date: datetime.date, spots: dict[str, float]) -> None:
-        """Close all open positions at given spots (end of backtest)."""
+        """Close all open positions at given spots (end of backtest).
+        Uses BSM repricing consistent with all other exits."""
         for pos in list(self.positions):
             spot = spots.get(pos.ticker, pos.entry_spot)
-            if pos.direction == "BULL":
-                pos.pnl_pct = ((spot - pos.entry_spot) / pos.entry_spot) * 100
-            else:
-                pos.pnl_pct = ((pos.entry_spot - spot) / pos.entry_spot) * 100
+            days_held = (date - pos.entry_date).days
+            pos.pnl_pct = self._calc_option_pnl(pos, spot, days_held)
             pos.exit_date = date
             pos.exit_spot = spot
             pos.exit_reason = "BACKTEST_END"
