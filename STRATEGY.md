@@ -1,8 +1,8 @@
 # GammaPulse SOE -- Strategy & Backtest Reference
 
-**Version:** 3.0 (Post-ChatGPT/Perplexity Review -- Stripped Down)
-**Last Updated:** April 11, 2026
-**Status:** BREAKDOWN_ACCELERATOR + RESISTANCE_FADE only. All other signals killed. Parameters frozen.
+**Version:** 3.1 (Live Deployment Framework Added)
+**Last Updated:** April 12, 2026
+**Status:** BREAKDOWN_ACCELERATOR + RESISTANCE_FADE only. Parameters frozen. Live expectations calibrated by ChatGPT quant review.
 
 ---
 
@@ -258,10 +258,122 @@ Git tags for version recovery:
 
 ---
 
+## Realistic Live Expectations (ChatGPT Quant Review)
+
+These are NOT backtest projections. These are base-rate priors from an experienced quant perspective on what strategies of this class actually do live.
+
+### Win Rate
+| Context | Estimate |
+|---------|----------|
+| Backtest (12 trades, SPY) | 58-68% |
+| **Realistic live** | **52-54%** |
+| Would surprise on upside | 58%+ |
+| Would trigger concern | <48% |
+
+### Per-Trade Expectancy (Option P&L)
+| Context | Estimate |
+|---------|----------|
+| Backtest (12 trades) | +5.3% |
+| **Realistic live** | **+1% to +3%** |
+| After spreads, fills, theta | Compressed significantly |
+
+### Annual Return at 1.5% Fixed Sizing
+| Scenario | Return |
+|----------|--------|
+| Pessimistic | 0-3% |
+| **Base case** | **3-8%** |
+| Good year | 10-15% |
+| Fantasy (not realistic) | 15-25% |
+
+### Why Live Will Be Worse Than Backtest
+1. Worse-than-modeled fills (T+1 open gaps)
+2. Signal crowding around obvious downside structure
+3. Regime drift (yesterday's negative gamma less relevant by next open)
+4. Theta + spread + IV mean reversion turning "correct idea" into flat P&L
+5. "Directionally right but not right fast enough" -- the #1 killer
+
+---
+
+## Live Deployment Plan (Mandatory)
+
+### Phase 0: Paper Trade (Weeks 1-8)
+- Paper trade only, no real capital
+- Log every signal with actual market open prices
+- Compare paper fills to simulator's T+1 assumptions
+- Minimum 30 paper trades before Phase 1
+- **Go/No-Go:** positive expectancy on paper? Fills realistic?
+
+### Phase 1: Micro Size (Weeks 9-24)
+| Parameter | Value |
+|-----------|-------|
+| Strategy capital | 5-10% of account ($5K-$10K on $100K) |
+| Max risk per trade | 0.25-0.50% of total account ($250-$500) |
+| Tickers | SPY only (deepest liquidity, cleanest GEX) |
+| Signal filter | A+ BREAKDOWN_ACCELERATOR only |
+| Contract | Per grid search winner (likely 1st OTM / 14 DTE) |
+
+### Phase 2: Scale (After 50+ Live Trades with Positive EV)
+| Parameter | Value |
+|-----------|-------|
+| Strategy capital | 15-20% of account |
+| Max risk per trade | 0.75-1.0% of total account |
+| Tickers | SPY + QQQ + SMH (if QQQ shows positive EV) |
+| Signal filter | A+ BREAKDOWN + RESISTANCE (if validated) |
+
+### Phase 3: Full Deployment (After 100+ Live Trades)
+| Parameter | Value |
+|-----------|-------|
+| Strategy capital | 20-30% of account |
+| Max risk per trade | 1.0-1.5% of total account |
+| Tickers | Expand to validated individual equities |
+| Reassess Kelly | Only after stable per-ticker statistics |
+
+### Kill Switches (Non-Negotiable)
+
+| Trigger | Action |
+|---------|--------|
+| 30 live trades with negative expectancy | STOP -- reassess entire strategy |
+| Account drawdown 5% from strategy | STOP -- reduce to paper trade |
+| Win rate below 45% over 30+ trades | STOP -- edge may not exist live |
+| SOE consistently loses to sign-flip baseline | STOP -- direction isn't adding value |
+| 3 consecutive losing months | Reduce to Phase 1 sizing |
+| VIX sustained > 40 for 2+ weeks | Pause -- GEX levels become unreliable |
+
+### What "Success" Looks Like
+- 50+ live trades with WR > 50%
+- Positive expectancy after all costs
+- Beats buy-and-hold on a risk-adjusted basis
+- Beats random-entry baseline
+- Survives at least one regime change (calm -> stress or vice versa)
+- Max drawdown < 8% of allocated capital
+
+### What "Failure" Looks Like
+- WR < 48% over 50+ trades
+- Negative expectancy after fills and spreads
+- Loses to buy-and-hold consistently
+- Edge only exists in one specific 3-month window
+- Requires 2nd OTM / 7 DTE lottery tickets to show profit
+
+---
+
+## Next Steps (Ordered)
+
+1. **EODHD rate limit resets** -- download remaining 31 tickers
+2. **Run contract grid search** on SPY/QQQ (9 cells: ATM/1st/2nd OTM x 7/14/21 DTE)
+3. **Take top 2-3 configs** -- segment by calm/elevated/stress regime
+4. **Expand to IWM, SMH** before the full 34-ticker universe
+5. **Then NVDA, TSLA** (mega-cap liquid single names)
+6. **Only then** photonics / memory / thinner baskets
+7. **Paper trade for 30+ signals** before any real capital
+8. **Micro-size Phase 1** for 50+ live trades
+9. **Scale only after proven live positive EV**
+
+---
+
 ## Open Questions (Final Set)
 
 1. **Does BREAKDOWN edge hold on individual equities?** SPY works. QQQ doesn't. NVDA? TSLA? MU? This is THE question.
 2. **Is the edge regime-specific?** Works in tariff shock (Feb-Apr 2025). Does it work in calm markets?
-3. **Optimal DTE for puts?** Currently 14 DTE default. Should 7 DTE or 21 DTE be tested?
-4. **Closer-to-ATM strikes?** Currently 2nd-3rd OTM. 1st OTM or ATM puts may have better loss profile.
-5. **Should RESISTANCE_FADE be kept?** Needs more data -- small sample in current backtest.
+3. **Optimal contract config?** Grid search will answer (likely 1st OTM / 14 DTE per ChatGPT prior).
+4. **Should RESISTANCE_FADE be kept?** Needs more data -- small sample in current backtest.
+5. **Is the edge in the direction or in the option?** Should test: same signal, short underlying/inverse ETF instead of puts. If underlying works better, the option is the wrong monetization.
