@@ -31,6 +31,7 @@ from .discipline import (
     five_factor_gate,
     kelly_size,
 )
+from .pricing import estimate_option_pnl
 
 
 @dataclass
@@ -296,44 +297,31 @@ class BacktestEngine:
 
         return day_signals
 
-    @staticmethod
-    def _option_pnl(spot_move_pct: float, dte_at_entry: int, iv: float = 0.25) -> float:
-        """Estimate option P&L from spot move using delta-gamma leverage.
+    def _calc_option_pnl(
+        self, pos: "Position", exit_spot: float, days_held: int,
+    ) -> float:
+        """Calculate option P&L using Black-Scholes repricing.
 
-        A slightly OTM option (~0.30 delta) has roughly these characteristics:
-          - Spot move × delta × (spot/option_price) = option P&L
-          - Simplified: ~4x leverage for 10-20 DTE slightly OTM
-          - Gamma adds convexity: winners accelerate, losers decelerate
-
-        This is a simplified model — real P&L depends on exact IV, time decay,
-        and gamma, but it's far more realistic than raw spot P&L.
-
-        Returns option P&L as percentage.
+        Uses BSM to compute entry and exit option prices from the position's
+        strike, DTE, IV, and spot movement. Far more accurate than the
+        leverage approximation, especially on high-vol names.
         """
-        # Base leverage: shorter DTE = higher leverage (gamma ramp)
-        if dte_at_entry <= 1:
-            leverage = 8.0   # 0DTE: extreme gamma
-        elif dte_at_entry <= 5:
-            leverage = 6.0   # weekly: high gamma
-        elif dte_at_entry <= 14:
-            leverage = 4.5   # 2 weeks: moderate
-        elif dte_at_entry <= 28:
-            leverage = 3.5   # monthly: lower
-        else:
-            leverage = 2.5   # LEAPS: lowest
+        iv = 0.25  # default
+        # Try to get IV from the position's entry state
+        for sr in self.signals:
+            if sr.date == pos.entry_date and sr.ticker == pos.ticker and sr.traded:
+                iv = sr.iv or 0.25
+                break
 
-        # Gamma convexity: winners get extra boost, losers get cushion
-        if spot_move_pct > 0:
-            # Winning: delta increases as option goes ITM (gamma effect)
-            convexity = 1.0 + abs(spot_move_pct) * 0.15
-        else:
-            # Losing: delta decreases as option goes further OTM (gamma cushion)
-            convexity = 1.0 - abs(spot_move_pct) * 0.08
-
-        option_pnl = spot_move_pct * leverage * convexity
-
-        # Cap at -100% (can't lose more than premium paid)
-        return max(-100.0, option_pnl)
+        return estimate_option_pnl(
+            entry_spot=pos.entry_spot,
+            exit_spot=exit_spot,
+            strike=pos.strike,
+            entry_dte=pos.dte,
+            days_held=days_held,
+            iv=iv,
+            option_type=pos.option_type,
+        )
 
     def _check_exits(
         self,
@@ -372,52 +360,45 @@ class BacktestEngine:
                 pass
 
             # Track max favorable excursion (in option terms)
-            if pos.direction == "BULL":
-                fav_spot = ((high - pos.entry_spot) / pos.entry_spot) * 100
-            else:
-                fav_spot = ((pos.entry_spot - low) / pos.entry_spot) * 100
-            fav_opt = self._option_pnl(fav_spot, pos.dte)
+            fav_exit = high if pos.direction == "BULL" else low
+            fav_opt = self._calc_option_pnl(pos, fav_exit, days_held)
             pos.max_favorable = max(pos.max_favorable, fav_opt)
 
             # Check target hit (spot reaches target price)
             if pos.direction == "BULL" and high >= pos.target:
-                spot_move = ((pos.target - pos.entry_spot) / pos.entry_spot) * 100
                 pos.exit_date = date
                 pos.exit_spot = pos.target
                 pos.exit_reason = "TARGET_HIT"
                 pos.outcome = "WIN"
-                pos.pnl_pct = self._option_pnl(spot_move, pos.dte)
+                pos.pnl_pct = self._calc_option_pnl(pos, pos.target, days_held)
                 to_close.append(pos)
                 continue
 
             if pos.direction == "BEAR" and low <= pos.target:
-                spot_move = ((pos.entry_spot - pos.target) / pos.entry_spot) * 100
                 pos.exit_date = date
                 pos.exit_spot = pos.target
                 pos.exit_reason = "TARGET_HIT"
                 pos.outcome = "WIN"
-                pos.pnl_pct = self._option_pnl(spot_move, pos.dte)
+                pos.pnl_pct = self._calc_option_pnl(pos, pos.target, days_held)
                 to_close.append(pos)
                 continue
 
             # Check stop hit
             if pos.direction == "BULL" and low <= pos.stop:
-                spot_move = ((pos.stop - pos.entry_spot) / pos.entry_spot) * 100
                 pos.exit_date = date
                 pos.exit_spot = pos.stop
                 pos.exit_reason = "STOP_HIT"
                 pos.outcome = "LOSS"
-                pos.pnl_pct = self._option_pnl(spot_move, pos.dte)
+                pos.pnl_pct = self._calc_option_pnl(pos, pos.stop, days_held)
                 to_close.append(pos)
                 continue
 
             if pos.direction == "BEAR" and high >= pos.stop:
-                spot_move = ((pos.entry_spot - pos.stop) / pos.entry_spot) * 100
                 pos.exit_date = date
                 pos.exit_spot = pos.stop
                 pos.exit_reason = "STOP_HIT"
                 pos.outcome = "LOSS"
-                pos.pnl_pct = self._option_pnl(spot_move, pos.dte)
+                pos.pnl_pct = self._calc_option_pnl(pos, pos.stop, days_held)
                 to_close.append(pos)
                 continue
 
@@ -425,11 +406,7 @@ class BacktestEngine:
             if is_0dte:
                 pos.exit_date = date
                 pos.exit_spot = spot
-                if pos.direction == "BULL":
-                    spot_move = ((spot - pos.entry_spot) / pos.entry_spot) * 100
-                else:
-                    spot_move = ((pos.entry_spot - spot) / pos.entry_spot) * 100
-                pos.pnl_pct = self._option_pnl(spot_move, 0)  # 0DTE = max leverage
+                pos.pnl_pct = self._calc_option_pnl(pos, spot, days_held)
                 pos.exit_reason = "0DTE_CLOSE"
                 pos.outcome = "WIN" if pos.pnl_pct > 0 else "LOSS"
                 to_close.append(pos)
