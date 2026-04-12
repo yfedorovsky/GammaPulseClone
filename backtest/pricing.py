@@ -61,15 +61,17 @@ def estimate_option_pnl(
     iv: float,
     option_type: str = "CALL",
     r: float = 0.05,
+    spread_pct: float = 0.03,
 ) -> float:
-    """Estimate option P&L using Black-Scholes repricing.
+    """Estimate option P&L using Black-Scholes repricing with bid-ask friction.
 
     Computes the option price at entry and exit using BSM, then calculates
     the percentage return. Accounts for:
     - Delta (directional move)
     - Gamma (convexity)
     - Theta (time decay)
-    - Vega stays constant (no IV change assumption — conservative)
+    - Bid-ask spread friction (entry at ask, exit at bid)
+    - Vega stays constant (no IV change assumption -- conservative)
 
     Args:
         entry_spot: spot price at entry
@@ -88,12 +90,16 @@ def estimate_option_pnl(
     entry_dte_years = max(entry_dte, 1) / 365.25
     exit_dte_years = max(entry_dte - days_held, 0) / 365.25
 
-    entry_price = black_scholes(entry_spot, strike, entry_dte_years, iv, r, option_type)
-    exit_price = black_scholes(exit_spot, strike, exit_dte_years, iv, r, option_type)
+    entry_mid = black_scholes(entry_spot, strike, entry_dte_years, iv, r, option_type)
+    exit_mid = black_scholes(exit_spot, strike, exit_dte_years, iv, r, option_type)
+
+    # Bid-ask friction: buy at ask (mid + half spread), sell at bid (mid - half spread)
+    # spread_pct = 3% default (typical for liquid OTM options)
+    half_spread = spread_pct / 2
+    entry_price = entry_mid * (1 + half_spread)  # pay the ask
+    exit_price = exit_mid * (1 - half_spread)     # receive the bid
 
     if entry_price <= 0.01:
-        # Option was nearly worthless at entry — can't compute meaningful %
-        # Fall back to intrinsic value change
         if option_type == "CALL":
             entry_intrinsic = max(entry_spot - strike, 0.01)
             exit_intrinsic = max(exit_spot - strike, 0)

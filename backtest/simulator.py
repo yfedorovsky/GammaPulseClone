@@ -233,19 +233,14 @@ class BacktestEngine:
         # 5-factor gate
         gate = five_factor_gate(sig_dict, flow_confirmed=None, earnings_dates=earnings_dates, trade_date=date)
 
-        # Kelly sizing -- use actual BSM payoff ratio from ticker history
+        # FIXED SIZING: 1.5% of account per trade (validation phase)
+        # Kelly suspended per ChatGPT/Perplexity review:
+        # - inputs too noisy for Kelly to be meaningful
+        # - payoff ratio b<1 makes Kelly output unstable
+        # - 1.5% = ~$1,500 on $100K, enough for real execution feedback
         ts = self.ticker_stats.get(ticker, TickerStats())
-        win_pnls = [p for p in ts.pnls if p > 0]
-        loss_pnls = [p for p in ts.pnls if p <= 0]
-        actual_avg_win = (sum(win_pnls) / len(win_pnls)) if win_pnls else 46.3  # BSM default
-        actual_avg_loss = abs(sum(loss_pnls) / len(loss_pnls)) if loss_pnls else 78.7  # BSM default
-        ks = kelly_size(
-            ts.win_rate, ts.tier,
-            is_0dte=(contract["dte"] == 0),
-            cb_level=self.circuit_breaker.level,
-            avg_win=actual_avg_win,
-            avg_loss=actual_avg_loss,
-        )
+        FIXED_SIZE_PCT = 1.5
+        ks = {"size_pct": FIXED_SIZE_PCT, "capped_by": "FIXED_VALIDATION", "kelly_raw": 0, "quarter_kelly": 0}
 
         # Per-ticker EV gate: block tickers with negative expectancy (5+ trades)
         ticker_ev_blocked = False
@@ -430,6 +425,19 @@ class BacktestEngine:
                     continue
             except ValueError:
                 pass
+
+            # TIME STOP: close at 40% of DTE if not profitable
+            # Long options bleed theta -- don't hold losers hoping for reversal
+            if pos.dte > 0 and days_held >= pos.dte * 0.4:
+                current_pnl = self._calc_option_pnl(pos, spot, days_held)
+                if current_pnl <= 0:
+                    pos.exit_date = date
+                    pos.exit_spot = spot
+                    pos.exit_reason = "TIME_STOP"
+                    pos.pnl_pct = current_pnl
+                    pos.outcome = "LOSS"
+                    to_close.append(pos)
+                    continue
 
             # Track max favorable excursion (in option terms)
             fav_exit = high if pos.direction == "BULL" else low

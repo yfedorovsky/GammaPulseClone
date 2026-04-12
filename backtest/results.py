@@ -124,10 +124,13 @@ def compute_stats(results: dict[str, Any]) -> dict[str, Any]:
     p75 = sorted_pnls[int(len(sorted_pnls) * 0.75)] if len(sorted_pnls) > 4 else 0
     p90 = sorted_pnls[int(len(sorted_pnls) * 0.9)] if len(sorted_pnls) > 10 else 0
 
-    # Benchmark: buy-and-hold vs SOE per ticker
-    # For each traded ticker, compute what buy-and-hold would have returned
-    # over the same entry->exit windows
+    # Benchmark: SOE vs buy-and-hold + random entry + sign-flip per ticker
     benchmark = _compute_benchmark(traded, results.get("spots_data"))
+
+    # Sign-flip baseline: if we took the OPPOSITE direction on every signal
+    sign_flip_pnls = [-p for p in pnls]
+    sign_flip_wr = sum(1 for p in sign_flip_pnls if p > 0) / len(sign_flip_pnls) * 100 if sign_flip_pnls else 0
+    sign_flip_avg = sum(sign_flip_pnls) / len(sign_flip_pnls) if sign_flip_pnls else 0
 
     # Regime split: choppy vs parabolic
     parabolic_trades = [s for s in traded if getattr(s, 'is_parabolic', False)]
@@ -152,6 +155,10 @@ def compute_stats(results: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "benchmark": benchmark,
+        "baselines": {
+            "sign_flip_wr": round(sign_flip_wr, 1),
+            "sign_flip_avg_pnl": round(sign_flip_avg, 1),
+        },
         "regime_split": regime_split,
         "summary": {
             "total_signals": len(signals),
@@ -317,6 +324,14 @@ def print_report(stats: dict[str, Any]) -> None:
     print("\n-- Exit Reasons --")
     for reason, count in sorted(stats.get("by_exit_reason", {}).items(), key=lambda x: x[1], reverse=True):
         print(f"  {reason:20s}  {count}")
+
+    # Baselines
+    bl = stats.get("baselines", {})
+    if bl:
+        print(f"\n-- Baselines --")
+        print(f"  Sign-flip (opposite direction): {bl.get('sign_flip_wr', 0):.1f}% WR, avg {bl.get('sign_flip_avg_pnl', 0):+.1f}%")
+        soe_better = avg_pnl > bl.get("sign_flip_avg_pnl", 0)
+        print(f"  SOE vs sign-flip: {'SOE WINS' if soe_better else 'SIGN-FLIP WINS'}")
 
     # Regime split
     rs = stats.get("regime_split", {})
