@@ -296,12 +296,14 @@ def score_signal(
             rv_annual = rv_daily * math.sqrt(252)
             iv_rv_ratio = iv / rv_annual if rv_annual > 0 else 1.0
 
+            # IV/RV is now CONTEXT ONLY, not a score booster.
+            # Perplexity: IV/RV < 0.8 is backward-looking (RV already spiked).
+            # VRP literature says IV normally overestimates RV.
+            # Keep as informational but don't let it inflate score.
             if iv_rv_ratio < 0.8:
-                score += 0.5
-                reasons.append(f"IV/RV: {iv_rv_ratio:.2f} -- IV underpricing movement")
+                reasons.append(f"IV/RV: {iv_rv_ratio:.2f} -- RV > IV (backward-looking, use caution)")
             elif iv_rv_ratio > 1.5:
-                score -= 0.25
-                reasons.append(f"IV/RV: {iv_rv_ratio:.2f} -- IV overpricing, options expensive")
+                reasons.append(f"IV/RV: {iv_rv_ratio:.2f} -- IV rich, premiums expensive")
 
     score = max(0, score)
     grade = score_to_grade(score)

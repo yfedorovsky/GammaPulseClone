@@ -25,16 +25,17 @@ from .results import compute_stats
 
 
 GRID = [
-    # Tier 1 core
+    # Tier 1 — 7 DTE priority (Perplexity: effect is intraday, reverts 1-3 days)
     {"label": "ATM/7",      "strike_offset": 0, "target_dte": 7},
-    {"label": "ATM/14",     "strike_offset": 0, "target_dte": 14},
     {"label": "1st OTM/7",  "strike_offset": 1, "target_dte": 7},
+    # Tier 1 — 14 DTE (regime persistence, not flow capture)
+    {"label": "ATM/14",     "strike_offset": 0, "target_dte": 14},
     {"label": "1st OTM/14", "strike_offset": 1, "target_dte": 14},
-    # Tier 2 extension
+    # Tier 2 — extended
+    {"label": "2nd OTM/7",  "strike_offset": 2, "target_dte": 7},
     {"label": "ATM/21",     "strike_offset": 0, "target_dte": 21},
     {"label": "1st OTM/21", "strike_offset": 1, "target_dte": 21},
-    # Tier 3 tail-risk
-    {"label": "2nd OTM/7",  "strike_offset": 2, "target_dte": 7},
+    # Tier 3 — lowest priority
     {"label": "2nd OTM/14", "strike_offset": 2, "target_dte": 14},
     {"label": "2nd OTM/21", "strike_offset": 2, "target_dte": 21},
 ]

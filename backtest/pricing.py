@@ -61,7 +61,7 @@ def estimate_option_pnl(
     iv: float,
     option_type: str = "CALL",
     r: float = 0.05,
-    spread_pct: float = 0.03,
+    spread_pct: float = 0.05,  # 5% default (Perplexity: 3% too optimistic for stress conditions)
 ) -> float:
     """Estimate option P&L using Black-Scholes repricing with bid-ask friction.
 
