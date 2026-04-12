@@ -480,6 +480,20 @@ class BacktestEngine:
             fav_opt = self._calc_option_pnl(pos, fav_exit, days_held)
             pos.max_favorable = max(pos.max_favorable, fav_opt)
 
+            # PESSIMISTIC SAME-BAR RULE (Gemini/ChatGPT):
+            # If both stop and target could be hit in the same bar,
+            # assume STOP FIRST (worst case). This prevents fake edge.
+            both_hit_bull = pos.direction == "BULL" and high >= pos.target and low <= pos.stop
+            both_hit_bear = pos.direction == "BEAR" and low <= pos.target and high >= pos.stop
+            if both_hit_bull or both_hit_bear:
+                pos.exit_date = date
+                pos.exit_spot = pos.stop
+                pos.exit_reason = "STOP_HIT_PESSIMISTIC"
+                pos.outcome = "LOSS"
+                pos.pnl_pct = self._calc_option_pnl(pos, pos.stop, days_held)
+                to_close.append(pos)
+                continue
+
             # Check target hit (spot reaches target price)
             if pos.direction == "BULL" and high >= pos.target:
                 pos.exit_date = date
