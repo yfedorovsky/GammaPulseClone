@@ -73,28 +73,28 @@ class SignalRecord:
     signal_id: int = 0
     date: datetime.date = None
     ticker: str = ""
-    direction: str
-    signal_type: str
-    grade: str
-    score: float
-    gate_label: str
-    gate_score: float
-    kelly_pct: float
-    strike: float
-    expiration: str
-    option_type: str
-    dte: int
-    target: float
-    stop: float
-    rr_ratio: float
-    spot: float
-    king: float
-    floor: float
-    ceiling: float
-    regime: str
-    iv: float
-    reasons: list[str]
-    traded: bool  # whether we actually opened a position
+    direction: str = ""
+    signal_type: str = ""
+    grade: str = ""
+    score: float = 0
+    gate_label: str = ""
+    gate_score: float = 0
+    kelly_pct: float = 0
+    strike: float = 0
+    expiration: str = ""
+    option_type: str = ""
+    dte: int = 0
+    target: float = 0
+    stop: float = 0
+    rr_ratio: float = 0
+    spot: float = 0
+    king: float = 0
+    floor: float = 0
+    ceiling: float = 0
+    regime: str = ""
+    iv: float = 0
+    reasons: list[str] = field(default_factory=list)
+    traded: bool = False
     is_parabolic: bool = False  # ticker was in parabolic mode at signal time
     outcome: str = ""
     pnl_pct: float = 0.0
@@ -118,10 +118,14 @@ class BacktestEngine:
         account_value: float = 100_000,
         max_positions: int = 10,
         max_per_ticker: int = 2,
+        strike_offset: int = 2,
+        target_dte: int = 14,
     ):
         self.account_value = account_value
         self.starting_value = account_value
         self.max_positions = max_positions
+        self.strike_offset = strike_offset
+        self.target_dte = target_dte
         self.max_per_ticker = max_per_ticker
 
         self.positions: list[Position] = []
@@ -249,7 +253,8 @@ class BacktestEngine:
 
         # Contract selection
         exps = available_expirations or []
-        contract = select_contract(state, direction, exps, trade_date=date)
+        contract = select_contract(state, direction, exps, trade_date=date,
+                                   strike_offset=self.strike_offset, target_dte=self.target_dte)
         if not contract:
             return day_signals
 

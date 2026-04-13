@@ -71,20 +71,9 @@ def run_grid(
 
         print(f"--- {label} (strike_offset={strike_offset}, target_dte={dte}) ---")
 
-        # Patch select_contract defaults for this cell
-        # We do this by monkey-patching the module defaults before running
-        import backtest.soe_scorer as scorer
-        original_select = scorer.select_contract
-
-        def patched_select(state, direction, exps, trade_date=None,
-                          _so=strike_offset, _dte=dte, **kwargs):
-            return original_select(state, direction, exps, trade_date,
-                                  strike_offset=_so, target_dte=_dte)
-
-        scorer.select_contract = patched_select
-
         try:
-            results = run_backtest(chains, spots, tickers, start_date, end_date, account_value)
+            results = run_backtest(chains, spots, tickers, start_date, end_date, account_value,
+                                  strike_offset=strike_offset, target_dte=dte)
             stats = compute_stats(results)
 
             summary = stats.get("summary", {})
@@ -117,8 +106,6 @@ def run_grid(
         except Exception as e:
             print(f"  ERROR: {e}")
             all_results.append({"label": label, "error": str(e)})
-        finally:
-            scorer.select_contract = original_select
 
         print()
 

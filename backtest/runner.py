@@ -128,6 +128,8 @@ def run_backtest(
     start_date: str = "2024-04-01",
     end_date: str = "2026-04-01",
     account_value: float = 100_000,
+    strike_offset: int = 2,
+    target_dte: int = 14,
 ) -> dict[str, Any]:
     """Run the full backtest.
 
@@ -136,8 +138,10 @@ def run_backtest(
         spots: {date_str: {ticker: {open, high, low, close}}}
         tickers: list of ticker symbols to process
         start_date, end_date: ISO date strings
+        strike_offset: 0=ATM, 1=1st OTM, 2=2nd OTM
+        target_dte: target DTE for contract selection
     """
-    engine = BacktestEngine(account_value=account_value)
+    engine = BacktestEngine(account_value=account_value, strike_offset=strike_offset, target_dte=target_dte)
     start = datetime.date.fromisoformat(start_date)
     end = datetime.date.fromisoformat(end_date)
 
