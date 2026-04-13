@@ -168,6 +168,7 @@ def download(
     output_dir: str = "./data",
     sample_every: int = 1,
     delay: float = 0.2,
+    append: bool = False,
 ):
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -186,30 +187,36 @@ def download(
     print()
 
     # 1. Spot prices
-    print("=== Downloading spot prices ===")
-    spots_path = out / "spots.csv"
-    with open(spots_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=SPOT_HEADERS)
-        writer.writeheader()
-        for ticker in tickers:
-            print(f"  {ticker}...", end=" ", flush=True)
-            bars = fetch_spot_history(api_key, ticker, start_date, end_date)
-            for bar in bars:
-                writer.writerow(bar)
-            print(f"{len(bars)} bars")
-            time.sleep(delay)
-    print(f"Spots saved: {spots_path}\n")
+    # In append mode, skip spots (use Yahoo Finance separately to avoid overwrites)
+    if append:
+        print("=== APPEND MODE: skipping spots (use Yahoo Finance to rebuild) ===\n")
+    else:
+        print("=== Downloading spot prices ===")
+        spots_path = out / "spots.csv"
+        with open(spots_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=SPOT_HEADERS)
+            writer.writeheader()
+            for ticker in tickers:
+                print(f"  {ticker}...", end=" ", flush=True)
+                bars = fetch_spot_history(api_key, ticker, start_date, end_date)
+                for bar in bars:
+                    writer.writerow(bar)
+                print(f"{len(bars)} bars")
+                time.sleep(delay)
+        print(f"Spots saved: {spots_path}\n")
 
     # 2. Options chains
     print("=== Downloading options chains ===")
     total_contracts = 0
     for ticker in tickers:
         chain_path = out / f"{ticker}_chains.csv"
-        print(f"\n--- {ticker} ({total_days} days) ---")
+        file_mode = "a" if append and chain_path.exists() else "w"
+        print(f"\n--- {ticker} ({total_days} days) {'[APPEND]' if file_mode == 'a' else '[NEW]'} ---")
 
-        with open(chain_path, "w", newline="") as f:
+        with open(chain_path, file_mode, newline="") as f:
             writer = csv.DictWriter(f, fieldnames=CHAIN_HEADERS)
-            writer.writeheader()
+            if file_mode == "w":
+                writer.writeheader()
             ticker_contracts = 0
 
             for i, day in enumerate(trading_days):
@@ -246,6 +253,7 @@ def main():
     parser.add_argument("--output", default="./data", help="Output directory")
     parser.add_argument("--sample", type=int, default=1, help="Sample every N trading days (1=daily, 5=weekly)")
     parser.add_argument("--delay", type=float, default=0.2, help="Seconds between API calls")
+    parser.add_argument("--append", action="store_true", help="Append to existing chain files instead of overwriting. Skips spots download.")
     args = parser.parse_args()
 
     api_key = args.key
@@ -277,7 +285,7 @@ def main():
         if resp.lower() != "y":
             sys.exit(1)
 
-    download(api_key, tickers, args.start, args.end, args.output, args.sample, args.delay)
+    download(api_key, tickers, args.start, args.end, args.output, args.sample, args.delay, args.append)
 
 
 if __name__ == "__main__":
