@@ -173,7 +173,7 @@ export default function OverlayTab() {
             { data: ind.ema21, color: 'rgba(162,77,255,0.7)', width: 1 },   // Purple
             { data: ind.ema50, color: 'rgba(255,255,255,0.5)', width: 1 },   // White
             { data: ind.ema200, color: 'rgba(255,165,0,0.6)', width: 1 },    // Orange
-            { data: ind.vwap, color: 'rgba(0,191,255,0.6)', width: 2 },     // Cyan VWAP
+            // VWAP removed from line series — was causing cyan filled blocks
           ];
           for (const cfg of emaConfigs) {
             if (cfg.data.length > 0) {
