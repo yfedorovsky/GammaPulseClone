@@ -33,12 +33,22 @@ export default function SignalsTab() {
   const [outcomeFilter, setOutcomeFilter] = useState('All Outcomes');
   const [expanded, setExpanded] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [abData, setAbData] = useState(null);
+  const [showAB, setShowAB] = useState(false);
 
   useEffect(() => {
     load();
     const iv = setInterval(load, 30_000);
     return () => clearInterval(iv);
   }, []);
+
+  // AB results (slower poll — 60s)
+  useEffect(() => {
+    if (!showAB) return;
+    loadAB();
+    const iv = setInterval(loadAB, 60_000);
+    return () => clearInterval(iv);
+  }, [showAB]);
 
   async function load() {
     try {
@@ -50,6 +60,13 @@ export default function SignalsTab() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function loadAB() {
+    try {
+      const data = await api.abResults();
+      setAbData(data);
+    } catch {}
   }
 
   const filtered = useMemo(() => {
@@ -114,6 +131,82 @@ export default function SignalsTab() {
           </div>
         </div>
       )}
+
+      {/* A/B Test Panel */}
+      <div style={{ margin: '8px 20px' }}>
+        <button
+          className="ctrl-btn"
+          onClick={() => setShowAB(!showAB)}
+          style={{ fontSize: 10, padding: '4px 12px', background: showAB ? 'rgba(162,77,255,0.15)' : undefined, color: showAB ? '#bb7cff' : undefined, border: showAB ? '1px solid rgba(162,77,255,0.3)' : undefined }}
+        >
+          {showAB ? '▼' : '▶'} A/B Test: Mir+GEX vs Mir-only
+        </button>
+        {showAB && abData && abData.total > 0 && (() => {
+          const a = abData.summary?.book_a || {};
+          const b = abData.summary?.book_b || {};
+          const gex = abData.gex_contribution || {};
+          const ef = gex.entry_filter || {};
+          return (
+            <div style={{ marginTop: 8, padding: '14px 20px', background: 'var(--bg-panel)', border: '1px solid var(--border-faint)', borderRadius: 'var(--radius-md)' }}>
+              {/* Book comparison */}
+              <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
+                <div style={{ flex: 1, padding: '12px 16px', border: '1px solid rgba(16,220,154,0.2)', borderRadius: 'var(--radius-md)', background: 'rgba(16,220,154,0.05)' }}>
+                  <div style={{ fontSize: 10, color: '#10dc9a', fontWeight: 800, marginBottom: 6 }}>BOOK A — Mir + GEX</div>
+                  <div style={{ fontSize: 24, fontWeight: 800, color: '#10dc9a', fontFamily: 'var(--mono)' }}>{a.win_rate || 0}%</div>
+                  <div style={{ fontSize: 10, color: 'var(--text-3)' }}>{a.wins || 0}W / {a.losses || 0}L · {a.would_trade || 0} trades · avg {a.avg_pnl || 0}%</div>
+                </div>
+                <div style={{ flex: 1, padding: '12px 16px', border: '1px solid rgba(162,77,255,0.2)', borderRadius: 'var(--radius-md)', background: 'rgba(162,77,255,0.05)' }}>
+                  <div style={{ fontSize: 10, color: '#bb7cff', fontWeight: 800, marginBottom: 6 }}>BOOK B — Mir Only</div>
+                  <div style={{ fontSize: 24, fontWeight: 800, color: '#bb7cff', fontFamily: 'var(--mono)' }}>{b.win_rate || 0}%</div>
+                  <div style={{ fontSize: 10, color: 'var(--text-3)' }}>{b.wins || 0}W / {b.losses || 0}L · {b.would_trade || 0} trades · avg {b.avg_pnl || 0}%</div>
+                </div>
+              </div>
+              {/* GEX contribution */}
+              <div style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 700, marginBottom: 6 }}>GEX CONTRIBUTION</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+                <div style={{ padding: '8px 12px', background: 'rgba(255,255,255,0.03)', borderRadius: 6, fontSize: 10 }}>
+                  <div style={{ color: 'var(--text-3)', marginBottom: 2 }}>Entry Filter</div>
+                  <div style={{ fontWeight: 700 }}>Blocked {ef.signals_blocked || 0} signals</div>
+                  <div style={{ color: '#10dc9a' }}>Saved {ef.would_have_lost || 0} losses</div>
+                  <div style={{ color: '#ff5656' }}>Missed {ef.would_have_won || 0} wins</div>
+                </div>
+                <div style={{ padding: '8px 12px', background: 'rgba(255,255,255,0.03)', borderRadius: 6, fontSize: 10 }}>
+                  <div style={{ color: 'var(--text-3)', marginBottom: 2 }}>Targeting</div>
+                  <div>GEX R:R: <span style={{ fontWeight: 700, color: '#10dc9a' }}>{gex.targeting?.avg_rr_with_gex || '-'}</span></div>
+                  <div>Fixed R:R: <span style={{ fontWeight: 700, color: '#bb7cff' }}>{gex.targeting?.avg_rr_without_gex || '-'}</span></div>
+                </div>
+              </div>
+              {/* By conviction */}
+              {abData.by_conviction && (
+                <>
+                  <div style={{ fontSize: 10, color: 'var(--text-3)', fontWeight: 700, marginBottom: 6 }}>BY CONVICTION</div>
+                  <div style={{ display: 'flex', gap: 8, fontFamily: 'var(--mono)', fontSize: 10 }}>
+                    {['HIGH', 'MEDIUM', 'LOW', 'NONE'].map((c) => {
+                      const d = abData.by_conviction[c];
+                      if (!d || !d.count) return null;
+                      return (
+                        <div key={c} style={{ padding: '6px 10px', background: 'rgba(255,255,255,0.03)', borderRadius: 6, textAlign: 'center' }}>
+                          <div style={{ fontWeight: 800, color: c === 'HIGH' ? '#10dc9a' : c === 'MEDIUM' ? '#f4c430' : '#8a93a8' }}>{c}</div>
+                          <div>A: {d.a_wr}% · B: {d.b_wr}%</div>
+                          <div style={{ color: 'var(--text-3)' }}>{d.count} decisions</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+              <div style={{ fontSize: 9, color: 'var(--text-3)', marginTop: 8 }}>
+                {abData.summary?.total_decisions || 0} total decisions · {a.pending || 0} pending
+              </div>
+            </div>
+          );
+        })()}
+        {showAB && (!abData || abData.total === 0) && (
+          <div style={{ marginTop: 8, padding: '14px 20px', background: 'var(--bg-panel)', border: '1px solid var(--border-faint)', borderRadius: 'var(--radius-md)', fontSize: 11, color: 'var(--text-3)' }}>
+            No A/B decisions logged yet. Data will appear after the next signal generation cycle.
+          </div>
+        )}
+      </div>
 
       {/* Filters */}
       <div style={{ display: 'flex', gap: 10, padding: '10px 20px', alignItems: 'center' }}>

@@ -4,6 +4,7 @@ import { useStore } from '../store.js';
 import { api } from '../api.js';
 import { fmtBig, fmtPrice } from '../lib/format.js';
 import { computeAllIndicators, computeAnchoredVWAP } from '../lib/indicators.js';
+import { VolumeProfilePrimitive } from '../lib/volumeProfilePrimitive.js';
 
 const MACRO_KEY = 'MACRO (ALL 200D)';
 
@@ -30,6 +31,13 @@ export default function OverlayTab() {
   const [showVision, setShowVision] = useState(false);
   const [showMarkers, setShowMarkers] = useState(true);
   const [showEMAs, setShowEMAs] = useState(true);
+  const [showVP, setShowVP] = useState(false);
+  const [avwapMode, setAvwapMode] = useState(false);
+  const avwapModeRef = useRef(false);
+  // Keep ref in sync so click handler inside chart creation can read latest value
+  useEffect(() => { avwapModeRef.current = avwapMode; }, [avwapMode]);
+  const [avwapAnchors, setAvwapAnchors] = useState([]);
+  const [earningsDates, setEarningsDates] = useState([]);
   const [zoomLock, setZoomLock] = useState(false);
   const [indicators, setIndicators] = useState(null);
   const emaSeriesRef = useRef([]);
@@ -104,13 +112,44 @@ export default function OverlayTab() {
     };
     resize();
     window.addEventListener('resize', resize);
+
+    // Click handler for AVWAP anchoring
+    chart.subscribeClick((param) => {
+      if (!param.time || !rawBarsRef.current.length) return;
+      // Find the bar index matching this time
+      const idx = rawBarsRef.current.findIndex(b => b.time === param.time);
+      if (idx >= 0 && avwapModeRef.current) {
+        const bar = rawBarsRef.current[idx];
+        const label = `AVWAP ${new Date(bar.time * 1000).toLocaleDateString()}`;
+        setAvwapAnchors(prev => [...prev, { index: idx, label, color: 'rgba(0,191,255,0.7)' }]);
+        setAvwapMode(false);
+        avwapModeRef.current = false;
+      }
+    });
+
     return () => {
       window.removeEventListener('resize', resize);
       chart.remove();
     };
   }, []);
 
-  // Load bars when ticker, timeframe, or sessions filter changes
+  // Fetch earnings dates for this ticker (for "E" markers on daily chart)
+  useEffect(() => {
+    let alive = true;
+    async function load() {
+      try {
+        const data = await api.earningsDates(current, 120);
+        if (alive) setEarningsDates(data.dates || []);
+      } catch { if (alive) setEarningsDates([]); }
+    }
+    load();
+    return () => { alive = false; };
+  }, [current]);
+
+  // Store raw bars in ref so indicator effects can access without re-fetching
+  const rawBarsRef = useRef([]);
+
+  // Load bars ONLY when ticker, timeframe, or session filter changes
   useEffect(() => {
     let alive = true;
     async function load() {
@@ -119,134 +158,193 @@ export default function OverlayTab() {
         if (!alive || !candleRef.current) return;
         let rawBars = data.bars || [];
 
-        // Filter to regular trading hours (9:30-16:00 ET) when Sessions is on
-        // Only applies to intraday bars (epoch timestamps)
         if (showSessions && tf.interval !== 'daily') {
           rawBars = rawBars.filter((b) => {
-            if (typeof b.time !== 'number') return true; // daily bars pass through
+            if (typeof b.time !== 'number') return true;
             const d = new Date(b.time * 1000);
-            // Convert to ET: UTC-4 (EDT) or UTC-5 (EST)
-            // Approximate: use getUTCHours offset by 4 for EDT
             const etHour = (d.getUTCHours() - 4 + 24) % 24;
             const etMin = d.getUTCMinutes();
             const minuteOfDay = etHour * 60 + etMin;
-            // 9:30 = 570, 16:00 = 960
             return minuteOfDay >= 570 && minuteOfDay <= 960;
           });
         }
 
+        rawBarsRef.current = rawBars;
+
         const bars = rawBars.map((b) => ({
-          time: b.time,
-          open: b.open,
-          high: b.high,
-          low: b.low,
-          close: b.close,
-        }));
-        const volBars = rawBars.map((b) => ({
-          time: b.time,
-          value: b.volume || 0,
-          color: b.close >= b.open ? 'rgba(16,220,154,0.15)' : 'rgba(255,86,86,0.15)',
+          time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
         }));
         candleRef.current.setData(bars);
-        if (volumeRef.current) {
-          volumeRef.current.setData(showVolume ? volBars : []);
-        }
+
         if (chartRef.current && bars.length) {
-          // Always fit on timeframe change; only skip on data refresh if zoom locked
           chartRef.current.timeScale().fitContent();
         }
 
-        // Compute technical indicators
+        // Compute indicators from bars (stored in state for sidebar)
         const ind = computeAllIndicators(rawBars);
         setIndicators(ind);
-
-        // Draw EMA ribbons on chart
-        const chart = chartRef.current;
-        // Remove old EMA series
-        for (const s of emaSeriesRef.current) {
-          try { chart?.removeSeries(s); } catch {}
-        }
-        emaSeriesRef.current = [];
-
-        if (showEMAs && chart) {
-          const emaConfigs = [
-            { data: ind.ema8, color: 'rgba(16,220,154,0.7)', width: 1 },   // Green
-            { data: ind.ema21, color: 'rgba(162,77,255,0.7)', width: 1 },   // Purple
-            { data: ind.ema50, color: 'rgba(255,255,255,0.5)', width: 1 },   // White
-            { data: ind.ema200, color: 'rgba(255,165,0,0.6)', width: 1 },    // Orange
-            // VWAP removed from line series — was causing cyan filled blocks
-          ];
-          for (const cfg of emaConfigs) {
-            if (cfg.data.length > 0) {
-              const series = chart.addLineSeries({
-                color: cfg.color, lineWidth: cfg.width,
-                crosshairMarkerVisible: false, priceLineVisible: false,
-                lastValueVisible: false,
-              });
-              series.setData(cfg.data);
-              emaSeriesRef.current.push(series);
-            }
-          }
-        }
-
-        // Draw Anchored VWAPs from auto-detected anchors
-        // Only on daily timeframe (intraday has too many overlapping lines)
-        if (showEMAs && chart && ind.avwapAnchors && tf.interval === 'daily') {
-          for (const anchor of ind.avwapAnchors) {
-            const avwapData = computeAnchoredVWAP(rawBars, anchor.index);
-            if (avwapData.length > 1) {
-              const avwapSeries = chart.addLineSeries({
-                color: anchor.color, lineWidth: 1, lineStyle: 2,
-                crosshairMarkerVisible: false, priceLineVisible: false,
-                lastValueVisible: false,
-              });
-              avwapSeries.setData(avwapData);
-              emaSeriesRef.current.push(avwapSeries);
-            }
-          }
-        }
-
-        // Load SOE signal markers for this ticker
-        if (showMarkers) {
-          try {
-            const sigs = await api.signals(50, '', '');
-            const tickerSigs = (sigs.signals || sigs || []).filter(
-              (s) => s.ticker === current && s.ts
-            );
-            const markers = tickerSigs.map((s) => {
-              const isBull = s.direction === '\u25b2';
-              const isWin = s.status === 'WIN';
-              const isLoss = s.status === 'LOSS';
-              return {
-                time: s.ts,
-                position: isBull ? 'belowBar' : 'aboveBar',
-                color: isWin ? '#10dc9a' : isLoss ? '#ff5656' : isBull ? '#10dc9a' : '#ff5656',
-                shape: isBull ? 'arrowUp' : 'arrowDown',
-                text: `${isBull ? 'BUY' : 'SELL'} ${s.option_type || ''} $${s.strike || ''}${isWin ? ' WIN' : isLoss ? ' LOSS' : ''}`,
-              };
-            }).sort((a, b) => a.time - b.time);
-            if (markers.length) {
-              candleRef.current.setMarkers(markers);
-            }
-          } catch {}
-        }
       } catch (e) {
         console.warn('bars load failed', e);
       }
     }
     load();
     return () => { alive = false; };
-  }, [current, tfIdx, tf.interval, tf.days, showSessions, showMarkers, showEMAs, zoomLock]);
+  }, [current, tfIdx, tf.interval, tf.days, showSessions]);
 
-  // Toggle volume visibility
+  // Render volume bars (separate effect — toggle doesn't re-fetch)
   useEffect(() => {
-    if (!volumeRef.current) return;
-    // Re-fetch bars to toggle volume (lightweight-charts doesn't have a simple hide)
-    // Actually we can set data to empty
-    if (!showVolume) {
+    if (!volumeRef.current || !rawBarsRef.current.length) return;
+    if (showVolume) {
+      const volBars = rawBarsRef.current.map((b) => ({
+        time: b.time, value: b.volume || 0,
+        color: b.close >= b.open ? 'rgba(16,220,154,0.15)' : 'rgba(255,86,86,0.15)',
+      }));
+      volumeRef.current.setData(volBars);
+    } else {
       volumeRef.current.setData([]);
     }
-  }, [showVolume]);
+  }, [showVolume, indicators]); // indicators changes when bars load
+
+  // Render EMA lines + AVWAP (separate effect — toggle doesn't re-fetch)
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !indicators) return;
+
+    // Remove old EMA/AVWAP series
+    for (const s of emaSeriesRef.current) {
+      try { chart.removeSeries(s); } catch {}
+    }
+    emaSeriesRef.current = [];
+
+    if (showEMAs) {
+      const emaConfigs = [
+        { data: indicators.ema8, color: 'rgba(16,220,154,0.7)', width: 1, label: 'EMA 8' },
+        { data: indicators.ema21, color: 'rgba(162,77,255,0.7)', width: 1, label: 'EMA 21' },
+        { data: indicators.ema50, color: 'rgba(255,255,255,0.5)', width: 1, label: 'EMA 50' },
+        { data: indicators.ema200, color: 'rgba(255,165,0,0.6)', width: 1, label: 'EMA 200' },
+      ];
+      for (const cfg of emaConfigs) {
+        if (cfg.data.length > 0) {
+          const series = chart.addLineSeries({
+            color: cfg.color, lineWidth: cfg.width,
+            crosshairMarkerVisible: false, priceLineVisible: false,
+            lastValueVisible: true, title: cfg.label,
+          });
+          series.setData(cfg.data);
+          emaSeriesRef.current.push(series);
+        }
+      }
+
+      // Anchored VWAPs — auto-detected (daily) + user-placed (any timeframe)
+      const allAnchors = [
+        ...(tf.interval === 'daily' && indicators.avwapAnchors ? indicators.avwapAnchors : []),
+        ...avwapAnchors,
+      ];
+      if (allAnchors.length && rawBarsRef.current.length) {
+        for (const anchor of allAnchors) {
+          const avwapData = computeAnchoredVWAP(rawBarsRef.current, anchor.index);
+          if (avwapData.length > 1) {
+            const avwapSeries = chart.addLineSeries({
+              color: anchor.color, lineWidth: 2, lineStyle: 0,
+              crosshairMarkerVisible: false, priceLineVisible: false,
+              lastValueVisible: true, title: anchor.label,
+            });
+            avwapSeries.setData(avwapData);
+            emaSeriesRef.current.push(avwapSeries);
+          }
+        }
+      }
+    }
+  }, [showEMAs, indicators, tf.interval, avwapAnchors]);
+
+  // Render signal markers + earnings "E" markers (combined — setMarkers replaces all)
+  useEffect(() => {
+    if (!candleRef.current) return;
+    if (!showMarkers && earningsDates.length === 0) {
+      candleRef.current.setMarkers([]);
+      return;
+    }
+    async function loadMarkers() {
+      try {
+        let allMarkers = [];
+
+        // Signal markers
+        if (showMarkers) {
+          const sigs = await api.signals(50, '', '');
+          const tickerSigs = (sigs.signals || sigs || []).filter(
+            (s) => s.ticker === current && s.ts
+          );
+          for (const s of tickerSigs) {
+            const isBull = s.direction === '\u25b2';
+            const isWin = s.status === 'WIN';
+            const isLoss = s.status === 'LOSS';
+            allMarkers.push({
+              time: s.ts,
+              position: isBull ? 'belowBar' : 'aboveBar',
+              color: isWin ? '#10dc9a' : isLoss ? '#ff5656' : isBull ? '#10dc9a' : '#ff5656',
+              shape: isBull ? 'arrowUp' : 'arrowDown',
+              text: `${isBull ? 'BUY' : 'SELL'} ${s.option_type || ''} $${s.strike || ''}${isWin ? ' WIN' : isLoss ? ' LOSS' : ''}`,
+            });
+          }
+        }
+
+        // Earnings "E" markers on daily timeframe
+        if (earningsDates.length > 0 && tf.interval === 'daily') {
+          for (const dateStr of earningsDates) {
+            // Convert YYYY-MM-DD to Unix timestamp matching lightweight-charts daily format
+            const parts = dateStr.split('-');
+            const ts = { year: +parts[0], month: +parts[1], day: +parts[2] };
+            allMarkers.push({
+              time: ts,
+              position: 'aboveBar',
+              color: '#f4c430',
+              shape: 'circle',
+              text: 'E',
+            });
+          }
+        }
+
+        // Sort by time (lightweight-charts requires sorted markers)
+        allMarkers.sort((a, b) => {
+          const ta = typeof a.time === 'number' ? a.time : new Date(`${a.time.year}-${String(a.time.month).padStart(2, '0')}-${String(a.time.day).padStart(2, '0')}`).getTime() / 1000;
+          const tb = typeof b.time === 'number' ? b.time : new Date(`${b.time.year}-${String(b.time.month).padStart(2, '0')}-${String(b.time.day).padStart(2, '0')}`).getTime() / 1000;
+          return ta - tb;
+        });
+
+        candleRef.current.setMarkers(allMarkers.length ? allMarkers : []);
+      } catch {}
+    }
+    loadMarkers();
+  }, [showMarkers, current, earningsDates, tf.interval]);
+
+  // Volume Profile — ISeriesPrimitive plugin (official lightweight-charts API)
+  const vpPrimitiveRef = useRef(null);
+  useEffect(() => {
+    const candle = candleRef.current;
+    if (!candle) return;
+
+    // Detach previous primitive
+    if (vpPrimitiveRef.current) {
+      try { candle.detachPrimitive(vpPrimitiveRef.current); } catch {}
+      vpPrimitiveRef.current = null;
+    }
+
+    if (!showVP || !rawBarsRef.current.length) return;
+
+    const vp = new VolumeProfilePrimitive(rawBarsRef.current, {
+      numBins: 50,
+      widthPct: 0.18,
+    });
+    candle.attachPrimitive(vp);
+    vpPrimitiveRef.current = vp;
+
+    return () => {
+      if (vpPrimitiveRef.current) {
+        try { candle.detachPrimitive(vpPrimitiveRef.current); } catch {}
+        vpPrimitiveRef.current = null;
+      }
+    };
+  }, [showVP, indicators, current]);
 
   // Draw GEX levels on the chart
   const drawLevels = useCallback(() => {
@@ -511,6 +609,24 @@ export default function OverlayTab() {
         <label className="ov-check"><input type="checkbox" checked={showSessions} onChange={(e) => setShowSessions(e.target.checked)} /> <span className="check-label" style={{ color: '#10dc9a' }}>Sessions</span></label>
         <label className="ov-check"><input type="checkbox" checked={showVolume} onChange={(e) => setShowVolume(e.target.checked)} /> <span className="check-label" style={{ color: '#10dc9a' }}>Volume</span></label>
         <label className="ov-check"><input type="checkbox" checked={showEMAs} onChange={(e) => setShowEMAs(e.target.checked)} /> <span className="check-label" style={{ color: '#a24dff' }}>EMAs</span></label>
+        <label className="ov-check"><input type="checkbox" checked={showVP} onChange={(e) => setShowVP(e.target.checked)} /> <span className="check-label" style={{ color: '#00bfff' }}>VP</span></label>
+        <button
+          className="header-btn"
+          onClick={() => setAvwapMode(!avwapMode)}
+          style={{
+            background: avwapMode ? 'rgba(0,191,255,0.2)' : undefined,
+            color: avwapMode ? '#00bfff' : undefined,
+            border: avwapMode ? '1px solid #00bfff' : undefined,
+            fontSize: 10,
+          }}
+        >
+          {avwapMode ? 'Click candle...' : 'AVWAP'}
+        </button>
+        {avwapAnchors.length > 0 && (
+          <button className="header-btn" onClick={() => setAvwapAnchors([])} style={{ fontSize: 10, color: '#ff5656' }}>
+            Clear AVWAP
+          </button>
+        )}
         <label className="ov-check"><input type="checkbox" checked={showMarkers} onChange={(e) => setShowMarkers(e.target.checked)} /> <span className="check-label" style={{ color: '#f4c430' }}>Signals</span></label>
         <label className="ov-check"><input type="checkbox" checked={zoomLock} onChange={(e) => setZoomLock(e.target.checked)} /> <span className="check-label" style={{ color: zoomLock ? '#ff8c00' : undefined }}>🔒 Zoom</span></label>
         <span className="mini text-dim" style={{ marginLeft: 'auto' }}>Auto-refresh 2min</span>

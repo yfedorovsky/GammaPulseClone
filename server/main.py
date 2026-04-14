@@ -23,7 +23,7 @@ from .config import get_settings
 from .db import db
 from .flow_alerts import init_alert_db, get_alerts as get_flow_alerts, run_flow_scanner
 from .discipline import init_discipline_db, get_ticker_stats, compute_kelly_size, get_circuit_breaker, log_trade
-from .signals import init_signals_db, get_signals, get_signal_stats, run_signal_engine
+from .signals import init_signals_db, init_ab_db, get_signals, get_signal_stats, run_signal_engine
 from .scalp_alerts import run_scalp_scanner
 from .trade_tracker import init_tracker_db, get_all_trades, run_position_monitor
 from .breadth import get_breadth_context, get_nymo, get_namo, init_breadth_db
@@ -54,6 +54,7 @@ async def lifespan(app: FastAPI):
     init_alert_db()
     init_tracker_db()
     init_signals_db()
+    init_ab_db()
     init_discipline_db()
     init_breadth_db()
     await db.start()  # Single-writer queue for SQLite (prevents SQLITE_BUSY)
@@ -559,6 +560,109 @@ async def industry_rankings():
     return {"count": len(ranked), "industries": ranked}
 
 
+@app.get("/api/ab/results")
+async def ab_results():
+    """A/B test results: Mir-only (Book B) vs Mir+GEX (Book A) comparison."""
+    import sqlite3
+    s = get_settings()
+    c = sqlite3.connect(s.snapshot_db)
+    c.row_factory = sqlite3.Row
+
+    total = c.execute("SELECT COUNT(*) as n FROM ab_decisions").fetchone()["n"]
+    if total == 0:
+        c.close()
+        return {"total": 0, "summary": {}, "gex_contribution": {}, "by_conviction": {}, "daily": []}
+
+    def _book_stats(prefix):
+        would = c.execute(f"SELECT COUNT(*) as n FROM ab_decisions WHERE {prefix}_would_trade = 1").fetchone()["n"]
+        wins = c.execute(f"SELECT COUNT(*) as n FROM ab_decisions WHERE {prefix}_outcome = 'WIN'").fetchone()["n"]
+        losses = c.execute(f"SELECT COUNT(*) as n FROM ab_decisions WHERE {prefix}_outcome = 'LOSS'").fetchone()["n"]
+        pending = c.execute(f"SELECT COUNT(*) as n FROM ab_decisions WHERE {prefix}_outcome = 'PENDING' AND {prefix}_would_trade = 1").fetchone()["n"]
+        resolved = wins + losses
+        avg_pnl = c.execute(f"SELECT AVG({prefix}_pnl_pct) as v FROM ab_decisions WHERE {prefix}_pnl_pct IS NOT NULL").fetchone()["v"]
+        return {
+            "would_trade": would, "wins": wins, "losses": losses, "pending": pending,
+            "win_rate": round(wins / resolved * 100, 1) if resolved else 0,
+            "avg_pnl": round(avg_pnl or 0, 2),
+            "resolved": resolved,
+        }
+
+    summary = {"book_a": _book_stats("a"), "book_b": _book_stats("b"), "total_decisions": total}
+
+    # GEX contribution breakdown
+    gex_blocked = c.execute("SELECT COUNT(*) as n FROM ab_decisions WHERE gex_entry_blocked = 1").fetchone()["n"]
+    gex_blocked_wins = c.execute("SELECT COUNT(*) as n FROM ab_decisions WHERE gex_entry_blocked = 1 AND b_outcome = 'WIN'").fetchone()["n"]
+    gex_blocked_losses = c.execute("SELECT COUNT(*) as n FROM ab_decisions WHERE gex_entry_blocked = 1 AND b_outcome = 'LOSS'").fetchone()["n"]
+
+    avg_a_rr = c.execute("SELECT AVG(a_rr_ratio) as v FROM ab_decisions WHERE a_would_trade = 1 AND a_rr_ratio IS NOT NULL").fetchone()["v"]
+    avg_b_rr = c.execute("SELECT AVG(b_rr_ratio) as v FROM ab_decisions WHERE b_would_trade = 1 AND b_rr_ratio IS NOT NULL").fetchone()["v"]
+
+    gex_contribution = {
+        "entry_filter": {
+            "signals_blocked": gex_blocked,
+            "would_have_won": gex_blocked_wins,
+            "would_have_lost": gex_blocked_losses,
+        },
+        "targeting": {
+            "avg_rr_with_gex": round(avg_a_rr or 0, 2),
+            "avg_rr_without_gex": round(avg_b_rr or 0, 2),
+        },
+    }
+
+    # By conviction
+    by_conviction = {}
+    for conv in ("HIGH", "MEDIUM", "LOW"):
+        row = c.execute(
+            """SELECT
+                COUNT(*) as n,
+                SUM(CASE WHEN a_outcome = 'WIN' THEN 1 ELSE 0 END) as a_wins,
+                SUM(CASE WHEN a_outcome IN ('WIN','LOSS') THEN 1 ELSE 0 END) as a_resolved,
+                SUM(CASE WHEN b_outcome = 'WIN' THEN 1 ELSE 0 END) as b_wins,
+                SUM(CASE WHEN b_outcome IN ('WIN','LOSS') THEN 1 ELSE 0 END) as b_resolved
+            FROM ab_decisions WHERE mir_conviction = ?""", (conv,)
+        ).fetchone()
+        by_conviction[conv] = {
+            "count": row["n"],
+            "a_wr": round(row["a_wins"] / row["a_resolved"] * 100, 1) if row["a_resolved"] else 0,
+            "b_wr": round(row["b_wins"] / row["b_resolved"] * 100, 1) if row["b_resolved"] else 0,
+        }
+    # NONE (no Mir signal)
+    row = c.execute(
+        """SELECT COUNT(*) as n,
+            SUM(CASE WHEN a_outcome = 'WIN' THEN 1 ELSE 0 END) as a_wins,
+            SUM(CASE WHEN a_outcome IN ('WIN','LOSS') THEN 1 ELSE 0 END) as a_resolved
+        FROM ab_decisions WHERE mir_conviction IS NULL"""
+    ).fetchone()
+    by_conviction["NONE"] = {
+        "count": row["n"],
+        "a_wr": round(row["a_wins"] / row["a_resolved"] * 100, 1) if row["a_resolved"] else 0,
+        "b_wr": 0,
+    }
+
+    # Daily time series
+    daily = []
+    rows = c.execute(
+        """SELECT date(ts, 'unixepoch') as dt,
+            SUM(CASE WHEN a_outcome = 'WIN' THEN 1 ELSE 0 END) as a_wins,
+            SUM(CASE WHEN a_outcome IN ('WIN','LOSS') THEN 1 ELSE 0 END) as a_resolved,
+            SUM(CASE WHEN b_outcome = 'WIN' THEN 1 ELSE 0 END) as b_wins,
+            SUM(CASE WHEN b_outcome IN ('WIN','LOSS') THEN 1 ELSE 0 END) as b_resolved,
+            COUNT(*) as decisions
+        FROM ab_decisions GROUP BY dt ORDER BY dt"""
+    ).fetchall()
+    for r in rows:
+        daily.append({
+            "date": r["dt"],
+            "a_wr": round(r["a_wins"] / r["a_resolved"] * 100, 1) if r["a_resolved"] else 0,
+            "b_wr": round(r["b_wins"] / r["b_resolved"] * 100, 1) if r["b_resolved"] else 0,
+            "decisions": r["decisions"],
+        })
+
+    c.close()
+    return {"total": total, "summary": summary, "gex_contribution": gex_contribution,
+            "by_conviction": by_conviction, "daily": daily}
+
+
 @app.get("/api/earnings")
 async def earnings_calendar(week_offset: int = 0):
     """Weekly calendar: earnings from Finnhub + hardcoded economic events."""
@@ -629,6 +733,38 @@ async def earnings_calendar(week_offset: int = 0):
         "economic_events": economic_events,
         "source": "Finnhub" if s.finnhub_api_key else "No API key — add FINNHUB_API_KEY to .env",
     }
+
+
+@app.get("/api/earnings/dates/{ticker}")
+async def earnings_dates(ticker: str, days: int = 90):
+    """Return earnings dates for a ticker over the past N days (from Finnhub)."""
+    import datetime
+    s = get_settings()
+    if not s.finnhub_api_key:
+        return {"dates": []}
+    today = datetime.date.today()
+    start = today - datetime.timedelta(days=days)
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://finnhub.io/api/v1/calendar/earnings",
+                params={
+                    "from": start.isoformat(),
+                    "to": today.isoformat(),
+                    "symbol": ticker.upper(),
+                    "token": s.finnhub_api_key,
+                },
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                dates = [ec["date"] for ec in data.get("earningsCalendar", [])
+                         if ec.get("symbol", "").upper() == ticker.upper()]
+                return {"dates": sorted(set(dates))}
+    except Exception as e:
+        print(f"[EARNINGS] dates fetch failed for {ticker}: {e}")
+    return {"dates": []}
 
 
 def _get_economic_events(monday, friday):

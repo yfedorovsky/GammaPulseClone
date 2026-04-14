@@ -856,3 +856,109 @@ def enrich_signal(
     enriched["discipline_note"] = "; ".join(discipline_notes) if discipline_notes else None
 
     return enriched
+
+
+# ── Mir-only Decision (A/B Test Control Book) ────────────────────────
+#
+# Computes what a Mir-only system (no GEX) would decide.
+# Same contract quality gates, same time gates, same Kelly.
+# Removes: GEX score threshold, regime filter, king/floor targets.
+
+def compute_mir_only_decision(
+    ticker: str,
+    direction: str,
+    spot: float,
+    contract: dict[str, Any] | None,
+    mir_signal: dict[str, Any] | None = None,
+    is_0dte: bool = False,
+    account_value: float = 10_000,
+) -> dict[str, Any]:
+    """Compute Book B (Mir-only) decision for AB test.
+
+    Returns {would_trade, blocked_by, target, stop, rr_ratio, kelly_pct, gate_label, gate_score}.
+    """
+    result: dict[str, Any] = {
+        "would_trade": 0,
+        "blocked_by": None,
+        "target": None,
+        "stop": None,
+        "rr_ratio": None,
+        "kelly_pct": 0,
+        "gate_label": "INVALID",
+        "gate_score": 0,
+    }
+
+    # Fixed % targets (no GEX king/floor/ceiling)
+    if spot:
+        if direction == "BULL":
+            result["target"] = round(spot * 1.02, 2)  # +2%
+            result["stop"] = round(spot * 0.99, 2)     # -1%
+        else:
+            result["target"] = round(spot * 0.98, 2)   # -2%
+            result["stop"] = round(spot * 1.01, 2)     # +1%
+        result["rr_ratio"] = 2.0  # 2% reward / 1% risk = 2.0
+
+    # Simplified 3-factor gate (no GEX)
+    gate_score = 0
+    factors = []
+
+    # Factor 1: Mir conviction
+    conv = (mir_signal or {}).get("conviction", "").upper() if mir_signal else ""
+    if conv in ("HIGH", "MEDIUM"):
+        gate_score += 1
+        factors.append(f"Mir {conv} (+1)")
+    else:
+        factors.append(f"No Mir conviction (+0)")
+
+    # Factor 2: Time gate (0DTE only)
+    if is_0dte:
+        tg = check_0dte_time_gate()
+        if tg["allowed"]:
+            gate_score += 1
+            factors.append(f"Time OK: {tg['window']} (+1)")
+        else:
+            factors.append(f"Time blocked: {tg['reason']} (+0)")
+    else:
+        gate_score += 1  # Non-0DTE always passes time gate
+        factors.append("Non-0DTE time pass (+1)")
+
+    # Factor 3: Contract available
+    if contract:
+        gate_score += 1
+        factors.append("Contract quality OK (+1)")
+    else:
+        factors.append("No valid contract (+0)")
+
+    result["gate_score"] = gate_score
+
+    if gate_score >= 2:
+        result["gate_label"] = "VALID"
+    elif gate_score == 1:
+        result["gate_label"] = "WEAK"
+    else:
+        result["gate_label"] = "INVALID"
+
+    # Determine would_trade
+    if not mir_signal or conv not in ("HIGH", "MEDIUM"):
+        result["blocked_by"] = "no_mir_conviction"
+    elif not contract:
+        result["blocked_by"] = "no_contract"
+    elif is_0dte:
+        tg = check_0dte_time_gate()
+        if not tg["allowed"]:
+            result["blocked_by"] = f"time_gate_{tg['window']}"
+        else:
+            result["would_trade"] = 1
+    else:
+        result["would_trade"] = 1
+
+    # Kelly sizing (Mir-based, no GEX modifier)
+    if result["would_trade"]:
+        kelly = compute_kelly_size(ticker, is_0dte=is_0dte, account_value=account_value)
+        # Scale by conviction: HIGH = full, MEDIUM = half
+        pct = kelly.get("size_pct", 0)
+        if conv == "MEDIUM":
+            pct *= 0.5
+        result["kelly_pct"] = round(pct, 2)
+
+    return result

@@ -76,6 +76,82 @@ CREATE INDEX IF NOT EXISTS idx_soe_ticker ON soe_signals(ticker, ts);
 CREATE INDEX IF NOT EXISTS idx_soe_status ON soe_signals(status);
 """
 
+AB_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ab_decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  ticker TEXT NOT NULL,
+  direction TEXT NOT NULL,
+
+  -- Mir context (shared)
+  mir_conviction TEXT,
+  mir_signal_type TEXT,
+  mir_option_type TEXT,
+
+  -- Contract context (shared)
+  spot REAL,
+  strike REAL,
+  expiration TEXT,
+  option_type TEXT,
+  dte INTEGER,
+  entry_price REAL,
+  delta REAL,
+
+  -- Book A: Mir+GEX (treatment)
+  a_would_trade INTEGER NOT NULL DEFAULT 0,
+  a_blocked_by TEXT,
+  a_score REAL,
+  a_grade TEXT,
+  a_gate_label TEXT,
+  a_target REAL,
+  a_stop REAL,
+  a_rr_ratio REAL,
+  a_kelly_pct REAL,
+  a_regime TEXT,
+  a_king REAL,
+  a_floor REAL,
+  a_ceiling REAL,
+
+  -- Book B: Mir-only (control)
+  b_would_trade INTEGER NOT NULL DEFAULT 0,
+  b_blocked_by TEXT,
+  b_target REAL,
+  b_stop REAL,
+  b_rr_ratio REAL,
+  b_kelly_pct REAL,
+  b_gate_label TEXT,
+
+  -- GEX contribution flags
+  gex_entry_blocked INTEGER DEFAULT 0,
+  gex_regime_blocked INTEGER DEFAULT 0,
+  gex_improved_target INTEGER DEFAULT 0,
+  gex_improved_stop INTEGER DEFAULT 0,
+  gex_rr_delta REAL DEFAULT 0,
+
+  -- Outcomes (filled later)
+  status TEXT DEFAULT 'PENDING',
+  a_outcome TEXT DEFAULT 'PENDING',
+  b_outcome TEXT DEFAULT 'PENDING',
+  outcome_spot REAL,
+  outcome_ts INTEGER,
+  a_pnl_pct REAL,
+  b_pnl_pct REAL,
+  a_max_spot REAL,
+  a_min_spot REAL,
+  b_max_spot REAL,
+  b_min_spot REAL
+);
+CREATE INDEX IF NOT EXISTS idx_ab_ts ON ab_decisions(ts);
+CREATE INDEX IF NOT EXISTS idx_ab_status ON ab_decisions(status);
+CREATE INDEX IF NOT EXISTS idx_ab_mir ON ab_decisions(mir_conviction);
+"""
+
+
+def init_ab_db() -> None:
+    with _conn() as c:
+        c.executescript(AB_SCHEMA)
+
+
 _seen_signals: set[str] = set()
 
 def _load_recent_signals() -> None:
@@ -713,16 +789,22 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
             iv_universe.append(ticker_iv)
 
     for ticker, state in snapshot.items():
-        # Earnings blackout: skip tickers with upcoming earnings
+        # Earnings blackout: skip tickers with upcoming earnings (both books)
         if ticker in blackout_set:
             continue
 
+        # Fetch Mir signal early — needed for both books
+        mir_sig = await cache.get_mir_signal(ticker)
+
         direction = _determine_direction(state)
+        # If no GEX direction but Mir exists, infer from Mir option_type
+        if direction is None and mir_sig:
+            ot = (mir_sig.get("option_type") or "").upper()
+            direction = "BULL" if ot == "CALL" else "BEAR" if ot == "PUT" else None
         if direction is None:
             continue
 
         # Dedup: only one signal per ticker per 2 hours (direction-independent)
-        # Prevents the same ticker from spamming regardless of signal flip
         dedup_key = f"{ticker}:{now.strftime('%Y%m%d')}{now.hour // 2}"
         if dedup_key in _seen_signals:
             continue
@@ -732,54 +814,124 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
             state["_breadth"] = breadth_data
 
         score, reasons = _compute_signal_score(state, direction, confluence, iv_universe)
-
-        # Minimum score threshold (2.5/6 ≈ 42%, was 3.5/8 ≈ 44%)
-        if score < 2.5:
-            continue
-
         grade = _score_to_grade(score)
         signal_type = _determine_signal_type(state, direction)
-
         contract = _select_contract(state, direction)
-        if not contract:
-            continue
+        spot = state.get("actual_spot") or state.get("_spot") or 0
 
-        # ── Minimum R:R Gate ──────────────────────────────────
-        # Reject setups where risk > reward. A 0.3x R:R means you need
-        # 77% win rate just to break even — not realistic for directional.
-        if contract.get("rr_ratio", 0) < 1.0:
-            continue
+        # ── Track blocking reasons as flags (don't continue yet) ──
+        a_blocked_by = None
+        if score < 2.5:
+            a_blocked_by = "score_threshold"
+        elif not contract:
+            a_blocked_by = "no_contract"
+        elif contract.get("rr_ratio", 0) < 1.0:
+            a_blocked_by = "rr_ratio"
 
-        # ── 0DTE Freshness Gate ────────────────────────────────────
-        # 0DTE signals require fresh Greeks — stale hourly data from
-        # Tradier is not safe for same-day expiry trades.
-        dte = contract.get("dte", 99)
+        # 0DTE freshness gate
+        dte = contract.get("dte", 99) if contract else 99
         greeks_age = state.get("_greeks_age_seconds", 999)
         dte_0_status = None
-
-        if dte == 0:
-            # 0DTE experimental: SPY/QQQ only
+        if dte == 0 and not a_blocked_by:
             if ticker not in ("SPY", "QQQ"):
-                continue
-            # Hard block if Greeks source is Tradier (ORATS, unverified for 0DTE)
-            greeks_source = state.get("_greeks_source", "tradier")
-            if greeks_source == "tradier":
-                continue
-            # Gate on quote freshness — allow within scan cycle (120s)
-            quote_ts = state.get("_quote_ts", 0)
-            quote_age = time.time() - quote_ts if quote_ts else 999
-            if quote_age > 180:
-                continue  # Spot price too stale for 0DTE (3 min max)
-            # Blocked: Greeks too stale for 0DTE
-            if greeks_age > 60:
-                continue
-            # Classify freshness
-            if greeks_age <= 60 and quote_age <= 180:
-                dte_0_status = "TRADEABLE"
+                a_blocked_by = "0dte_ticker"
+            elif state.get("_greeks_source", "tradier") == "tradier":
+                a_blocked_by = "0dte_tradier"
             else:
-                dte_0_status = "EXPERIMENTAL"
+                quote_ts = state.get("_quote_ts", 0)
+                quote_age = time.time() - quote_ts if quote_ts else 999
+                if quote_age > 180:
+                    a_blocked_by = "0dte_stale_quote"
+                elif greeks_age > 60:
+                    a_blocked_by = "0dte_stale_greeks"
+                elif state.get("_greeks_spot_stale"):
+                    a_blocked_by = f"0dte_spot_divergence_{state.get('_greeks_spot_divergence', 0)}pct"
+                else:
+                    dte_0_status = "TRADEABLE" if greeks_age <= 60 and quote_age <= 180 else "EXPERIMENTAL"
 
-        spot = state.get("actual_spot") or state.get("_spot") or 0
+        # ── Compute Book A (Mir+GEX) decision ──
+        a_would_trade = 1 if not a_blocked_by else 0
+        a_gate_label = None
+        a_kelly_pct = 0
+
+        if a_would_trade and contract:
+            try:
+                from .discipline import enrich_signal
+                test_sig = {"ticker": ticker, "score": score, "grade": grade,
+                            "dte": dte, "direction": "▲" if direction == "BULL" else "▼"}
+                enriched = enrich_signal(test_sig, mir_signal=mir_sig)
+                a_gate_label = enriched.get("gate_label")
+                a_kelly_pct = enriched.get("kelly_size_pct", 0)
+                if enriched.get("discipline_grade") in ("SKIP", "BLOCKED"):
+                    a_blocked_by = f"discipline_{enriched.get('discipline_grade', '').lower()}"
+                    a_would_trade = 0
+            except Exception:
+                pass
+
+        # ── Compute Book B (Mir-only) decision ──
+        try:
+            from .discipline import compute_mir_only_decision
+            b_decision = compute_mir_only_decision(
+                ticker, direction, spot, contract, mir_sig,
+                is_0dte=(dte == 0),
+            )
+        except Exception:
+            b_decision = {"would_trade": 0, "blocked_by": "error", "target": None,
+                          "stop": None, "rr_ratio": None, "kelly_pct": 0,
+                          "gate_label": "INVALID", "gate_score": 0}
+
+        # ── Compute GEX contribution flags ──
+        gex_entry_blocked = 1 if a_blocked_by == "score_threshold" and b_decision["would_trade"] else 0
+        gex_regime_blocked = 1 if a_blocked_by and "regime" in str(a_blocked_by) else 0
+        a_target = contract["target"] if contract and a_would_trade else None
+        b_target = b_decision["target"]
+        gex_improved_target = 1 if (a_target and b_target and abs(a_target - b_target) > 0.01) else 0
+        a_stop = contract["stop"] if contract and a_would_trade else None
+        b_stop = b_decision["stop"]
+        gex_improved_stop = 1 if (a_stop and b_stop and abs(a_stop - b_stop) > 0.01) else 0
+        a_rr = contract["rr_ratio"] if contract and a_would_trade else None
+        b_rr = b_decision["rr_ratio"]
+        gex_rr_delta = round((a_rr or 0) - (b_rr or 0), 2) if a_rr and b_rr else 0
+
+        # ── Insert AB decision (fire-and-forget, never blocks signal generation) ──
+        try:
+            _insert_ab_decision({
+                "ts": int(time.time()), "ticker": ticker, "direction": direction,
+                "mir_conviction": (mir_sig or {}).get("conviction"),
+                "mir_signal_type": (mir_sig or {}).get("signal_type"),
+                "mir_option_type": (mir_sig or {}).get("option_type"),
+                "spot": spot,
+                "strike": contract["strike"] if contract else None,
+                "expiration": contract["expiration"] if contract else None,
+                "option_type": contract["option_type"] if contract else None,
+                "dte": dte if contract else None,
+                "entry_price": contract.get("mid_price") or contract.get("ask") if contract else None,
+                "delta": contract.get("delta") if contract else None,
+                "a_would_trade": a_would_trade, "a_blocked_by": a_blocked_by,
+                "a_score": round(score, 1), "a_grade": grade,
+                "a_gate_label": a_gate_label,
+                "a_target": a_target, "a_stop": a_stop,
+                "a_rr_ratio": a_rr, "a_kelly_pct": a_kelly_pct,
+                "a_regime": state.get("regime"),
+                "a_king": state.get("king"), "a_floor": state.get("floor"),
+                "a_ceiling": state.get("ceiling"),
+                "b_would_trade": b_decision["would_trade"],
+                "b_blocked_by": b_decision["blocked_by"],
+                "b_target": b_target, "b_stop": b_stop,
+                "b_rr_ratio": b_rr, "b_kelly_pct": b_decision["kelly_pct"],
+                "b_gate_label": b_decision["gate_label"],
+                "gex_entry_blocked": gex_entry_blocked,
+                "gex_regime_blocked": gex_regime_blocked,
+                "gex_improved_target": gex_improved_target,
+                "gex_improved_stop": gex_improved_stop,
+                "gex_rr_delta": gex_rr_delta,
+            })
+        except Exception:
+            pass
+
+        # ── Original behavior: only insert SOE signal if ALL GEX gates pass ──
+        if a_blocked_by:
+            continue
 
         sig = {
             "ticker": ticker,
@@ -810,14 +962,12 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
             "status": "PENDING",
             "greeks_source": state.get("_greeks_source", "tradier"),
             "greeks_age_seconds": round(greeks_age, 1),
-            "_0dte_status": dte_0_status,  # None for non-0DTE, "TRADEABLE" or "EXPERIMENTAL"
+            "_0dte_status": dte_0_status,
         }
 
         # Enrich with discipline layer (sizing, tier, circuit breaker)
         try:
             from .discipline import enrich_signal
-            # Fetch real Mir conviction from cache (if Mac Mini bridge is active)
-            mir_sig = await cache.get_mir_signal(ticker)
             sig = enrich_signal(sig, mir_signal=mir_sig)
         except Exception:
             pass
@@ -834,7 +984,7 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
                 await send(
                     format_soe_signal(sig),
                     ticker=ticker,
-                    priority=(sig["grade"] == "A+"),  # A+ bypasses global rate limit
+                    priority=(sig["grade"] == "A+"),
                 )
             except Exception:
                 pass
@@ -863,6 +1013,112 @@ def _insert_signal(sig: dict[str, Any]) -> None:
                 sig["reasoning"], sig["status"],
             ),
         )
+
+
+def _insert_ab_decision(d: dict[str, Any]) -> None:
+    cols = list(d.keys())
+    placeholders = ",".join("?" for _ in cols)
+    col_str = ",".join(cols)
+    with _conn() as c:
+        c.execute(f"INSERT INTO ab_decisions ({col_str}) VALUES ({placeholders})", tuple(d.values()))
+
+
+async def check_ab_outcomes() -> None:
+    """Check pending AB decisions and update outcomes + MAE/MFE."""
+    snapshot = await cache.snapshot()
+
+    with _conn() as c:
+        pending = c.execute(
+            "SELECT * FROM ab_decisions WHERE status = 'PENDING' ORDER BY ts DESC LIMIT 500"
+        ).fetchall()
+
+        for row in pending:
+            d = dict(row)
+            ticker = d["ticker"]
+            state = snapshot.get(ticker)
+            if not state:
+                continue
+            spot = state.get("actual_spot") or state.get("_spot") or 0
+            if not spot:
+                continue
+
+            is_bull = d["direction"] == "BULL"
+            entry_spot = d["spot"] or spot
+
+            # Update MAE/MFE tracking (min/max spot seen)
+            a_min = min(d.get("a_min_spot") or spot, spot)
+            a_max = max(d.get("a_max_spot") or spot, spot)
+
+            updates = {"a_min_spot": a_min, "a_max_spot": a_max,
+                       "b_min_spot": a_min, "b_max_spot": a_max}
+
+            # Check Book A outcome
+            if d["a_outcome"] == "PENDING" and d["a_would_trade"]:
+                a_target = d["a_target"]
+                a_stop = d["a_stop"]
+                if a_target and a_stop:
+                    if is_bull and spot >= a_target:
+                        updates["a_outcome"] = "WIN"
+                        updates["a_pnl_pct"] = round((spot - entry_spot) / entry_spot * 100, 2)
+                    elif not is_bull and spot <= a_target:
+                        updates["a_outcome"] = "WIN"
+                        updates["a_pnl_pct"] = round((entry_spot - spot) / entry_spot * 100, 2)
+                    elif is_bull and spot <= a_stop:
+                        updates["a_outcome"] = "LOSS"
+                        updates["a_pnl_pct"] = round((spot - entry_spot) / entry_spot * 100, 2)
+                    elif not is_bull and spot >= a_stop:
+                        updates["a_outcome"] = "LOSS"
+                        updates["a_pnl_pct"] = round((entry_spot - spot) / entry_spot * -100, 2)
+            elif d["a_would_trade"] == 0 and d["a_outcome"] == "PENDING":
+                updates["a_outcome"] = "BLOCKED"
+
+            # Check Book B outcome
+            if d["b_outcome"] == "PENDING" and d["b_would_trade"]:
+                b_target = d["b_target"]
+                b_stop = d["b_stop"]
+                if b_target and b_stop:
+                    if is_bull and spot >= b_target:
+                        updates["b_outcome"] = "WIN"
+                        updates["b_pnl_pct"] = round((spot - entry_spot) / entry_spot * 100, 2)
+                    elif not is_bull and spot <= b_target:
+                        updates["b_outcome"] = "WIN"
+                        updates["b_pnl_pct"] = round((entry_spot - spot) / entry_spot * 100, 2)
+                    elif is_bull and spot <= b_stop:
+                        updates["b_outcome"] = "LOSS"
+                        updates["b_pnl_pct"] = round((spot - entry_spot) / entry_spot * 100, 2)
+                    elif not is_bull and spot >= b_stop:
+                        updates["b_outcome"] = "LOSS"
+                        updates["b_pnl_pct"] = round((entry_spot - spot) / entry_spot * -100, 2)
+            elif d["b_would_trade"] == 0 and d["b_outcome"] == "PENDING":
+                updates["b_outcome"] = "BLOCKED"
+
+            # Check expiration
+            if d.get("expiration"):
+                import datetime
+                try:
+                    exp = datetime.date.fromisoformat(d["expiration"])
+                    if datetime.date.today() > exp:
+                        if updates.get("a_outcome", d["a_outcome"]) == "PENDING":
+                            updates["a_outcome"] = "EXPIRED"
+                        if updates.get("b_outcome", d["b_outcome"]) == "PENDING":
+                            updates["b_outcome"] = "EXPIRED"
+                except ValueError:
+                    pass
+
+            # Determine overall status
+            a_out = updates.get("a_outcome", d["a_outcome"])
+            b_out = updates.get("b_outcome", d["b_outcome"])
+            if a_out != "PENDING" and b_out != "PENDING":
+                updates["status"] = f"{a_out}_{b_out}"
+                updates["outcome_spot"] = spot
+                updates["outcome_ts"] = int(time.time())
+
+            # Batch update
+            set_clause = ", ".join(f"{k} = ?" for k in updates)
+            c.execute(
+                f"UPDATE ab_decisions SET {set_clause} WHERE id = ?",
+                (*updates.values(), d["id"]),
+            )
 
 
 async def check_signal_outcomes() -> None:
@@ -948,6 +1204,7 @@ async def run_signal_engine(stop_event: asyncio.Event) -> None:
 
             # Check outcomes every minute
             await check_signal_outcomes()
+            await check_ab_outcomes()
         except Exception as e:
             print(f"[SOE] error: {e}")
 

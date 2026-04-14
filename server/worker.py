@@ -36,6 +36,9 @@ from .tradier import TradierClient
 
 MACRO_KEY = "MACRO (ALL 200D)"
 
+# Spot divergence tracker: ticker -> pct divergence (Massive vs Tradier)
+_spot_stale_flag: dict[str, float] = {}
+
 # Aggressive caches to minimize API calls
 _exp_cache: dict[str, tuple[float, list[str]]] = {}  # ticker → (ts, [exps])
 _chain_cache: dict[str, tuple[float, list[dict]]] = {}  # "ticker:exp" → (ts, [contracts])
@@ -175,6 +178,16 @@ async def _compute_one(
                 contracts = enrich_contracts_with_massive(contracts, massive_greeks, m_ts)
                 greeks_source = "massive"
                 greeks_ts = m_ts
+
+                # Spot-consistency check: compare Massive's underlying vs Tradier spot
+                from .massive import get_massive_spot
+                m_spot = get_massive_spot(ticker)
+                if m_spot and spot and abs(m_spot - spot) / spot > 0.003:
+                    pct_diff = abs(m_spot - spot) / spot * 100
+                    print(f"[GEX_STALE_SPOT] {ticker}: Tradier=${spot:.2f} Massive=${m_spot:.2f} ({pct_diff:.1f}% divergence)")
+                    _spot_stale_flag[ticker] = round(pct_diff, 2)
+                else:
+                    _spot_stale_flag.pop(ticker, None)
         except Exception as e:
             # Silently fall back to Tradier Greeks
             pass
@@ -229,6 +242,8 @@ async def _compute_one(
         "_realized_vol": _compute_rv(ticker),
         "_ivhv_ratio": _compute_ivhv(macro.get("iv"), ticker),
         "_rts": _compute_rts_from_snapshots(ticker, spot),
+        "_greeks_spot_stale": ticker in _spot_stale_flag,
+        "_greeks_spot_divergence": _spot_stale_flag.get(ticker, 0),
     }
     return state
 

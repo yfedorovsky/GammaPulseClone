@@ -24,6 +24,14 @@ from .config import get_settings
 _greeks_cache: dict[str, tuple[float, dict[tuple[float, str, str], dict[str, float]]]] = {}
 GREEKS_CACHE_TTL = 30  # seconds — fresh enough for intraday, avoids API hammering
 
+# Spot price embedded in Massive's snapshot (for consistency check vs Tradier)
+_massive_spot_cache: dict[str, float] = {}
+
+
+def get_massive_spot(ticker: str) -> float | None:
+    """Return the underlying spot price from the last Massive snapshot for this ticker."""
+    return _massive_spot_cache.get(ticker.upper())
+
 
 class MassiveClient:
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
@@ -111,6 +119,12 @@ class MassiveClient:
 
             data = r.json()
             results = data.get("results") or []
+
+            # Extract Massive's underlying spot from first result (for consistency check)
+            if results:
+                ua = results[0].get("underlying_asset") or {}
+                if ua.get("price"):
+                    _massive_spot_cache[ticker.upper()] = ua["price"]
 
             for opt in results:
                 details = opt.get("details") or {}
