@@ -836,7 +836,9 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
 
         # 0DTE freshness gate
         dte = contract.get("dte", 99) if contract else 99
-        greeks_age = state.get("_greeks_age_seconds", 999)
+        # Compute CURRENT greeks age from timestamp, not cached snapshot age
+        greeks_ts = state.get("_greeks_ts", 0)
+        greeks_age = (time.time() - greeks_ts) if greeks_ts else 999
         dte_0_status = None
         if dte == 0 and not a_blocked_by:
             if ticker not in ("SPY", "QQQ"):
@@ -846,9 +848,11 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
             else:
                 quote_ts = state.get("_quote_ts", 0)
                 quote_age = time.time() - quote_ts if quote_ts else 999
-                if quote_age > 180:
+                if quote_age > 300:
                     a_blocked_by = "0dte_stale_quote"
-                elif greeks_age > 60:
+                elif greeks_age > 300:
+                    # Relaxed to 5 min (scan cycle is 2 min, SOE runs every 5 min)
+                    # Was 60s which was structurally impossible to pass
                     a_blocked_by = "0dte_stale_greeks"
                 elif state.get("_greeks_spot_stale"):
                     a_blocked_by = f"0dte_spot_divergence_{state.get('_greeks_spot_divergence', 0)}pct"
