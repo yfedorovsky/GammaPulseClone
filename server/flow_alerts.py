@@ -169,6 +169,17 @@ def get_alerts(
     return [dict(r) for r in rows]
 
 
+def get_recent_flow(ticker: str, minutes: int = 30) -> dict[str, Any] | None:
+    """Get most recent HIGH-conviction flow alert for a ticker within N minutes."""
+    cutoff = int(time.time()) - minutes * 60
+    with _conn() as c:
+        row = c.execute(
+            "SELECT * FROM flow_alerts WHERE ticker = ? AND ts > ? AND conviction = 'HIGH' ORDER BY ts DESC LIMIT 1",
+            (ticker.upper(), cutoff),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def _detect_side(bid: float, ask: float, last: float) -> str:
     if bid <= 0 and ask <= 0:
         return "MID"

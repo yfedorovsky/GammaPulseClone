@@ -1312,6 +1312,29 @@ async def scan_setups() -> list[dict[str, Any]]:
 
         # Threshold: 6+ to alert
         if score >= 6:
+            # Select a concrete contract for the alert
+            contract = _select_contract(state, "BULL")
+            contract_line = ""
+            if contract:
+                contract_line = (
+                    f"${contract['strike']} {contract['option_type'].upper()} "
+                    f"{contract['expiration']} ({contract['dte']}DTE)"
+                )
+                if contract.get("mid_price"):
+                    contract_line += f" @${contract['mid_price']:.2f}"
+                if contract.get("bid") and contract.get("ask"):
+                    contract_line += f" (bid ${contract['bid']:.2f} / ask ${contract['ask']:.2f})"
+
+            # Check for flow confirmation
+            flow_note = ""
+            try:
+                from .flow_alerts import get_recent_flow
+                recent = get_recent_flow(ticker, minutes=30)
+                if recent:
+                    flow_note = f"FLOW: {recent.get('sentiment','')} ${recent.get('notional',0)/1e6:.1f}M"
+            except Exception:
+                pass
+
             setup = {
                 "ticker": ticker,
                 "score": score,
@@ -1320,8 +1343,10 @@ async def scan_setups() -> list[dict[str, Any]]:
                 "floor": floor_v,
                 "regime": regime,
                 "signal": signal,
-                "rts_score": rts_score,
+                "rts_score": rts_score if rts_score else None,
                 "reasons": reasons,
+                "contract": contract_line,
+                "flow": flow_note,
             }
             setups.append(setup)
             _setup_seen[ticker] = now_ts
@@ -1336,15 +1361,20 @@ async def scan_setups() -> list[dict[str, Any]]:
             from .telegram import send
             king_target = f"Target: King ${s['king']}" if s['king'] else ""
             floor_stop = f"Stop: Floor ${s['floor']}" if s['floor'] else ""
+            rts_str = f"RTS: {s['rts_score']}" if s.get('rts_score') else ""
+            contract_str = f"\n>> <b>{s['ticker']} {s['contract']}</b>" if s.get('contract') else ""
+            flow_str = f"\n{s['flow']}" if s.get('flow') else ""
             msg = (
                 f"SETUP FORMING: <b>{s['ticker']}</b>\n"
-                f"Score: {s['score']}/10 | RTS: {s.get('rts_score', '-')}\n"
-                f"Spot: ${s['spot']:.2f} | {king_target} | {floor_stop}\n"
-                f"Regime: {s['regime']} | {s['signal']}\n"
-                f"\n"
+                f"Score: {s['score']}/10"
+                + (f" | {rts_str}" if rts_str else "")
+                + f"\nSpot: ${s['spot']:.2f} | {king_target} | {floor_stop}"
+                + f"\nRegime: {s['regime']} | {s['signal']}"
+                + contract_str
+                + flow_str
+                + f"\n\n"
                 + "\n".join(f"  {r}" for r in s["reasons"])
-                + f"\n\n7-14 DTE CALL | PM window entry"
-                + f"\n<i>Mir-style setup — watch for pullback to king/floor</i>"
+                + f"\n\n<i>Mir-style setup | PM window entry</i>"
             )
             await send(msg, ticker=s["ticker"])
         except Exception:
