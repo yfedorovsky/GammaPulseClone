@@ -3,6 +3,7 @@ import { createChart, LineStyle } from 'lightweight-charts';
 import { useStore } from '../store.js';
 import { api } from '../api.js';
 import { fmtBig, fmtPrice } from '../lib/format.js';
+import { computeAllIndicators, computeAnchoredVWAP } from '../lib/indicators.js';
 
 const MACRO_KEY = 'MACRO (ALL 200D)';
 
@@ -27,6 +28,11 @@ export default function OverlayTab() {
   const [showVolume, setShowVolume] = useState(true);
   const [showIdeas, setShowIdeas] = useState(false);
   const [showVision, setShowVision] = useState(false);
+  const [showMarkers, setShowMarkers] = useState(true);
+  const [showEMAs, setShowEMAs] = useState(true);
+  const [zoomLock, setZoomLock] = useState(false);
+  const [indicators, setIndicators] = useState(null);
+  const emaSeriesRef = useRef([]);
 
   const containerRef = useRef(null);
   const chartRef = useRef(null);
@@ -145,8 +151,82 @@ export default function OverlayTab() {
         if (volumeRef.current) {
           volumeRef.current.setData(showVolume ? volBars : []);
         }
-        if (chartRef.current && bars.length) {
+        if (chartRef.current && bars.length && !zoomLock) {
           chartRef.current.timeScale().fitContent();
+        }
+
+        // Compute technical indicators
+        const ind = computeAllIndicators(rawBars);
+        setIndicators(ind);
+
+        // Draw EMA ribbons on chart
+        const chart = chartRef.current;
+        // Remove old EMA series
+        for (const s of emaSeriesRef.current) {
+          try { chart?.removeSeries(s); } catch {}
+        }
+        emaSeriesRef.current = [];
+
+        if (showEMAs && chart) {
+          const emaConfigs = [
+            { data: ind.ema8, color: 'rgba(16,220,154,0.7)', width: 1 },   // Green
+            { data: ind.ema21, color: 'rgba(162,77,255,0.7)', width: 1 },   // Purple
+            { data: ind.ema50, color: 'rgba(255,255,255,0.5)', width: 1 },   // White
+            { data: ind.ema200, color: 'rgba(255,165,0,0.6)', width: 1 },    // Orange
+            { data: ind.vwap, color: 'rgba(0,191,255,0.6)', width: 2 },     // Cyan VWAP
+          ];
+          for (const cfg of emaConfigs) {
+            if (cfg.data.length > 0) {
+              const series = chart.addLineSeries({
+                color: cfg.color, lineWidth: cfg.width,
+                crosshairMarkerVisible: false, priceLineVisible: false,
+                lastValueVisible: false,
+              });
+              series.setData(cfg.data);
+              emaSeriesRef.current.push(series);
+            }
+          }
+        }
+
+        // Draw Anchored VWAPs from auto-detected anchors
+        if (showEMAs && chart && ind.avwapAnchors) {
+          for (const anchor of ind.avwapAnchors) {
+            const avwapData = computeAnchoredVWAP(rawBars, anchor.index);
+            if (avwapData.length > 0) {
+              const avwapSeries = chart.addLineSeries({
+                color: anchor.color, lineWidth: 1, lineStyle: 2, // Dashed
+                crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false,
+                title: anchor.label,
+              });
+              avwapSeries.setData(avwapData);
+              emaSeriesRef.current.push(avwapSeries);
+            }
+          }
+        }
+
+        // Load SOE signal markers for this ticker
+        if (showMarkers) {
+          try {
+            const sigs = await api.signals(50, '', '');
+            const tickerSigs = (sigs.signals || sigs || []).filter(
+              (s) => s.ticker === current && s.ts
+            );
+            const markers = tickerSigs.map((s) => {
+              const isBull = s.direction === '\u25b2';
+              const isWin = s.status === 'WIN';
+              const isLoss = s.status === 'LOSS';
+              return {
+                time: s.ts,
+                position: isBull ? 'belowBar' : 'aboveBar',
+                color: isWin ? '#10dc9a' : isLoss ? '#ff5656' : isBull ? '#10dc9a' : '#ff5656',
+                shape: isBull ? 'arrowUp' : 'arrowDown',
+                text: `${isBull ? 'BUY' : 'SELL'} ${s.option_type || ''} $${s.strike || ''}${isWin ? ' WIN' : isLoss ? ' LOSS' : ''}`,
+              };
+            }).sort((a, b) => a.time - b.time);
+            if (markers.length) {
+              candleRef.current.setMarkers(markers);
+            }
+          } catch {}
         }
       } catch (e) {
         console.warn('bars load failed', e);
@@ -154,7 +234,7 @@ export default function OverlayTab() {
     }
     load();
     return () => { alive = false; };
-  }, [current, tfIdx, tf.interval, tf.days, showSessions]);
+  }, [current, tfIdx, tf.interval, tf.days, showSessions, showMarkers, showEMAs, zoomLock]);
 
   // Toggle volume visibility
   useEffect(() => {
@@ -171,8 +251,12 @@ export default function OverlayTab() {
     const candle = candleRef.current;
     if (!candle) return;
     // Always clear previous lines first
+    const chart = chartRef.current;
     for (const line of linesRef.current) {
-      try { candle.removePriceLine(line); } catch {}
+      try { candle.removePriceLine(line); } catch {
+        // If it's a series (forward projection), remove from chart
+        try { chart?.removeSeries(line); } catch {}
+      }
     }
     linesRef.current = [];
 
@@ -246,34 +330,68 @@ export default function OverlayTab() {
         );
       }
 
-      // Confidence cone: upper and lower bounds using IV expected move
+      // Confidence cone + forward projection using IV expected move
       if (spot && data.iv) {
         const ivAnnual = data.iv;
-        // Project 1-5 days based on timeframe
         const projDays = tf.days <= 1 ? 1 : tf.days <= 5 ? 3 : tf.days <= 30 ? 10 : 20;
         const em = spot * ivAnnual * Math.sqrt(projDays / 252);
         const upper = spot + em;
         const lower = spot - em;
+
+        // Static cone bounds (current ±1σ)
         linesRef.current.push(
           candle.createPriceLine({
-            price: upper,
-            color: 'rgba(244,196,48,0.25)',
-            lineWidth: 1,
-            lineStyle: LineStyle.Dashed,
-            axisLabelVisible: true,
-            title: `+1σ $${upper.toFixed(0)}`,
+            price: upper, color: 'rgba(244,196,48,0.25)', lineWidth: 1,
+            lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: `+1σ $${upper.toFixed(0)}`,
           }),
         );
         linesRef.current.push(
           candle.createPriceLine({
-            price: lower,
-            color: 'rgba(244,196,48,0.25)',
-            lineWidth: 1,
-            lineStyle: LineStyle.Dashed,
-            axisLabelVisible: true,
-            title: `-1σ $${lower.toFixed(0)}`,
+            price: lower, color: 'rgba(244,196,48,0.25)', lineWidth: 1,
+            lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: `-1σ $${lower.toFixed(0)}`,
           }),
         );
+
+        // Forward projection: widening cone into future chart space
+        // Creates 3 line series (upper, center, lower) that extend past last candle
+        const now = Math.floor(Date.now() / 1000);
+        const daySeconds = tf.interval === '1min' ? 60 : tf.interval === '5min' ? 300 : 86400;
+        const projSteps = tf.days <= 1 ? 8 : tf.days <= 5 ? 6 : 5;
+
+        const projUpper = [];
+        const projCenter = [];
+        const projLower = [];
+        for (let i = 0; i <= projSteps; i++) {
+          const futureTime = now + i * daySeconds * (tf.days <= 1 ? 30 : tf.days <= 5 ? 12 : 1);
+          const daysAhead = (tf.days <= 1 ? i * 0.04 : tf.days <= 5 ? i * 0.5 : i);
+          const futureEM = spot * ivAnnual * Math.sqrt(Math.max(0.01, daysAhead) / 252);
+          // Curve toward king (magnet effect)
+          const kingPull = king && king !== spot ? (king - spot) * (i / projSteps) * 0.3 : 0;
+          projUpper.push({ time: futureTime, value: spot + futureEM + kingPull });
+          projCenter.push({ time: futureTime, value: spot + kingPull });
+          projLower.push({ time: futureTime, value: spot - futureEM + kingPull });
+        }
+
+        const projUpperSeries = chart.addLineSeries({
+          color: 'rgba(244,196,48,0.2)', lineWidth: 1, lineStyle: LineStyle.Dashed,
+          crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false,
+        });
+        projUpperSeries.setData(projUpper);
+        linesRef.current.push(projUpperSeries);
+
+        const projCenterSeries = chart.addLineSeries({
+          color: 'rgba(162,77,255,0.4)', lineWidth: 1, lineStyle: LineStyle.Dotted,
+          crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false,
+        });
+        projCenterSeries.setData(projCenter);
+        linesRef.current.push(projCenterSeries);
+
+        const projLowerSeries = chart.addLineSeries({
+          color: 'rgba(244,196,48,0.2)', lineWidth: 1, lineStyle: LineStyle.Dashed,
+          crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false,
+        });
+        projLowerSeries.setData(projLower);
+        linesRef.current.push(projLowerSeries);
       }
     } else {
       // STANDARD MODE: discrete lines
@@ -372,14 +490,33 @@ export default function OverlayTab() {
       <div className="overlay-header">
         <span className="overlay-ticker">{current}</span>
         <span className="overlay-price">${fmtPrice(spot)}</span>
+        {/* Daily price change */}
+        {chains[current]?._daily_change != null && (
+          <span style={{ color: chains[current]._daily_change >= 0 ? '#10dc9a' : '#ff5656', fontWeight: 700, fontSize: 'var(--fs-sm)' }}>
+            {chains[current]._daily_change >= 0 ? '▲' : '▼'} ${Math.abs(chains[current]._daily_change || 0).toFixed(2)} ({((chains[current]._daily_change || 0) / (spot || 1) * 100).toFixed(2)}%)
+          </span>
+        )}
+        {/* Regime alert badge — WATCHING FOR TOP/BOTTOM */}
+        {signal && (
+          <span style={{
+            padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 800, letterSpacing: 0.5,
+            background: (signal === 'RESISTANCE' || signal === 'AIR POCKET')
+              ? 'rgba(255,86,86,0.2)' : signal === 'PINNING'
+              ? 'rgba(244,196,48,0.2)' : 'rgba(16,220,154,0.2)',
+            color: (signal === 'RESISTANCE' || signal === 'AIR POCKET')
+              ? '#ff5656' : signal === 'PINNING'
+              ? '#f4c430' : '#10dc9a',
+          }}>
+            {signal === 'RESISTANCE' || signal === 'AIR POCKET' ? '⏸ WATCHING FOR TOP'
+              : signal === 'PINNING' ? '⏸ PINNED AT KING'
+              : signal === 'SUPPORT' ? '⏸ WATCHING FOR BOTTOM'
+              : '▲ MAGNET UP'}
+          </span>
+        )}
         {signal && <span className="signal-pill" data-signal={signal}>{signal}</span>}
         {regime && <span className="regime-pill">{regime} γ</span>}
         <span className="sep">·</span>
         <span style={{ color: '#f4c430' }}>King ${king}</span>
-        <span className="sep">·</span>
-        <span>Floor ${floor} · Ceil ${ceiling}</span>
-        <span className="sep">·</span>
-        {rr != null && <span style={{ color: rr >= 1 ? '#10dc9a' : '#ff7070' }}>R:R {rr.toFixed(2)}</span>}
         {showVision && (
           <span style={{ padding: '2px 6px', borderRadius: 4, background: 'rgba(162,77,255,0.15)', color: '#bb7cff', fontSize: 10, fontWeight: 800, letterSpacing: '0.5px' }}>
             VISION {chains[current]?.net_vanna > 0 ? 'VANNA ↑' : chains[current]?.net_vanna < 0 ? 'VANNA ↓' : ''}
@@ -408,6 +545,9 @@ export default function OverlayTab() {
         <label className="ov-check"><input type="checkbox" checked={showSidebar} onChange={(e) => setShowSidebar(e.target.checked)} /> <span className="check-label" style={{ color: '#10dc9a' }}>Sidebar</span></label>
         <label className="ov-check"><input type="checkbox" checked={showSessions} onChange={(e) => setShowSessions(e.target.checked)} /> <span className="check-label" style={{ color: '#10dc9a' }}>Sessions</span></label>
         <label className="ov-check"><input type="checkbox" checked={showVolume} onChange={(e) => setShowVolume(e.target.checked)} /> <span className="check-label" style={{ color: '#10dc9a' }}>Volume</span></label>
+        <label className="ov-check"><input type="checkbox" checked={showEMAs} onChange={(e) => setShowEMAs(e.target.checked)} /> <span className="check-label" style={{ color: '#a24dff' }}>EMAs</span></label>
+        <label className="ov-check"><input type="checkbox" checked={showMarkers} onChange={(e) => setShowMarkers(e.target.checked)} /> <span className="check-label" style={{ color: '#f4c430' }}>Signals</span></label>
+        <label className="ov-check"><input type="checkbox" checked={zoomLock} onChange={(e) => setZoomLock(e.target.checked)} /> <span className="check-label" style={{ color: zoomLock ? '#ff8c00' : undefined }}>🔒 Zoom</span></label>
         <span className="mini text-dim" style={{ marginLeft: 'auto' }}>Auto-refresh 2min</span>
       </div>
 
@@ -437,35 +577,224 @@ export default function OverlayTab() {
           <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
         </div>
 
-        {/* Mini heatmap sidebar */}
+        {/* GEX Levels + Indicators Sidebar */}
         {showSidebar && (
-          <div className="overlay-mini">
-            <div style={{ fontSize: 9, color: 'var(--text-3)', padding: '2px 0', fontWeight: 700 }}>GEX</div>
-            {miniStrikes.map((s) => {
-              let bg;
-              if (s.node_type === 'king') bg = s.net_gex >= 0 ? '#f4c430' : '#a24dff';
-              else if (s.net_gex >= 0) bg = '#1ca571';
-              else bg = '#d22d3c';
-              return (
-                <div key={s.strike} style={{ display: 'flex', alignItems: 'center', gap: 2, height: 11 }}>
-                  <span style={{ width: 30, fontSize: 9, color: 'var(--text-3)', textAlign: 'right' }}>{s.strike}</span>
-                  <div
-                    style={{
-                      width: `${Math.max(2, s.pct * 0.6)}px`,
-                      height: 7,
-                      background: bg,
-                      opacity: s.is_air ? 0.12 : 0.85,
-                      borderRadius: 1,
-                    }}
-                  />
-                  {s.pct >= 5 && (
-                    <span style={{ fontSize: 8, color: 'var(--text-3)' }}>{s.pct}%</span>
-                  )}
+          <div className="overlay-panel">
+            {/* GammaPulse panel header */}
+            <div style={{ borderBottom: '1px solid var(--border-faint)', padding: '8px 10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontWeight: 800, color: '#10dc9a', fontSize: 11 }}>GAMMAPULSE</span>
+              {signal && (
+                <span style={{
+                  fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4,
+                  background: (signal === 'RESISTANCE' || signal === 'AIR POCKET') ? 'rgba(255,86,86,0.2)' : signal === 'PINNING' ? 'rgba(244,196,48,0.2)' : 'rgba(16,220,154,0.2)',
+                  color: (signal === 'RESISTANCE' || signal === 'AIR POCKET') ? '#ff5656' : signal === 'PINNING' ? '#f4c430' : '#10dc9a',
+                }}>
+                  {signal === 'SUPPORT' || signal === 'MAGNET UP' ? 'WATCHING FOR BOTTOM' : signal === 'RESISTANCE' || signal === 'AIR POCKET' ? 'WATCHING FOR TOP' : 'PINNED'}
+                </span>
+              )}
+            </div>
+
+            {/* Mode + IV + Alert */}
+            <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--border-faint)', fontSize: 10, fontFamily: 'var(--mono)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                <span style={{ color: 'var(--text-3)' }}>MODE</span>
+                <span style={{ fontWeight: 700 }}>{tf.days <= 1 ? '0DTE SCALP' : tf.days <= 5 ? 'SWING TRADE' : 'POSITION'}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                <span style={{ color: 'var(--text-3)' }}>IV</span>
+                <span style={{ fontWeight: 700, color: (ed.iv || 0) > 30 ? '#f4c430' : '#10dc9a' }}>
+                  {ed.iv ? `${ed.iv.toFixed(1)}%` : '-'}
+                  {(ed.iv || 0) > 40 ? ' HIGH' : (ed.iv || 0) > 25 ? ' ~ PRICEY' : ' ~ CHEAP'}
+                </span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                <span style={{ color: '#f4c430', fontWeight: 800 }}>LEVELS</span>
+                <span style={{ color: 'var(--text-3)' }}>
+                  S: ${floor || '-'} / ${ed.zgl || '-'}
+                </span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span />
+                <span style={{ color: 'var(--text-3)' }}>
+                  R: ${ceiling || '-'} / ${king || '-'}
+                </span>
+              </div>
+            </div>
+
+            {/* GEX Levels */}
+            <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--border-faint)' }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: '#10dc9a', marginBottom: 6 }}>GEX LEVELS</div>
+              <div style={{ fontFamily: 'var(--mono)', fontSize: 11 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                  <span style={{ color: 'var(--text-3)' }}>King</span>
+                  <span style={{ color: '#f4c430', fontWeight: 800 }}>${king || '-'} ★</span>
                 </div>
-              );
-            })}
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                  <span style={{ color: 'var(--text-3)' }}>Floor</span>
+                  <span style={{ color: '#10dc9a', fontWeight: 700 }}>${floor || '-'}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                  <span style={{ color: 'var(--text-3)' }}>Ceiling</span>
+                  <span style={{ color: '#ff5656', fontWeight: 700 }}>${ceiling || '-'}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                  <span style={{ color: 'var(--text-3)' }}>Signal</span>
+                  <span style={{ fontWeight: 700 }}>
+                    {signal === 'MAGNET UP' ? '▲' : signal === 'AIR POCKET' ? '▼' : '●'} {signal || '-'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Mini GEX strip (compact version of heatmap) */}
+            <div style={{ padding: '4px 10px', borderBottom: '1px solid var(--border-faint)', maxHeight: 200, overflowY: 'auto' }}>
+              {miniStrikes.slice(0, 30).map((s) => {
+                let bg;
+                if (s.node_type === 'king') bg = s.net_gex >= 0 ? '#f4c430' : '#a24dff';
+                else if (s.node_type === 'gatekeeper') bg = '#a24dff';
+                else if (s.net_gex >= 0) bg = '#1ca571';
+                else bg = '#d22d3c';
+                const isSpot = spot && Math.abs(s.strike - spot) < (spot * 0.002);
+                return (
+                  <div key={s.strike} style={{ display: 'flex', alignItems: 'center', gap: 2, height: 12, background: isSpot ? 'rgba(255,255,255,0.05)' : 'transparent' }}>
+                    <span style={{ width: 32, fontSize: 9, color: isSpot ? '#fff' : 'var(--text-3)', textAlign: 'right', fontWeight: isSpot ? 800 : 400 }}>
+                      {s.node_type === 'king' ? '★' : s.node_type === 'floor' ? '▼' : s.node_type === 'ceiling' ? '▲' : ''}{s.strike}
+                    </span>
+                    <div style={{
+                      width: `${Math.max(2, s.pct * 0.5)}px`, height: 7,
+                      background: bg, opacity: s.is_air ? 0.12 : 0.85, borderRadius: 1,
+                    }} />
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* EMA values */}
+            {indicators && (
+              <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--border-faint)', fontFamily: 'var(--mono)', fontSize: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 4 }}>
+                  <span style={{ color: 'rgba(16,220,154,0.8)' }}>EMA 8</span>
+                  <span style={{ color: 'rgba(162,77,255,0.8)' }}>EMA 21</span>
+                  <span style={{ color: 'rgba(255,255,255,0.6)' }}>EMA 50</span>
+                  <span style={{ color: 'rgba(255,165,0,0.7)' }}>EMA 200</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 4, fontWeight: 700 }}>
+                  <span style={{ color: 'rgba(16,220,154,0.8)' }}>{indicators.ema8_current?.toFixed(1) || '-'}</span>
+                  <span style={{ color: 'rgba(162,77,255,0.8)' }}>{indicators.ema21_current?.toFixed(1) || '-'}</span>
+                  <span style={{ color: 'rgba(255,255,255,0.6)' }}>{indicators.ema50_current?.toFixed(1) || '-'}</span>
+                  <span style={{ color: 'rgba(255,165,0,0.7)' }}>{indicators.ema200_current?.toFixed(1) || '-'}</span>
+                </div>
+              </div>
+            )}
+
+            {/* RSI + ADX + Trend + Extension */}
+            {indicators && (
+              <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--border-faint)', fontFamily: 'var(--mono)', fontSize: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                  <span style={{ color: 'var(--text-3)' }}>RSI</span>
+                  <span style={{
+                    fontWeight: 700,
+                    color: (indicators.rsi?.value || 50) > 70 ? '#ff5656' : (indicators.rsi?.value || 50) < 30 ? '#10dc9a' : '#c8cdd8',
+                  }}>
+                    {indicators.rsi?.value ?? '-'}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                  <span style={{ color: 'var(--text-3)' }}>ADX</span>
+                  <span style={{ fontWeight: 700 }}>
+                    {indicators.adx?.value ?? '-'}
+                    {indicators.adx?.trend && (
+                      <span style={{
+                        marginLeft: 4, fontSize: 8,
+                        color: indicators.adx.trend === 'Active' ? '#10dc9a' : indicators.adx.trend === 'Developing' ? '#f4c430' : '#8a93a8',
+                      }}>
+                        {indicators.adx.trend}
+                      </span>
+                    )}
+                  </span>
+                </div>
+                {/* Trend State (EMA cloud classification) */}
+                {indicators.trendState && indicators.trendState.state !== 'UNKNOWN' && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                    <span style={{ color: 'var(--text-3)' }}>Trend</span>
+                    <span style={{
+                      fontWeight: 700, fontSize: 9,
+                      color: indicators.trendState.state.includes('BULLISH') ? '#10dc9a'
+                        : indicators.trendState.state.includes('BEARISH') ? '#ff5656' : '#f4c430',
+                    }}>
+                      {indicators.trendState.state.replace('_', ' ')}
+                    </span>
+                  </div>
+                )}
+                {/* ATR Extension */}
+                {indicators.atrExtension && indicators.atrExtension.state !== 'UNKNOWN' && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                    <span style={{ color: 'var(--text-3)' }}>Location</span>
+                    <span style={{
+                      fontWeight: 700, fontSize: 9,
+                      color: indicators.atrExtension.state === 'ACTIONABLE' ? '#10dc9a'
+                        : indicators.atrExtension.state === 'NORMAL' ? '#c8cdd8'
+                        : indicators.atrExtension.state === 'EXTENDED' ? '#f4c430'
+                        : indicators.atrExtension.state === 'OVEREXTENDED' ? '#ff5656'
+                        : indicators.atrExtension.state === 'OVERSOLD' ? '#10dc9a' : '#8a93a8',
+                    }}>
+                      {indicators.atrExtension.state}
+                      {indicators.atrExtension.ext_from_20ma != null && (
+                        <span style={{ color: 'var(--text-3)', marginLeft: 3 }}>
+                          ({indicators.atrExtension.ext_from_20ma > 0 ? '+' : ''}{indicators.atrExtension.ext_from_20ma} ATR)
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                )}
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--text-3)' }}>SOE</span>
+                  <span style={{ fontWeight: 700 }}>
+                    {chains[current]?.signal || '-'}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Greeks source */}
+            <div style={{ padding: '6px 10px', fontSize: 9, color: 'var(--text-3)', fontFamily: 'var(--mono)' }}>
+              Greeks: <span style={{ color: chains[current]?._greeks_source === 'massive' ? '#10dc9a' : '#ffc800', fontWeight: 700 }}>
+                {chains[current]?._greeks_source === 'massive' ? 'MASSIVE' : 'TRADIER'}
+              </span>
+              {chains[current]?._greeks_age_seconds != null && (
+                <span> ({chains[current]._greeks_age_seconds}s)</span>
+              )}
+            </div>
           </div>
         )}
+      </div>
+
+      {/* GEX strip — compact horizontal bar under chart */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 12, padding: '4px 14px',
+        background: 'var(--bg-1)', borderTop: '1px solid var(--border-faint)',
+        fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--text-2)',
+      }}>
+        <span style={{ color: '#f4c430', fontWeight: 800 }}>GEX</span>
+        <span style={{ color: '#f4c430' }}>★ KING ${king || '-'}</span>
+        <span style={{ color: '#10dc9a' }}>▼ FLOOR ${floor || '-'}</span>
+        <span style={{ color: '#ff5656' }}>▲ CEIL ${ceiling || '-'}</span>
+        <span>ZGL ${ed.zgl || '-'}</span>
+        <span className="sep">·</span>
+        <span style={{
+          color: signal === 'MAGNET UP' || signal === 'SUPPORT' ? '#10dc9a' : signal === 'PINNING' ? '#f4c430' : '#ff5656',
+          fontWeight: 700,
+        }}>
+          {signal === 'MAGNET UP' ? '▲' : signal === 'AIR POCKET' ? '▼' : '●'} {signal}
+        </span>
+        <span>{regime} γ</span>
+        <div style={{ flex: 1 }} />
+        {chains[current]?._ivp != null && (
+          <span style={{ color: chains[current]._ivp <= 30 ? '#10dc9a' : chains[current]._ivp <= 50 ? '#f4c430' : '#ff5656' }}>
+            IVP {chains[current]._ivp}%
+          </span>
+        )}
+        <span>IV {ed.iv ? `${ed.iv.toFixed(1)}%` : '-'}</span>
       </div>
 
       {/* Bottom trade ideas button */}

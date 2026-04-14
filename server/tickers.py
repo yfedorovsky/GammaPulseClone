@@ -7,25 +7,25 @@ Tier 3 = long tail (refreshed every 4 cycles)
 
 TIER_1 = [
     # Indexes & index ETFs
-    "SPY", "QQQ", "IWM", "DIA", "VIX", "SPX", "NDX", "RUT",
+    "SPY", "QQQ", "IWM", "DIA", "VIX", "SPX", "NDX", "RUT", "IBIT",
     # Mega caps
     "AAPL", "MSFT", "NVDA", "GOOGL", "GOOG", "META", "AMZN", "TSLA",
     "AVGO", "LLY", "UNH", "V", "JPM", "XOM", "JNJ", "PG", "MA", "HD",
     # High-activity movers
-    "AMD", "COIN", "PLTR", "NFLX", "CRM", "ORCL", "ADBE", "INTC", "MU",
+    "AMD", "COIN", "PLTR", "NFLX", "CRM", "ORCL", "ADBE", "INTC", "MU", "UVXY",
     "BAC", "WMT", "COST", "DIS", "CSCO", "PEP", "KO", "T", "VZ", "SMCI",
 ]
 
 TIER_2 = [
     # Tech / semis
-    "QCOM", "TXN", "AMAT", "LRCX", "KLAC", "ASML", "TSM", "ARM", "MRVL",
+    "QCOM", "TXN", "AMAT", "LRCX", "KLAC", "ASML", "TSM", "ARM", "MRVL", "SMH", "SOXX",
     "NOW", "SHOP", "SNOW", "DDOG", "NET", "CRWD", "ZS", "PANW", "MDB",
-    "UBER", "LYFT", "ABNB", "PYPL", "SQ", "HOOD", "RBLX", "U", "DELL", "HPE",
+    "UBER", "LYFT", "ABNB", "PYPL", "XYZ", "HOOD", "RBLX", "U", "DELL", "HPE",
     # Financials
     "WFC", "C", "GS", "MS", "SCHW", "AXP", "BLK", "SPGI", "BRK.B", "ICE",
     "CME", "PNC", "USB", "COF", "TFC",
     # Energy
-    "CVX", "COP", "SLB", "OXY", "EOG", "MPC", "PSX", "VLO", "HAL", "PXD",
+    "CVX", "COP", "SLB", "OXY", "EOG", "MPC", "PSX", "VLO", "HAL",
     # Health
     "PFE", "MRK", "ABBV", "TMO", "ABT", "DHR", "MDT", "BMY", "AMGN", "GILD",
     "REGN", "VRTX", "ISRG", "ELV", "CI", "HUM", "CVS",
@@ -46,22 +46,30 @@ TIER_2 = [
 TIER_3 = [
     # China ADRs
     "BABA", "PDD", "JD", "BIDU", "NIO", "XPEV", "LI", "TCEHY", "BILI", "TME",
+    # Photonics / Fiber / AI Infra (Mir's top themes 2026)
+    "AAOI", "COHR", "GLW", "CIEN", "ANET", "VRT", "AXTI", "LITE",
+    # Semi Equipment (Mir's basket)
+    "AEHR", "TER",
+    # Space (SpaceX IPO catalyst)
+    "ASTS", "RKLB",
+    # AI / Momentum
+    "NBIS", "OKLO", "IREN",
     # EVs & clean energy
     "FSLR", "ENPH", "SEDG", "RUN", "PLUG", "CHPT", "BLNK",
     # Biotech / pharma
-    "MRNA", "BNTX", "NVAX", "BIIB", "ILMN", "ZTS", "SYK", "EW", "BSX", "BDX",
+    "XBI", "MRNA", "BNTX", "NVAX", "BIIB", "ILMN", "ZTS", "SYK", "EW", "BSX", "BDX",
     "BAX", "RMD", "DXCM", "IDXX", "A",
     # Crypto-related
     "MARA", "RIOT", "MSTR", "CLSK", "HUT", "BITF",
     # Speculatives / meme
-    "GME", "AMC", "BB", "SOFI", "WISH", "CLOV", "PTON", "BYND", "FUBO",
+    "GME", "AMC", "RDDT", "BB", "SOFI", "WISH", "CLOV", "PTON", "BYND", "FUBO",
     # Cyclicals / other
     "F", "GM", "CAT", "DE", "PCAR", "CMI", "ITW", "ROK", "DOV", "EMR",
     "ETN", "PH", "ROP", "AME", "FTV", "IR", "OTIS", "CARR",
     # Consumer staples
     "CL", "KMB", "GIS", "K", "HSY", "MKC", "CLX", "SJM", "CAG", "CPB",
     # Media
-    "CMCSA", "PARA", "WBD", "FOX", "FOXA", "NWS", "NWSA",
+    "CMCSA", "PSKY", "WBD", "FOX", "FOXA", "NWS", "NWSA",
     # Telecom / cable
     "TMUS", "CHTR", "LBRDK",
     # Others

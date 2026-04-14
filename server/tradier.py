@@ -145,17 +145,26 @@ class TradierClient:
             bars = data.get("data") or []
             if isinstance(bars, dict):
                 bars = [bars]
-            return [
-                {
-                    "time": b.get("timestamp", 0),
+            result = []
+            for b in bars:
+                ts = b.get("timestamp", "")
+                # Convert ISO timestamp string to unix epoch for lightweight-charts
+                if isinstance(ts, str) and ts:
+                    try:
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(ts)
+                        ts = int(dt.timestamp())
+                    except (ValueError, TypeError):
+                        continue
+                result.append({
+                    "time": ts,
                     "open": b["open"],
                     "high": b["high"],
                     "low": b["low"],
                     "close": b["close"],
                     "volume": b.get("volume", 0),
-                }
-                for b in bars
-            ]
+                })
+            return result
 
     async def full_chain(
         self, symbol: str, max_expirations: int = 17

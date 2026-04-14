@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, lazy, Suspense } from 'react';
 import { useStore } from './store.js';
 import { api, connectPriceStream } from './api.js';
 
@@ -7,17 +7,19 @@ import ConfluenceBanner from './components/ConfluenceBanner.jsx';
 import WatchlistTabs from './components/WatchlistTabs.jsx';
 import LegendStrip from './components/LegendStrip.jsx';
 
+// Eager: default tab loads immediately
 import HeatmapsTab from './tabs/HeatmapsTab.jsx';
-import OverlayTab from './tabs/OverlayTab.jsx';
-import ScannerTab from './tabs/ScannerTab.jsx';
-import FlowTab from './tabs/FlowTab.jsx';
-import SignalsTab from './tabs/SignalsTab.jsx';
-import SectorsTab from './tabs/SectorsTab.jsx';
-import HistoryTab from './tabs/HistoryTab.jsx';
-import MtfTab from './tabs/MtfTab.jsx';
-import EarningsTab from './tabs/EarningsTab.jsx';
-import NewsTab from './tabs/NewsTab.jsx';
-import GuideTab from './tabs/GuideTab.jsx';
+// Lazy: other tabs load on first visit (instant tab switching feel)
+const OverlayTab = lazy(() => import('./tabs/OverlayTab.jsx'));
+const ScannerTab = lazy(() => import('./tabs/ScannerTab.jsx'));
+const FlowTab = lazy(() => import('./tabs/FlowTab.jsx'));
+const SignalsTab = lazy(() => import('./tabs/SignalsTab.jsx'));
+const SectorsTab = lazy(() => import('./tabs/SectorsTab.jsx'));
+const HistoryTab = lazy(() => import('./tabs/HistoryTab.jsx'));
+const MtfTab = lazy(() => import('./tabs/MtfTab.jsx'));
+const EarningsTab = lazy(() => import('./tabs/EarningsTab.jsx'));
+const NewsTab = lazy(() => import('./tabs/NewsTab.jsx'));
+const GuideTab = lazy(() => import('./tabs/GuideTab.jsx'));
 
 export default function App() {
   const {
@@ -129,17 +131,19 @@ export default function App() {
       {tab === 'HEATMAPS' && <WatchlistTabs />}
       {tab === 'OVERLAY' && <WatchlistTabs />}
       <div className="app-body">
-        {tab === 'HEATMAPS' && <HeatmapsTab />}
-        {tab === 'OVERLAY' && <OverlayTab />}
-        {tab === 'SCANNER' && <ScannerTab />}
-        {tab === 'FLOW' && <FlowTab />}
-        {tab === 'SIGNALS' && <SignalsTab />}
-        {tab === 'SECTORS' && <SectorsTab />}
-        {tab === 'HISTORY' && <HistoryTab />}
-        {tab === 'MTF' && <MtfTab />}
-        {tab === 'EARNINGS' && <EarningsTab />}
-        {tab === 'NEWS' && <NewsTab />}
-        {tab === 'GUIDE' && <GuideTab />}
+        <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-3)' }}>Loading...</div>}>
+          {tab === 'HEATMAPS' && <HeatmapsTab />}
+          {tab === 'OVERLAY' && <OverlayTab />}
+          {tab === 'SCANNER' && <ScannerTab />}
+          {tab === 'FLOW' && <FlowTab />}
+          {tab === 'SIGNALS' && <SignalsTab />}
+          {tab === 'SECTORS' && <SectorsTab />}
+          {tab === 'HISTORY' && <HistoryTab />}
+          {tab === 'MTF' && <MtfTab />}
+          {tab === 'EARNINGS' && <EarningsTab />}
+          {tab === 'NEWS' && <NewsTab />}
+          {tab === 'GUIDE' && <GuideTab />}
+        </Suspense>
       </div>
     </div>
   );

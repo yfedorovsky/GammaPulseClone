@@ -306,6 +306,24 @@ input, select { font-family: inherit; }
 .conf-pill.mixed   { background: rgba(255, 204, 77, 0.12); color: var(--warn); }
 .conf-detail { color: var(--text-2); font-size: var(--fs-xxs); font-family: var(--mono); }
 
+/* === Breadth Indicators (NYMO/NAMO) === */
+.breadth-indicators {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.breadth-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid;
+  font-family: var(--mono);
+  font-size: 11px;
+  background: rgba(255,255,255,0.02);
+}
+
 /* === Watchlist tabs === */
 .wl-tabs {
   display: flex;
@@ -537,10 +555,10 @@ input, select { font-family: inherit; }
 
 .row {
   display: grid;
-  grid-template-columns: 54px 1fr 84px;
+  grid-template-columns: 60px 1fr 80px;
   align-items: center;
-  padding: 2px 10px;
-  border-top: 1px solid rgba(255, 255, 255, 0.015);
+  padding: 3px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.02);
   cursor: default;
   transition: filter 120ms;
   position: relative;
@@ -571,11 +589,15 @@ input, select { font-family: inherit; }
   font-weight: 800;
 }
 .row.air { opacity: 0.35; }
-.row .king-badge { margin-left: 8px; font-weight: 800; letter-spacing: 0.6px; }
+.row .king-badge { margin-left: 8px; font-weight: 800; letter-spacing: 0.6px; color: #f4c430; }
+.row.king-pos { font-weight: 700; }
+.row.king-neg { font-weight: 700; }
 
-/* Floor/Ceiling markers */
-.row.floor { box-shadow: inset 3px 0 0 var(--floor); }
-.row.ceiling { box-shadow: inset 3px 0 0 var(--ceiling); }
+/* Floor/Ceiling markers — vivid backgrounds like OG app */
+.row.floor { background: rgba(16, 220, 154, 0.35) !important; border-left: 3px solid #10dc9a !important; }
+.row.floor .strike, .row.floor .gex { color: #fff !important; }
+.row.ceiling { background: rgba(255, 86, 86, 0.30) !important; border-left: 3px solid #ff5656 !important; }
+.row.ceiling .strike, .row.ceiling .gex { color: #fff !important; }
 
 /* Confluence rows glow brighter */
 .row.confluence { filter: brightness(1.2); }
@@ -598,7 +620,9 @@ input, select { font-family: inherit; }
   font-size: var(--fs-xs);
   cursor: default;
 }
-.profile-row:hover { background: rgba(255, 255, 255, 0.03); }
+.profile-row:hover { background: rgba(255, 255, 255, 0.05); }
+.profile-row.king-row { background: rgba(244, 196, 48, 0.18) !important; border-left: 3px solid #f4c430; }
+.profile-row.gatekeeper-row { background: rgba(162, 77, 255, 0.10) !important; border-left: 2px solid rgba(162,77,255,0.5); }
 .profile-dot {
   display: inline-block;
   width: 8px;
@@ -607,14 +631,65 @@ input, select { font-family: inherit; }
   margin-left: 4px;
   vertical-align: middle;
 }
-.profile-bar-track { height: 16px; background: rgba(255, 255, 255, 0.02); border-radius: 3px; overflow: hidden; position: relative; }
-.profile-bar-fill { height: 100%; border-radius: 3px; }
+.profile-bar-track { height: 18px; background: rgba(255, 255, 255, 0.03); border-radius: 3px; overflow: hidden; position: relative; }
+.profile-bar-fill { height: 100%; border-radius: 3px; min-width: 2px; }
 .profile-val {
   position: absolute;
   right: 6px;
   top: 1px;
   font-size: 10px;
   color: #c8cdd8;
+}
+
+/* === Pulsing King Node === */
+.king-pulse {
+  animation: king-glow 2s ease-in-out infinite;
+  box-shadow: 0 0 6px 2px #f4c430;
+}
+@keyframes king-glow {
+  0%, 100% { box-shadow: 0 0 4px 1px rgba(244, 196, 48, 0.4); }
+  50% { box-shadow: 0 0 10px 4px rgba(244, 196, 48, 0.8); }
+}
+.king-row {
+  background: rgba(244, 196, 48, 0.20) !important;
+  border-left: 3px solid #f4c430 !important;
+}
+.king-row:hover {
+  background: rgba(244, 196, 48, 0.30) !important;
+}
+
+/* === Purple Gatekeeper Nodes === */
+.gatekeeper-row {
+  background: rgba(162, 77, 255, 0.12);
+  border-left: 2px solid rgba(162, 77, 255, 0.5) !important;
+}
+.gatekeeper-row:hover {
+  background: rgba(162, 77, 255, 0.20) !important;
+}
+
+/* (floor/ceiling styles defined above with vivid backgrounds) */
+
+/* === Per-strike VEX Arrow === */
+.vex-arrow {
+  font-size: 9px;
+  margin-left: 2px;
+  font-weight: 800;
+  vertical-align: middle;
+}
+
+/* === Magnetic Strength Bar (background force meter) === */
+.mag-strength-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  border-radius: 3px;
+  pointer-events: none;
+  z-index: 0;
+}
+.profile-bar-fill {
+  position: relative;
+  z-index: 1;
 }
 
 /* === Tables === */
@@ -725,6 +800,15 @@ input, select { font-family: inherit; }
   background: var(--bg-panel);
   position: relative;
   min-width: 0;
+}
+.overlay-panel {
+  background: var(--bg-panel);
+  overflow-y: auto;
+  min-width: 180px;
+  max-width: 200px;
+  font-family: var(--mono);
+  font-size: var(--fs-xxs);
+  border-left: 1px solid var(--border-faint);
 }
 .overlay-mini {
   background: var(--bg-panel);

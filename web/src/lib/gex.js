@@ -4,18 +4,33 @@
 
 export function rowBackground(strike, spot) {
   const { ratio, net_gex, is_air, node_type } = strike;
-  // King and gatekeeper backgrounds are handled by CSS classes
-  if (node_type === 'king' || node_type === 'gatekeeper') return 'transparent';
   const r = Math.max(0, Math.min(1, ratio || 0));
   if (is_air) return 'transparent';
-  if (net_gex >= 0) {
-    // Green gradient — brighter at high intensity
-    const alpha = 0.08 + r * 0.75;
-    return `rgba(28, 165, 113, ${alpha.toFixed(3)})`;
+
+  // Bold structural level backgrounds (matches OG GammaPulse Pro)
+  if (node_type === 'king') {
+    return net_gex >= 0
+      ? 'rgba(244, 196, 48, 0.25)'   // Gold king
+      : 'rgba(162, 77, 255, 0.25)';   // Purple -GEX king
   }
-  // Red/pink gradient — more vivid to match original
-  const alpha = 0.12 + r * 0.8;
-  return `rgba(210, 45, 60, ${alpha.toFixed(3)})`;
+  if (node_type === 'gatekeeper') {
+    return 'rgba(162, 77, 255, 0.15)'; // Purple gatekeepers
+  }
+  if (node_type === 'floor') {
+    return 'rgba(16, 220, 154, 0.20)'; // Bright green floor
+  }
+  if (node_type === 'ceiling') {
+    return 'rgba(255, 86, 86, 0.18)';  // Red ceiling
+  }
+
+  // Standard rows: intensity-based gradient (vivid, matches OG app)
+  if (net_gex >= 0) {
+    const alpha = 0.12 + r * 0.65;
+    return `rgba(16, 180, 100, ${alpha.toFixed(3)})`;
+  }
+  // Negative GEX: teal-purple tint (not pure red like the OG)
+  const alpha = 0.10 + r * 0.55;
+  return `rgba(120, 50, 180, ${alpha.toFixed(3)})`;
 }
 
 export function rowClass(strike, spot) {

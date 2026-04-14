@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     telegram_chat_id: str = ""
 
     finnhub_api_key: str = ""
+    fred_api_key: str = ""  # FRED (Federal Reserve) — free, for NYMO/NAMO breadth data
+
+    # Massive (formerly Polygon) — real-time Greeks & IV
+    massive_api_key: str = ""
+    massive_base_url: str = "https://api.massive.com"
+    use_massive_greeks: bool = True  # feature flag; False = Tradier-only fallback
 
     @property
     def cors_origins(self) -> list[str]:

@@ -20,10 +20,15 @@ from sse_starlette.sse import EventSourceResponse
 
 from .cache import cache
 from .config import get_settings
+from .db import db
 from .flow_alerts import init_alert_db, get_alerts as get_flow_alerts, run_flow_scanner
 from .discipline import init_discipline_db, get_ticker_stats, compute_kelly_size, get_circuit_breaker, log_trade
 from .signals import init_signals_db, get_signals, get_signal_stats, run_signal_engine
+from .scalp_alerts import run_scalp_scanner
 from .trade_tracker import init_tracker_db, get_all_trades, run_position_monitor
+from .breadth import get_breadth_context, get_nymo, get_namo, init_breadth_db
+from .industry import compute_industry_scores, enrich_ticker_with_industry
+from .rts import compute_rts_universe, rank_tickers
 from .gex import compute_exp_data, build_signal
 from .snapshots import init_db, series as snapshot_series
 from .stream import streamer
@@ -40,6 +45,7 @@ _worker_task: asyncio.Task | None = None
 _flow_task: asyncio.Task | None = None
 _monitor_task: asyncio.Task | None = None
 _signal_task: asyncio.Task | None = None
+_scalp_task: asyncio.Task | None = None
 
 
 @asynccontextmanager
@@ -49,18 +55,22 @@ async def lifespan(app: FastAPI):
     init_tracker_db()
     init_signals_db()
     init_discipline_db()
+    init_breadth_db()
+    await db.start()  # Single-writer queue for SQLite (prevents SQLITE_BUSY)
     await streamer.ensure_running()
-    global _worker_task, _flow_task, _monitor_task, _signal_task
+    global _worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task
     _worker_task = asyncio.create_task(run_worker(_stop))
     _flow_task = asyncio.create_task(run_flow_scanner(_stop))
     _monitor_task = asyncio.create_task(run_position_monitor(_stop))
     _signal_task = asyncio.create_task(run_signal_engine(_stop))
+    _scalp_task = asyncio.create_task(run_scalp_scanner(_stop))
     try:
         yield
     finally:
         _stop.set()
         await streamer.stop()
-        for task in (_worker_task, _flow_task, _monitor_task, _signal_task):
+        await db.stop()  # Drain write queue before shutdown
+        for task in (_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task):
             if task:
                 try:
                     await asyncio.wait_for(task, timeout=5)
@@ -273,6 +283,10 @@ async def scanner():
             "_spot": state.get("_spot"),
             "_updated": state.get("_updated"),
             "_tier": state.get("_tier"),
+            "_greeks_source": state.get("_greeks_source"),
+            "_ivp": state.get("_ivp"),
+            "_ivhv_ratio": state.get("_ivhv_ratio"),
+            "_rts": state.get("_rts"),
             "actual_spot": state.get("actual_spot"),
             "king": state.get("king"),
             "floor": state.get("floor"),
@@ -284,8 +298,9 @@ async def scanner():
             "signal": state.get("signal"),
             "regime": state.get("regime"),
             "iv": state.get("iv"),
+            # exp_data excluded from scanner list (too heavy for 300+ tickers)
+            # Use /api/chains for full exp_data per ticker
             "exps": state.get("exps"),
-            "exp_data": state.get("exp_data"),
         }
         tickers_out.append(entry)
     return {
@@ -514,6 +529,36 @@ async def flow_detail(ticker: str):
     }
 
 
+@app.get("/api/breadth")
+async def breadth_data():
+    """NYMO/NAMO McClellan Oscillator breadth context."""
+    return await get_breadth_context()
+
+
+@app.get("/api/rts")
+async def rts_rankings(direction: str = "BULL", limit: int = 50):
+    """Relative Trend Strength rankings for vehicle selection."""
+    from .tickers import all_tickers
+    tradier = TradierClient()
+    try:
+        tickers = all_tickers()[:limit]
+        results = await compute_rts_universe(tradier, tickers)
+        ranked = rank_tickers(results, direction)
+        return {"direction": direction, "count": len(ranked), "tickers": ranked}
+    finally:
+        await tradier.close()
+
+
+@app.get("/api/industry")
+async def industry_rankings():
+    """Industry leadership scores with member rankings."""
+    snapshot = await cache.snapshot()
+    scores = compute_industry_scores(snapshot)
+    # Sort by score descending
+    ranked = sorted(scores.values(), key=lambda x: x["score"], reverse=True)
+    return {"count": len(ranked), "industries": ranked}
+
+
 @app.get("/api/earnings")
 async def earnings_calendar(week_offset: int = 0):
     """Weekly calendar: earnings from Finnhub + hardcoded economic events."""
@@ -681,12 +726,11 @@ async def bars(ticker: str, interval: str = "5min", days: int = 5):
         start = end - datetime.timedelta(days=days)
         if interval == "daily":
             start = end - datetime.timedelta(days=max(days, 30))
-        result = await tradier.history(
-            t,
-            interval=interval,
-            start=start.isoformat(),
-            end=end.isoformat(),
-        )
+            result = await tradier.history(t, interval=interval, start=start.isoformat(), end=end.isoformat())
+        else:
+            # Intraday (timesales): don't pass start/end — Tradier returns
+            # empty when dates are provided. Without params it returns today's data.
+            result = await tradier.history(t, interval=interval)
     finally:
         await tradier.close()
     return {"ticker": t, "interval": interval, "bars": result}
@@ -1041,29 +1085,38 @@ class TradeLogReq(BaseModel):
 
 
 class MirSignalReq(BaseModel):
-    """Inbound Mir signal from Discord listener webhook."""
-    signal_type: str  # ENTRY | WATCH | ADD | PARTIAL | EXIT | STOP
-    ticker: str
+    """Inbound Mir signal from Mac Mini discord listener webhook."""
+    signal_type: str = ""  # ENTRY | WATCH | ADD | PARTIAL_EXIT | EXIT | STOP_LEVEL
+    ticker: str = ""
     strike: float | None = None
     option_type: str = ""  # CALL | PUT
     expiry: str = ""
     entry_price: float | None = None
+    price: float | None = None  # discord_listener uses "price" not "entry_price"
     stop_price: float | None = None
     conviction: str = "MEDIUM"  # HIGH | MEDIUM | LOW
-    raw_signal: str = ""
-    source: str = "discord"  # discord | telegram
+    channel: str = ""  # general-alerts | challenge-account
+    author: str = ""
+    raw: str = ""
+    raw_signal: str = ""  # legacy compat
+    source: str = "discord"
+    timestamp: str = ""
 
 
 @app.post("/api/signals/mir")
 async def ingest_mir_signal(req: MirSignalReq):
-    """Webhook endpoint for Discord listener to POST Mir's signals.
+    """Webhook endpoint for Mac Mini discord listener.
 
-    Receives parsed signals from the Discord bot, enriches with GEX context,
-    and stores alongside SOE signals for confluence detection.
+    Receives parsed Mir signals, enriches with GEX context,
+    stores in cache for Factor 1 conviction scoring, and
+    optionally pushes to Telegram.
     """
-    t = req.ticker.upper()
-    state = await _get_or_compute(t)
+    t = (req.ticker or "").upper()
+    if not t:
+        return {"ok": False, "error": "no ticker"}
 
+    # Get GEX context for this ticker
+    state = await cache.get(t)
     gex_context = {}
     if state:
         gex_context = {
@@ -1076,30 +1129,54 @@ async def ingest_mir_signal(req: MirSignalReq):
             "spot": state.get("actual_spot"),
         }
 
+    # Build the Mir signal record
     mir_entry = {
-        "ts": int(time.time()),
-        "signal_type": req.signal_type,
         "ticker": t,
-        "strike": req.strike,
+        "signal_type": req.signal_type,
         "option_type": req.option_type,
+        "strike": req.strike,
+        "price": req.price or req.entry_price,
         "expiry": req.expiry,
-        "entry_price": req.entry_price,
-        "stop_price": req.stop_price,
         "conviction": req.conviction,
-        "raw_signal": req.raw_signal,
-        "source": req.source,
+        "channel": req.channel,
+        "author": req.author,
+        "raw": req.raw or req.raw_signal,
+        "timestamp": req.timestamp,
         "gex_context": gex_context,
+        "ts": time.time(),
     }
 
-    # Store in memory for confluence detection
-    if not hasattr(app.state, "mir_signals"):
-        app.state.mir_signals = []
-    app.state.mir_signals.append(mir_entry)
-    # Keep last 100
-    if len(app.state.mir_signals) > 100:
-        app.state.mir_signals = app.state.mir_signals[-100:]
+    # Store in proper cache (1-hour TTL, used by discipline.py Factor 1)
+    await cache.set_mir_signal(t, mir_entry)
 
-    return {"ok": True, "ticker": t, "signal_type": req.signal_type, "gex_context": gex_context}
+    # Telegram alert for Mir ENTRY signals
+    if req.signal_type in ("ENTRY", "ADD") and req.conviction in ("HIGH", "MEDIUM"):
+        try:
+            from .telegram import send
+            gex_signal = gex_context.get("signal", "?")
+            gex_regime = gex_context.get("regime", "?")
+            spot = gex_context.get("spot", 0)
+            text = (
+                f"🎯 <b>MIR {req.conviction}</b>: {t}\n"
+                f"{req.signal_type} — {req.option_type} ${req.strike or '?'} {req.expiry or ''}\n"
+                f"Price: ${req.price or req.entry_price or '?'}\n"
+                f"GEX: {gex_signal} | {gex_regime} | Spot ${spot:.2f if spot else '?'}\n"
+                f"Channel: {req.channel}"
+            )
+            await send(text, ticker=t, priority=True)
+        except Exception:
+            pass
+
+    print(f"[MIR] {req.conviction} {req.signal_type}: {t} ${req.strike or '?'} {req.option_type} (from {req.channel})")
+
+    return {"ok": True, "ticker": t, "conviction": req.conviction, "gex_context": gex_context}
+
+
+@app.get("/api/signals/mir/active")
+async def active_mir_signals():
+    """Return all active Mir signals (within TTL)."""
+    signals = await cache.get_all_mir_signals()
+    return {"count": len(signals), "signals": signals}
 
 
 @app.get("/api/signals/confluence")

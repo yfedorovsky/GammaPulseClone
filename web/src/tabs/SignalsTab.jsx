@@ -175,6 +175,29 @@ function SignalCard({ sig, expanded, onToggle }) {
         <span style={{ fontSize: 18, fontWeight: 800 }}>{sig.ticker}</span>
         <span style={{ padding: '2px 10px', borderRadius: 6, border: `1px solid ${gradeColor}`, color: gradeColor, fontWeight: 800, fontSize: 'var(--fs-sm)', background: gradeBg }}>{sig.grade}</span>
         <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 700, fontFamily: 'var(--mono)', color: 'var(--text-2)' }}>{sig.signal_type}</span>
+        {/* Greeks source badge */}
+        {sig.greeks_source && (
+          <span style={{
+            padding: '1px 6px', borderRadius: 4, fontSize: 9, fontWeight: 800, fontFamily: 'var(--mono)',
+            background: sig.greeks_source === 'massive' ? 'rgba(16,220,154,0.15)' : 'rgba(255,200,0,0.15)',
+            color: sig.greeks_source === 'massive' ? '#10dc9a' : '#ffc800',
+          }}>{sig.greeks_source === 'massive' ? 'MASSIVE' : 'TRADIER'}</span>
+        )}
+        {/* Mir conviction badge */}
+        {sig._mir_conviction && (
+          <span style={{
+            padding: '1px 6px', borderRadius: 4, fontSize: 9, fontWeight: 800, fontFamily: 'var(--mono)',
+            background: sig._mir_conviction === 'HIGH' ? 'rgba(244,196,48,0.2)' : 'rgba(244,196,48,0.1)',
+            color: '#f4c430',
+          }}>MIR {sig._mir_conviction}</span>
+        )}
+        {/* 0DTE experimental badge */}
+        {sig._0dte_status === 'EXPERIMENTAL' && (
+          <span style={{ padding: '1px 6px', borderRadius: 4, fontSize: 9, fontWeight: 800, fontFamily: 'var(--mono)', background: 'rgba(255,140,0,0.2)', color: '#ff8c00' }}>0DTE EXPERIMENTAL</span>
+        )}
+        {sig._0dte_status === 'TRADEABLE' && sig.dte === 0 && (
+          <span style={{ padding: '1px 6px', borderRadius: 4, fontSize: 9, fontWeight: 800, fontFamily: 'var(--mono)', background: 'rgba(16,220,154,0.15)', color: '#10dc9a' }}>0DTE LIVE</span>
+        )}
         <span style={{ flex: 1 }} />
         <span style={{ ...statusStyle, fontSize: 'var(--fs-sm)', fontFamily: 'var(--mono)' }}>{sig.status}</span>
         <span style={{ fontSize: 'var(--fs-xxs)', color: 'var(--text-3)' }}>{time}</span>
@@ -200,6 +223,11 @@ function SignalCard({ sig, expanded, onToggle }) {
           <span style={{ color: isCall ? '#10dc9a' : '#ff5656', fontWeight: 700 }}>${sig.strike}</span>
         </div>
         <div>
+          <span style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xxs)' }}>EXP</span><br />
+          <span style={{ fontWeight: 700 }}>{sig.expiration || '-'}</span>
+          {sig.dte != null && <span style={{ color: 'var(--text-3)', fontSize: 9, marginLeft: 4 }}>({sig.dte}d)</span>}
+        </div>
+        <div>
           <span style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xxs)' }}>DELTA</span><br />
           <span style={{ color: '#10dc9a', fontWeight: 700 }}>{sig.delta?.toFixed(2) || '-'}</span>
         </div>
@@ -207,6 +235,26 @@ function SignalCard({ sig, expanded, onToggle }) {
           <span style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xxs)' }}>IV</span><br />
           <span style={{ color: '#10dc9a', fontWeight: 700 }}>{sig.iv ? (sig.iv * 100).toFixed(1) + '%' : '-'}</span>
         </div>
+        <div>
+          <span style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xxs)' }}>R:R</span><br />
+          <span style={{ color: sig.rr_ratio >= 2 ? '#10dc9a' : sig.rr_ratio >= 1 ? '#f4c430' : '#ff5656', fontWeight: 700 }}>
+            {sig.rr_ratio ? `${sig.rr_ratio}x` : '-'}
+          </span>
+        </div>
+        {sig.spread_pct != null && (
+          <div>
+            <span style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xxs)' }}>SPREAD</span><br />
+            <span style={{ color: sig.spread_pct <= 5 ? '#10dc9a' : sig.spread_pct <= 10 ? '#f4c430' : '#ff5656', fontWeight: 700 }}>
+              {sig.spread_pct}%
+            </span>
+          </div>
+        )}
+        {sig.contract_oi != null && (
+          <div>
+            <span style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xxs)' }}>OI</span><br />
+            <span style={{ fontWeight: 700 }}>{sig.contract_oi?.toLocaleString()}</span>
+          </div>
+        )}
         {/* Discipline fields */}
         {sig.base_rate_tier && (
           <div>

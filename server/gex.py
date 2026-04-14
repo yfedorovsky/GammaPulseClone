@@ -19,15 +19,26 @@ Also compute:
   - net_delta total, net_vanna total
   - signal + regime
 
-This implementation is written from scratch using the standard dealer-hedging
-GEX model: dealers are assumed short calls and long puts, so positive call
-gamma absorbs volatility while positive put gamma (which we flip in sign)
-amplifies it. This matches the public convention used by SpotGamma / Menthor Q.
+SIGN MODEL (assumed dealer positioning):
+  sign = +1 for calls, -1 for puts.  This is a heuristic that assumes
+  dealers are net short calls and net long puts.  It is the standard
+  retail convention (SpotGamma / Menthor Q) and is NOT inferred from
+  actual dealer vs. customer positioning.  All GEX values, regime labels,
+  and signals downstream of this should be treated as *assumed*, not fact.
+
+ZGL (Zero Gamma Line):
+  Computed via true gamma-profile solve: BSM gamma is recomputed at each
+  hypothetical spot level across the strike range, and the zero crossing
+  of the aggregate GEX profile is found.  This replaces the older
+  "weighted centroid of negative-GEX" approach which was mathematically
+  a different object.
 """
 from __future__ import annotations
 
 import math
+import time as _time
 from collections import defaultdict
+from datetime import date, datetime
 from typing import Any
 
 CONTRACT_SIZE = 100  # shares per contract
@@ -75,6 +86,107 @@ def _opt_fields(opt: dict[str, Any], spot: float = 0.0) -> dict[str, float]:
     }
 
 
+def _norm_pdf(x: float) -> float:
+    """Standard normal probability density function."""
+    return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+
+
+def _bsm_gamma(
+    S: float, K: float, sigma: float, T: float,
+    r: float = 0.045, q: float = 0.013,
+) -> float:
+    """BSM gamma for a European option (identical for calls and puts).
+
+    S: hypothetical spot price
+    K: strike price
+    sigma: implied volatility (decimal, e.g. 0.25 for 25%)
+    T: time to expiry in years (floored at 1 day internally)
+    r: risk-free rate (annualized, default 4.5%)
+    q: continuous dividend yield (SPY ~1.3%)
+    """
+    if S <= 0 or K <= 0 or sigma <= 0 or T <= 0:
+        return 0.0
+    sqrt_T = math.sqrt(T)
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / (sigma * sqrt_T)
+    return _norm_pdf(d1) * math.exp(-q * T) / (S * sigma * sqrt_T)
+
+
+def _solve_gamma_profile(
+    contract_data: list[dict[str, float]],
+    spot: float,
+    strikes_list: list[float],
+    num_points: int = 80,
+    r: float = 0.045,
+    q: float = 0.013,
+) -> tuple[float | None, list[tuple[float, float]], dict]:
+    """Solve for the true Zero Gamma Line by building a gamma exposure profile.
+
+    Unlike a weighted centroid of negative-GEX strikes, this recomputes total
+    dealer GEX at each hypothetical spot level using Black-Scholes gamma.  As
+    spot moves, each option's gamma changes — and the aggregate GEX profile
+    can cross zero at a price that is NOT simply the "center of negative gamma."
+
+    The zero crossing is the price where total dealer gamma flips sign:
+      - Above: dealers are net long gamma (stabilizing, buy dips / sell rips)
+      - Below: dealers are net short gamma (amplifying, delta-chase moves)
+
+    Returns (zgl_price or None, profile as [(spot, total_gex), ...])
+    """
+    if not contract_data or spot <= 0:
+        return None, [], {}
+
+    # Grid: spot ± 8%, bounded by strike range
+    lo = spot * 0.92
+    hi = spot * 1.08
+    if strikes_list:
+        lo = max(lo, min(strikes_list) * 0.98)
+        hi = min(hi, max(strikes_list) * 1.02)
+    if hi <= lo:
+        return None, [], {}
+
+    step = (hi - lo) / num_points
+    grid = [lo + i * step for i in range(num_points + 1)]
+
+    # At each hypothetical spot, recompute total GEX from BSM gamma
+    profile: list[tuple[float, float]] = []
+    for S_h in grid:
+        total_gex = 0.0
+        for c in contract_data:
+            g = _bsm_gamma(S_h, c["strike"], c["iv"], c["T"], r=r, q=q)
+            gex = g * c["oi"] * CONTRACT_SIZE * S_h * S_h * 0.01 * c["sign"]
+            total_gex += gex
+        profile.append((S_h, total_gex))
+
+    # Find zero crossings (where total GEX changes sign)
+    crossings: list[float] = []
+    for i in range(len(profile) - 1):
+        s1, g1 = profile[i]
+        s2, g2 = profile[i + 1]
+        if g1 * g2 < 0:  # sign change
+            frac = abs(g1) / (abs(g1) + abs(g2))
+            cross = s1 + frac * (s2 - s1)
+            crossings.append(cross)
+
+    if not crossings:
+        return None, profile, {}
+
+    # Classify all crossings
+    below = [c for c in crossings if c <= spot]
+    above = [c for c in crossings if c > spot]
+
+    crossing_detail = {
+        "all_crossings": sorted(crossings),
+        "highest_below_spot": below[-1] if below else None,
+        "lowest_above_spot": above[0] if above else None,
+        "nearest_to_spot": min(crossings, key=lambda c: abs(c - spot)),
+    }
+
+    # Primary ZGL: highest crossing below spot (transition from
+    # short-gamma to long-gamma as price rises through this level)
+    primary = below[-1] if below else min(crossings, key=lambda c: abs(c - spot))
+    return primary, profile, crossing_detail
+
+
 def _classify_strike(
     strike: float,
     net_gex: float,
@@ -120,6 +232,22 @@ def _compute_signal(
     return "RESISTANCE", False
 
 
+def _dominant_greeks_source(per_strike: dict) -> str:
+    """Return 'massive' if majority of strikes used Massive Greeks, else 'tradier'."""
+    massive = sum(1 for b in per_strike.values() if b.get("_massive_count", 0) > 0)
+    return "massive" if massive > len(per_strike) / 2 else "tradier"
+
+
+def _oldest_greeks_age(per_strike: dict) -> float:
+    """Return age in seconds of the oldest Greeks timestamp across all strikes."""
+    now = _time.time()
+    oldest_ts = min(
+        (b.get("_greeks_ts_min", now) for b in per_strike.values()),
+        default=now,
+    )
+    return round(now - oldest_ts, 1)
+
+
 def compute_exp_data(
     contracts: list[dict[str, Any]], spot: float
 ) -> dict[str, Any]:
@@ -136,6 +264,10 @@ def compute_exp_data(
             "iv_count": 0.0,
         }
     )
+
+    # Collect per-contract data for gamma profile solve (ZGL)
+    contract_profile_data: list[dict[str, float]] = []
+    today = date.today()
 
     for opt in contracts:
         f = _opt_fields(opt, spot=spot)
@@ -162,6 +294,33 @@ def compute_exp_data(
         if f["iv"] > 0:
             bucket["iv_sum"] += f["iv"]
             bucket["iv_count"] += 1
+
+        # Track Greeks source per contract (for freshness reporting)
+        g_source = opt.get("_greeks_source", "tradier")
+        g_ts = opt.get("_greeks_ts", 0)
+        if g_source == "massive":
+            bucket.setdefault("_massive_count", 0)
+            bucket["_massive_count"] = bucket.get("_massive_count", 0) + 1
+        bucket.setdefault("_greeks_ts_min", g_ts or _time.time())
+        if g_ts and g_ts < bucket.get("_greeks_ts_min", float("inf")):
+            bucket["_greeks_ts_min"] = g_ts
+
+        # Collect for gamma profile solve (need valid IV + expiration)
+        if f["iv"] > 0:
+            exp_str = opt.get("expiration_date", "")
+            if exp_str:
+                try:
+                    exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+                    T = max((exp_date - today).days, 1) / 365.0
+                    contract_profile_data.append({
+                        "strike": strike,
+                        "oi": f["oi"],
+                        "iv": f["iv"],
+                        "T": T,
+                        "sign": sign,
+                    })
+                except ValueError:
+                    pass
 
     if not per_strike:
         return {
@@ -243,28 +402,40 @@ def compute_exp_data(
     )[:6]
     gatekeeper_set = set(gk)
 
-    # Zero Gamma Line (ZGL): the structural dividing line between the negative-
-    # gamma zone (below) and the positive-gamma zone (above).
+    # ── Zero Gamma Line (ZGL) ──────────────────────────────────────────
+    # True gamma-profile solve: recompute total GEX at hypothetical spot
+    # levels using BSM gamma, then find where it crosses zero.
     #
-    # We use the gamma-weighted center of the negative-GEX zone: the average
-    # strike of all negative-GEX positions, weighted by their magnitude.  This
-    # is stable across data providers and always lands inside the "danger zone"
-    # where dealer hedging amplifies moves.
+    # This replaces the old "weighted centroid of negative-GEX below spot"
+    # which was a different mathematical object entirely — it measured the
+    # center of mass of put-dominated strikes, NOT where total gamma flips.
     #
-    # If there's no negative GEX at all, ZGL = lowest relevant strike.
-    neg_strikes = [
-        (s, abs(per_strike[s]["net_gex"]))
-        for s in strikes_sorted
-        if per_strike[s]["net_gex"] < 0 and s < spot
-    ]
-    if neg_strikes:
-        wt_sum = sum(s * w for s, w in neg_strikes)
-        wt_total = sum(w for _, w in neg_strikes)
-        zgl = round(wt_sum / wt_total, 1) if wt_total else strikes_sorted[0]
+    # The profile solve captures how gamma changes with spot: as price
+    # drops toward puts, those puts gain gamma (and negative GEX) while
+    # calls above lose gamma. The zero crossing is where the aggregate
+    # dealer gamma exposure switches from stabilizing to amplifying.
+    zgl_solved, _gamma_profile, zgl_crossings = _solve_gamma_profile(
+        contract_profile_data, spot, strikes_sorted,
+        r=0.045, q=0.013,  # TODO: wire from config.risk_free_rate
+    )
+    if zgl_solved is not None:
         # Snap to nearest actual strike
-        zgl = min(strikes_sorted, key=lambda s: abs(s - zgl))
+        zgl = min(strikes_sorted, key=lambda s: abs(s - zgl_solved))
     else:
-        zgl = strikes_sorted[0]
+        # Fallback: weighted centroid of negative-GEX below spot.
+        # Less accurate but stable when IV data is missing.
+        neg_strikes = [
+            (s, abs(per_strike[s]["net_gex"]))
+            for s in strikes_sorted
+            if per_strike[s]["net_gex"] < 0 and s < spot
+        ]
+        if neg_strikes:
+            wt_sum = sum(s * w for s, w in neg_strikes)
+            wt_total = sum(w for _, w in neg_strikes)
+            zgl = round(wt_sum / wt_total, 1) if wt_total else strikes_sorted[0]
+            zgl = min(strikes_sorted, key=lambda s: abs(s - zgl))
+        else:
+            zgl = strikes_sorted[0]
 
     # Average ATM IV (use 5 strikes closest to spot that have IV data)
     iv_candidates = [
@@ -323,6 +494,11 @@ def compute_exp_data(
         "neg_gex": total_neg,
         "air_pockets": air_pockets,
         "_king_is_positive": king_is_positive,
+        "_sign_model": "assumed_dealer",
+        "_zgl_method": "profile_solve" if zgl_solved is not None else "centroid_fallback",
+        "_zgl_crossings": zgl_crossings if zgl_solved is not None else {},
+        "_greeks_source": _dominant_greeks_source(per_strike),
+        "_greeks_age_seconds": _oldest_greeks_age(per_strike),
     }
 
 

@@ -371,9 +371,17 @@ async def run_position_monitor(stop_event: asyncio.Event) -> None:
                 signals = await _check_exit_signals(tradier)
                 if signals:
                     print(f"[TRACKER] {len(signals)} new exit signals")
-                    # Send Telegram with proper exit signal format
-                    for s in signals[:5]:
-                        await _send_exit_telegram(s)
+                    # Send Telegram via centralized rate limiter
+                    from .telegram import send, format_exit_signal
+                    for s in signals[:3]:
+                        # Skip exit signals with no spot price (stale/empty trades)
+                        if not s.get("spot") and not s.get("option_price"):
+                            continue
+                        await send(
+                            format_exit_signal(s),
+                            ticker=s.get("ticker", ""),
+                            priority=True,
+                        )
             except Exception as e:
                 print(f"[TRACKER] error: {e}")
             try:

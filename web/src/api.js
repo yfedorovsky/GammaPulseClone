@@ -39,6 +39,9 @@ export const api = {
   news: (ticker) => json('GET', '/api/news/' + encodeURIComponent(ticker)),
   sectors: () => json('GET', '/api/sectors'),
   sectorDetail: (sector) => json('GET', `/api/sectors/${encodeURIComponent(sector)}`),
+  breadth: () => json('GET', '/api/breadth'),
+  rts: (direction = 'BULL', limit = 50) => json('GET', `/api/rts?direction=${direction}&limit=${limit}`),
+  get: (url) => json('GET', url),
 };
 
 /**

@@ -122,7 +122,7 @@ def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) 
             (ts, ticker, strike, expiration, option_type, volume, oi, vol_oi,
              last_price, bid, ask, side, sentiment, iv, delta, notional, spot,
              conviction, status, king, floor_level, ceiling_level, signal, regime)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 int(time.time()),
                 alert["ticker"],
@@ -260,8 +260,12 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
             oi = int(opt.get("open_interest") or 0)
             if vol < 500 or oi < 1:
                 continue
-            vol_oi = vol / oi
-            if vol_oi < vol_oi_threshold:
+            vol_oi = round(vol / oi, 1)
+            # Two paths to qualify:
+            # 1. High V/OI ratio (unusual relative to open interest)
+            # 2. Massive notional (>$5M) regardless of V/OI — catches big block trades
+            est_notional = vol * (float(opt.get("last") or 0)) * 100
+            if vol_oi < vol_oi_threshold and est_notional < 5_000_000:
                 continue
 
             strike = opt.get("strike", 0)
@@ -286,7 +290,7 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
             notional = vol * last * 100
 
             # Noise filters
-            if notional < 500_000:
+            if notional < 250_000:
                 continue
             if abs(delta) > 0.95:
                 continue
@@ -345,8 +349,22 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                     f"[FLOW] {len(alerts)} new alerts: "
                     f"{', '.join(tickers_hit[:10])}"
                 )
-                for a in alerts[:10]:
-                    await _send_telegram(a)
+                import datetime
+                today_str = datetime.date.today().isoformat()
+                from .telegram import send, format_flow_alert
+                for a in alerts[:2]:  # Max 2 per cycle
+                    if a.get("conviction") != "HIGH":  # HIGH only
+                        continue
+                    # Must be a clear directional signal (not MID/NEUTRAL)
+                    if a.get("side") == "MID":
+                        continue
+                    # Minimum $5M notional for all flow alerts
+                    if (a.get("notional", 0) or 0) < 5_000_000:
+                        continue
+                    await send(
+                        format_flow_alert(a),
+                        ticker=a.get("ticker", ""),
+                    )
         except Exception as e:
             print(f"[FLOW] scan error: {e}")
         try:

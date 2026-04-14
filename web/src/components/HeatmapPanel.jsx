@@ -6,7 +6,7 @@ import TooltipPopup, { useTooltip } from './Tooltip.jsx';
 
 const MACRO_KEY = 'MACRO (ALL 200D)';
 
-export default function HeatmapPanel({ ticker, panelIdx, expLabelOverride }) {
+function HeatmapPanel({ ticker, panelIdx, expLabelOverride }) {
   const {
     chains,
     spotPrices,
@@ -171,12 +171,14 @@ export default function HeatmapPanel({ ticker, panelIdx, expLabelOverride }) {
             <button className="header-btn" onClick={onRemove}>✕</button>
           </>
         ) : (
-          <span className="panel-ticker">{ticker}</span>
-          {earningsThisWeek[ticker] && (
-            <span className="earnings-badge-sm" title={`Earnings ${earningsThisWeek[ticker].date} ${earningsThisWeek[ticker].timing === 'bmo' ? 'Before Open' : earningsThisWeek[ticker].timing === 'amc' ? 'After Close' : ''}`}>
-              📅
-            </span>
-          )}
+          <>
+            <span className="panel-ticker">{ticker}</span>
+            {earningsThisWeek[ticker] && (
+              <span className="earnings-badge-sm" title={`Earnings ${earningsThisWeek[ticker].date} ${earningsThisWeek[ticker].timing === 'bmo' ? 'Before Open' : earningsThisWeek[ticker].timing === 'amc' ? 'After Close' : ''}`}>
+                📅
+              </span>
+            )}
+          </>
         )}
         <select
           className="ctrl-select"
@@ -253,7 +255,7 @@ export default function HeatmapPanel({ ticker, panelIdx, expLabelOverride }) {
                     </div>
                   )}
                   <div
-                    className={`row ${rowClass(s, spot)}`}
+                    className={`row ${rowClass(s, spot)}${isKing ? ' king-row' : ''}${s.node_type === 'gatekeeper' ? ' gatekeeper-row' : ''}`}
                     style={{ backgroundColor: rowBackground(s, spot) }}
                     onMouseEnter={(e) => showTip(s, e)}
                     onMouseLeave={hideTip}
@@ -261,10 +263,18 @@ export default function HeatmapPanel({ ticker, panelIdx, expLabelOverride }) {
                     <span className="strike">
                       {fmtStrike(s.strike)}
                       {s.confluence && <span className="confl-icon"> ⚡</span>}
+                      {s.net_vex !== 0 && (
+                        <span className="vex-arrow" style={{ color: s.net_vex > 0 ? '#10dc9a' : '#ff5656' }}>
+                          {s.net_vex > 0 ? '↑' : '↓'}
+                        </span>
+                      )}
                     </span>
                     <span className="gex">
                       {fmtBig(s.net_gex)}
-                      {isKing && <span className="king-badge"> ★ KING</span>}
+                      {isKing && <span className={`king-badge${isKing ? ' king-pulse' : ''}`}> ★ KING</span>}
+                      {s.node_type === 'gatekeeper' && <span style={{ color: '#a24dff' }}> ◆</span>}
+                      {s.node_type === 'floor' && <span style={{ color: '#10dc9a' }}> ▬ FLOOR</span>}
+                      {s.node_type === 'ceiling' && <span style={{ color: '#ff5656' }}> ▬ CEIL</span>}
                     </span>
                     <span className="vex">{fmtBig(s.net_vex)}</span>
                   </div>
@@ -291,10 +301,20 @@ export default function HeatmapPanel({ ticker, panelIdx, expLabelOverride }) {
                 : 0;
               let barColor;
               if (s.node_type === 'king') barColor = s.net_gex >= 0 ? '#f4c430' : '#a24dff';
-              else if (s.node_type === 'gatekeeper') barColor = s.net_gex >= 0 ? '#1ca571' : '#a24dff';
+              // Purple nodes for gatekeepers (top 6 by intensity)
+              else if (s.node_type === 'gatekeeper') barColor = '#a24dff';
               else barColor = s.net_gex >= 0 ? '#1ca571' : '#d22d3c';
               let dotColor = barColor;
               if (s.is_air) dotColor = 'rgba(255,255,255,0.1)';
+
+              // Magnetic strength: ratio of this strike's intensity to king
+              const magStrength = s.ratio || 0;
+              const magDir = s.strike > (spot || 0) ? 'pull-up' : 'pull-down';
+
+              // VEX arrow: vanna direction indicator
+              const vexArrow = s.net_vex > 0 ? '↑' : s.net_vex < 0 ? '↓' : '';
+              const vexColor = s.net_vex > 0 ? '#10dc9a' : '#ff5656';
+
               return (
                 <React.Fragment key={s.strike}>
                   {showSpotAbove && (
@@ -304,22 +324,36 @@ export default function HeatmapPanel({ ticker, panelIdx, expLabelOverride }) {
                     </div>
                   )}
                   <div
-                    className="profile-row"
+                    className={`profile-row${s.node_type === 'king' ? ' king-row' : ''}${s.node_type === 'gatekeeper' ? ' gatekeeper-row' : ''}`}
                     onMouseEnter={(e) => showTip(s, e)}
                     onMouseLeave={hideTip}
                   >
                     <span className="strike text-mono">
                       {fmtStrike(s.strike)}
-                      <span className="profile-dot" style={{ background: dotColor }} />
+                      <span className={`profile-dot${s.node_type === 'king' ? ' king-pulse' : ''}`} style={{ background: dotColor }} />
+                      {/* Per-strike VEX arrow */}
+                      {vexArrow && <span className="vex-arrow" style={{ color: vexColor }}>{vexArrow}</span>}
                     </span>
                     <div className="profile-bar-track">
+                      {/* Magnetic strength bar (background indicator) */}
+                      {magStrength > 0.05 && (
+                        <div className="mag-strength-bar" style={{
+                          width: `${Math.min(100, magStrength * 100)}%`,
+                          background: s.net_gex >= 0
+                            ? 'rgba(28,165,113,0.08)'
+                            : 'rgba(210,45,60,0.08)',
+                        }} />
+                      )}
                       <div
                         className="profile-bar-fill"
                         style={{ width: `${Math.max(1, pct)}%`, background: barColor }}
                       />
                       <span className="profile-val">
                         {fmtBig(s.net_gex)}
-                        {s.node_type === 'king' && ' ★'}
+                        {s.node_type === 'king' && ' ★ KING'}
+                        {s.node_type === 'gatekeeper' && ' ◆'}
+                        {s.node_type === 'floor' && ' ▬ FLOOR'}
+                        {s.node_type === 'ceiling' && ' ▬ CEIL'}
                       </span>
                     </div>
                   </div>
@@ -332,3 +366,6 @@ export default function HeatmapPanel({ ticker, panelIdx, expLabelOverride }) {
     </div>
   );
 }
+
+// React.memo: only re-render when this panel's data actually changes
+export default React.memo(HeatmapPanel);

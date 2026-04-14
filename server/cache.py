@@ -10,9 +10,13 @@ import time
 from typing import Any
 
 
+MIR_SIGNAL_TTL = 3600  # 1 hour — Mir signals expire after this
+
+
 class TickerCache:
     def __init__(self) -> None:
         self._data: dict[str, dict[str, Any]] = {}
+        self._mir_signals: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
         self._last_cycle_end: float = 0.0
         self._worker_status: str = "Idle"
@@ -42,6 +46,27 @@ class TickerCache:
     async def mark_cycle_end(self) -> None:
         async with self._lock:
             self._last_cycle_end = time.time()
+
+    # ── Mir signal cache ───────────────────────────────────────────
+    async def set_mir_signal(self, ticker: str, signal: dict[str, Any]) -> None:
+        async with self._lock:
+            signal["_received_ts"] = time.time()
+            self._mir_signals[ticker] = signal
+
+    async def get_mir_signal(self, ticker: str) -> dict[str, Any] | None:
+        async with self._lock:
+            sig = self._mir_signals.get(ticker)
+            if sig and (time.time() - sig.get("_received_ts", 0)) < MIR_SIGNAL_TTL:
+                return sig
+            return None
+
+    async def get_all_mir_signals(self) -> dict[str, dict[str, Any]]:
+        async with self._lock:
+            now = time.time()
+            return {
+                t: s for t, s in self._mir_signals.items()
+                if (now - s.get("_received_ts", 0)) < MIR_SIGNAL_TTL
+            }
 
     def worker_status(self) -> dict[str, str]:
         ts = (
