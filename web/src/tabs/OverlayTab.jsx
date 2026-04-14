@@ -151,7 +151,8 @@ export default function OverlayTab() {
         if (volumeRef.current) {
           volumeRef.current.setData(showVolume ? volBars : []);
         }
-        if (chartRef.current && bars.length && !zoomLock) {
+        if (chartRef.current && bars.length) {
+          // Always fit on timeframe change; only skip on data refresh if zoom locked
           chartRef.current.timeScale().fitContent();
         }
 

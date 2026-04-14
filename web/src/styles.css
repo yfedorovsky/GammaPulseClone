@@ -804,8 +804,9 @@ input, select { font-family: inherit; }
 .overlay-panel {
   background: var(--bg-panel);
   overflow-y: auto;
-  min-width: 180px;
-  max-width: 200px;
+  min-width: 220px;
+  width: 220px;
+  flex-shrink: 0;
   font-family: var(--mono);
   font-size: var(--fs-xxs);
   border-left: 1px solid var(--border-faint);
