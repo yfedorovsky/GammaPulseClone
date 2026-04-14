@@ -526,7 +526,7 @@ def _select_contract(
                 target_dte = 0
                 break
 
-    # Standard: 7-28 DTE, sweet spot 14
+    # Standard: 7-21 DTE, sweet spot 10 (backtest: 7-14 DTE >> 14-21 >> 21-35)
     if not target_exp:
         for exp in exps:
             if exp.startswith("MACRO"):
@@ -534,8 +534,8 @@ def _select_contract(
             try:
                 exp_date = datetime.date.fromisoformat(exp)
                 dte = (exp_date - today).days
-                if 7 <= dte <= 28:
-                    if target_exp is None or abs(dte - 14) < abs(target_dte - 14):
+                if 7 <= dte <= 21:
+                    if target_exp is None or abs(dte - 10) < abs(target_dte - 10):
                         target_exp = exp
                         target_dte = dte
             except ValueError:
