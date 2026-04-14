@@ -391,8 +391,26 @@ function SignalCard({ sig, expanded, onToggle }) {
       {expanded && (
         <div style={{ borderTop: '1px solid var(--border-faint)', padding: 16 }}>
           {/* Trade action */}
-          <div style={{ fontSize: 'var(--fs-lg)', fontWeight: 800, marginBottom: 4 }}>
-            BUY {sig.ticker} ${sig.strike} {sig.option_type} — {sig.expiration} ({sig.dte} DTE)
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
+            <div style={{ fontSize: 'var(--fs-lg)', fontWeight: 800 }}>
+              BUY {sig.ticker} ${sig.strike} {sig.option_type} — {sig.expiration} ({sig.dte} DTE)
+            </div>
+            {sig.status === 'PENDING' && (
+              <button
+                className="ctrl-btn"
+                style={{ fontSize: 10, padding: '4px 12px', background: 'rgba(16,220,154,0.15)', color: '#10dc9a', border: '1px solid rgba(16,220,154,0.3)', fontWeight: 800 }}
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  try {
+                    const r = await api.portfolioOpen(sig.id);
+                    if (r.error) { alert(r.error); return; }
+                    alert(`Opened: x${r.contracts} @$${r.entry_price} = $${r.entry_cost}`);
+                  } catch (err) { alert('Failed: ' + err.message); }
+                }}
+              >
+                Paper Trade{sig.kelly_size_pct ? ` · ${sig.kelly_size_pct}%` : ''}
+              </button>
+            )}
           </div>
           <div style={{ color: 'var(--text-2)', fontSize: 'var(--fs-sm)', marginBottom: 12 }}>
             {sig.signal_type.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())}

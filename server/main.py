@@ -24,6 +24,7 @@ from .db import db
 from .flow_alerts import init_alert_db, get_alerts as get_flow_alerts, run_flow_scanner
 from .discipline import init_discipline_db, get_ticker_stats, compute_kelly_size, get_circuit_breaker, log_trade
 from .signals import init_signals_db, init_ab_db, get_signals, get_signal_stats, run_signal_engine
+from .paper_trading import init_paper_db
 from .scalp_alerts import run_scalp_scanner
 from .trade_tracker import init_tracker_db, get_all_trades, run_position_monitor
 from .breadth import get_breadth_context, get_nymo, get_namo, init_breadth_db
@@ -55,6 +56,7 @@ async def lifespan(app: FastAPI):
     init_tracker_db()
     init_signals_db()
     init_ab_db()
+    init_paper_db()
     init_discipline_db()
     init_breadth_db()
     await db.start()  # Single-writer queue for SQLite (prevents SQLITE_BUSY)
@@ -558,6 +560,61 @@ async def industry_rankings():
     # Sort by score descending
     ranked = sorted(scores.values(), key=lambda x: x["score"], reverse=True)
     return {"count": len(ranked), "industries": ranked}
+
+
+# ── Paper Trading Portfolio ──────────────────────────────────────────
+
+@app.get("/api/portfolio")
+async def portfolio():
+    """Paper trading account summary + open positions."""
+    from .paper_trading import get_account, get_positions
+    return {
+        "account": get_account(),
+        "open": get_positions("OPEN"),
+        "stats": None,  # computed separately
+    }
+
+
+@app.get("/api/portfolio/history")
+async def portfolio_history():
+    """Closed trades + equity curve + stats."""
+    from .paper_trading import get_positions, get_equity_history, get_portfolio_stats
+    return {
+        "closed": get_positions("CLOSED", limit=200),
+        "equity": get_equity_history(),
+        "stats": get_portfolio_stats(),
+    }
+
+
+class PortfolioOpenReq(BaseModel):
+    signal_id: int
+    contracts: int | None = None
+
+
+@app.post("/api/portfolio/open")
+async def portfolio_open(req: PortfolioOpenReq):
+    """Open a paper position from an SOE signal."""
+    from .paper_trading import open_position
+    return open_position(req.signal_id, req.contracts)
+
+
+class PortfolioCloseReq(BaseModel):
+    position_id: int
+    reason: str = "MANUAL"
+
+
+@app.post("/api/portfolio/close")
+async def portfolio_close(req: PortfolioCloseReq):
+    """Close a paper position."""
+    from .paper_trading import close_position
+    return close_position(req.position_id, reason=req.reason)
+
+
+@app.post("/api/portfolio/reset")
+async def portfolio_reset():
+    """Reset paper account to starting balance."""
+    from .paper_trading import reset_account
+    return reset_account()
 
 
 @app.get("/api/ab/results")

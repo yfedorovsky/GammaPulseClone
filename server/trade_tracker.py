@@ -384,6 +384,12 @@ async def run_position_monitor(stop_event: asyncio.Event) -> None:
                         )
             except Exception as e:
                 print(f"[TRACKER] error: {e}")
+            # Paper trading position monitor
+            try:
+                from .paper_trading import update_positions
+                await update_positions()
+            except Exception as e:
+                print(f"[PAPER] error: {e}")
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=30)
             except asyncio.TimeoutError:

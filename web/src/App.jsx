@@ -19,6 +19,7 @@ const HistoryTab = lazy(() => import('./tabs/HistoryTab.jsx'));
 const MtfTab = lazy(() => import('./tabs/MtfTab.jsx'));
 const EarningsTab = lazy(() => import('./tabs/EarningsTab.jsx'));
 const NewsTab = lazy(() => import('./tabs/NewsTab.jsx'));
+const PortfolioTab = lazy(() => import('./tabs/PortfolioTab.jsx'));
 const GuideTab = lazy(() => import('./tabs/GuideTab.jsx'));
 
 export default function App() {
@@ -137,6 +138,7 @@ export default function App() {
           {tab === 'SCANNER' && <ScannerTab />}
           {tab === 'FLOW' && <FlowTab />}
           {tab === 'SIGNALS' && <SignalsTab />}
+          {tab === 'PORTFOLIO' && <PortfolioTab />}
           {tab === 'SECTORS' && <SectorsTab />}
           {tab === 'HISTORY' && <HistoryTab />}
           {tab === 'MTF' && <MtfTab />}
