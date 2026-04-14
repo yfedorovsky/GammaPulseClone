@@ -491,6 +491,7 @@ def _select_contract(
     state: dict[str, Any],
     direction: str,
     tradier_chains: dict | None = None,
+    relaxed: bool = False,
 ) -> dict[str, Any] | None:
     """Select the optimal contract for the signal.
 
@@ -498,8 +499,15 @@ def _select_contract(
       - Bid-ask spread must be < 10% of mid price (liquidity)
       - Open interest must be > 500 on the strike (exit-ability)
       - Delta target: 0.30-0.55 (enough directional sensitivity)
-      - DTE sweet spot: 14, range 7-28
+      - DTE sweet spot: 10, range 7-21
+
+    When relaxed=True (setup forming alerts), gates are loosened:
+      - Spread < 25%, OI > 50, Delta 0.15-0.75
     """
+    spread_limit = 0.25 if relaxed else 0.10
+    oi_limit = 50 if relaxed else 500
+    delta_lo = 0.15 if relaxed else 0.25
+    delta_hi = 0.75 if relaxed else 0.60
     spot = state.get("actual_spot") or state.get("_spot") or 0
     king = state.get("king", 0)
     if not spot:
@@ -601,19 +609,18 @@ def _select_contract(
         spread = ask - bid
         spread_pct = spread / mid if mid > 0 else 999
 
-        if spread_pct > 0.10:  # > 10% of mid = too wide, skip
+        if spread_pct > spread_limit:
             continue
 
         # ── Quality Gate 2: Open interest ──────────────────────
         oi = c.get("open_interest", 0) or 0
-        if oi < 500:
+        if oi < oi_limit:
             continue
 
         # ── Quality Gate 3: Delta range ────────────────────────
         greeks = c.get("greeks") or {}
         delta = abs(greeks.get("delta", 0) or 0)
-        # Accept 0.25-0.60 delta range (covers 0.30-0.55 target)
-        if delta < 0.25 or delta > 0.60:
+        if delta < delta_lo or delta > delta_hi:
             continue
 
         candidates.append({
@@ -1316,8 +1323,8 @@ async def scan_setups() -> list[dict[str, Any]]:
 
         # Threshold: 6+ to alert
         if score >= 6:
-            # Select a concrete contract for the alert
-            contract = _select_contract(state, "BULL")
+            # Select a concrete contract for the alert (relaxed gates for smaller tickers)
+            contract = _select_contract(state, "BULL", relaxed=True)
             contract_line = ""
             if contract:
                 contract_line = (
