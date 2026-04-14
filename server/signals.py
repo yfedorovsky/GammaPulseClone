@@ -1199,6 +1199,160 @@ async def check_signal_outcomes() -> None:
                     pass
 
 
+# ── Setup Forming Scanner (Mir-style proactive ideas) ────────────────
+#
+# Scans the universe for tickers hitting multiple Mir criteria:
+# high RTS + leading industry + GEX structure + EMA alignment
+# Pushes "SETUP FORMING" alerts to Telegram — ideas BEFORE Mir calls them.
+
+_setup_seen: dict[str, float] = {}  # ticker -> last alert ts (4hr cooldown)
+
+async def scan_setups() -> list[dict[str, Any]]:
+    """Scan for Mir-style setups forming across the universe.
+
+    Based on backtest findings (Apr 2026):
+    - Sector leaders with EMA/RS/SMA alignment
+    - 7-14 DTE sweet spot
+    - PM window (2:00-4:00) for entry timing
+    - Skip Mondays, skip bear regime (SPY 20d < 0)
+    - GEX king/floor as entry/target/stop
+    """
+    import datetime
+
+    now = datetime.datetime.now()
+    if now.weekday() >= 5 or now.hour < 9 or now.hour > 16:
+        return []
+    # Skip Mondays (backtest: worse performance)
+    is_monday = now.weekday() == 0
+
+    snapshot = await cache.snapshot()
+    if len(snapshot) < 10:
+        return []
+
+    # Bear regime filter: skip when SPY trending down
+    spy_state = snapshot.get("SPY", {})
+    spy_rts = spy_state.get("_rts") or {}
+    spy_20d_ret = spy_rts.get("rs_20d", 0) if isinstance(spy_rts, dict) else 0
+    if spy_20d_ret < -2:  # SPY down >2% over 20d = bear regime
+        return []
+
+    # PM window bonus (2:00-4:00 is optimal entry per backtest)
+    is_pm = 14 <= now.hour < 16
+    is_power_hour = now.hour == 15
+
+    setups: list[dict[str, Any]] = []
+    now_ts = time.time()
+
+    for ticker, state in snapshot.items():
+        # Skip indexes — this is for single-stock sector leaders
+        if ticker in ("SPY", "QQQ", "IWM", "DIA", "SPX", "NDX", "RUT", "VIX"):
+            continue
+
+        # 4-hour cooldown per ticker
+        if now_ts - _setup_seen.get(ticker, 0) < 14400:
+            continue
+
+        spot = state.get("actual_spot") or state.get("_spot") or 0
+        if not spot or spot < 5:
+            continue
+
+        score = 0
+        reasons = []
+
+        # 1. GEX structure: POS regime + king above as magnet
+        regime = state.get("regime")
+        signal = state.get("signal", "")
+        king = state.get("king") or 0
+        floor_v = state.get("floor") or 0
+
+        if regime == "POS" and king and spot:
+            king_dist = (king - spot) / spot * 100
+            if 0.3 < king_dist < 5:
+                score += 2
+                reasons.append(f"King ${king} magnet (+{king_dist:.1f}%)")
+            if floor_v and spot > floor_v:
+                score += 1
+                reasons.append(f"Above floor ${floor_v}")
+
+        if signal in ("MAGNET UP", "SUPPORT"):
+            score += 1
+            reasons.append(f"GEX: {signal}")
+
+        # 2. RTS / momentum (strong relative strength vs SPY)
+        rts = state.get("_rts") or {}
+        rts_score = rts.get("score", 0) if isinstance(rts, dict) else 0
+        if rts_score >= 70:
+            score += 2
+            reasons.append(f"RTS {rts_score} (leader)")
+        elif rts_score >= 50:
+            score += 1
+            reasons.append(f"RTS {rts_score}")
+
+        # 3. Mir's preferred sectors (photonics, semi equip, AI, space)
+        from .mir_rules import is_mir_sector
+        in_sector, sector_note = is_mir_sector(ticker)
+        if in_sector:
+            score += 2
+            reasons.append(sector_note)
+
+        # 4. IV environment (cheap options = better entry, per backtest)
+        ivp = state.get("_ivp")
+        if ivp is not None and ivp < 30:
+            score += 1
+            reasons.append(f"IVP {ivp}% (cheap)")
+
+        # 5. Time bonus (PM window per backtest)
+        if is_pm:
+            score += 1
+            reasons.append("PM window" + (" (POWER HOUR)" if is_power_hour else ""))
+
+        # 6. Monday penalty
+        if is_monday:
+            score -= 1
+
+        # Threshold: 6+ to alert
+        if score >= 6:
+            setup = {
+                "ticker": ticker,
+                "score": score,
+                "spot": spot,
+                "king": king,
+                "floor": floor_v,
+                "regime": regime,
+                "signal": signal,
+                "rts_score": rts_score,
+                "reasons": reasons,
+            }
+            setups.append(setup)
+            _setup_seen[ticker] = now_ts
+
+    # Sort by score descending, take top 3
+    setups.sort(key=lambda x: x["score"], reverse=True)
+    setups = setups[:3]
+
+    # Push to Telegram
+    for s in setups:
+        try:
+            from .telegram import send
+            king_target = f"Target: King ${s['king']}" if s['king'] else ""
+            floor_stop = f"Stop: Floor ${s['floor']}" if s['floor'] else ""
+            msg = (
+                f"SETUP FORMING: <b>{s['ticker']}</b>\n"
+                f"Score: {s['score']}/10 | RTS: {s.get('rts_score', '-')}\n"
+                f"Spot: ${s['spot']:.2f} | {king_target} | {floor_stop}\n"
+                f"Regime: {s['regime']} | {s['signal']}\n"
+                f"\n"
+                + "\n".join(f"  {r}" for r in s["reasons"])
+                + f"\n\n7-14 DTE CALL | PM window entry"
+                + f"\n<i>Mir-style setup — watch for pullback to king/floor</i>"
+            )
+            await send(msg, ticker=s["ticker"])
+        except Exception:
+            pass
+
+    return setups
+
+
 async def run_signal_engine(stop_event: asyncio.Event) -> None:
     """Background loop: generate signals every 5 min, check outcomes every 1 min."""
     await asyncio.sleep(60)  # Wait for GEX worker to populate cache
@@ -1223,6 +1377,15 @@ async def run_signal_engine(stop_event: asyncio.Event) -> None:
             # Check outcomes every minute
             await check_signal_outcomes()
             await check_ab_outcomes()
+
+            # Scan for Mir-style setups forming (every signal cycle)
+            if now - last_gen < 5:  # Only right after signal generation
+                try:
+                    setups = await scan_setups()
+                    if setups:
+                        print(f"[SETUP] {len(setups)} setups forming: {', '.join(s['ticker'] for s in setups)}")
+                except Exception as e:
+                    print(f"[SETUP] error: {e}")
         except Exception as e:
             print(f"[SOE] error: {e}")
 
