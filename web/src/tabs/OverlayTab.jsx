@@ -145,7 +145,7 @@ export default function OverlayTab() {
         const volBars = rawBars.map((b) => ({
           time: b.time,
           value: b.volume || 0,
-          color: b.close >= b.open ? 'rgba(16,220,154,0.3)' : 'rgba(255,86,86,0.3)',
+          color: b.close >= b.open ? 'rgba(16,220,154,0.15)' : 'rgba(255,86,86,0.15)',
         }));
         candleRef.current.setData(bars);
         if (volumeRef.current) {
@@ -189,14 +189,15 @@ export default function OverlayTab() {
         }
 
         // Draw Anchored VWAPs from auto-detected anchors
-        if (showEMAs && chart && ind.avwapAnchors) {
+        // Only on daily timeframe (intraday has too many overlapping lines)
+        if (showEMAs && chart && ind.avwapAnchors && tf.interval === 'daily') {
           for (const anchor of ind.avwapAnchors) {
             const avwapData = computeAnchoredVWAP(rawBars, anchor.index);
-            if (avwapData.length > 0) {
+            if (avwapData.length > 1) {
               const avwapSeries = chart.addLineSeries({
-                color: anchor.color, lineWidth: 1, lineStyle: 2, // Dashed
-                crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false,
-                title: anchor.label,
+                color: anchor.color, lineWidth: 1, lineStyle: 2,
+                crosshairMarkerVisible: false, priceLineVisible: false,
+                lastValueVisible: false,
               });
               avwapSeries.setData(avwapData);
               emaSeriesRef.current.push(avwapSeries);
@@ -352,46 +353,9 @@ export default function OverlayTab() {
           }),
         );
 
-        // Forward projection: widening cone into future chart space
-        // Creates 3 line series (upper, center, lower) that extend past last candle
-        const now = Math.floor(Date.now() / 1000);
-        const daySeconds = tf.interval === '1min' ? 60 : tf.interval === '5min' ? 300 : 86400;
-        const projSteps = tf.days <= 1 ? 8 : tf.days <= 5 ? 6 : 5;
-
-        const projUpper = [];
-        const projCenter = [];
-        const projLower = [];
-        for (let i = 0; i <= projSteps; i++) {
-          const futureTime = now + i * daySeconds * (tf.days <= 1 ? 30 : tf.days <= 5 ? 12 : 1);
-          const daysAhead = (tf.days <= 1 ? i * 0.04 : tf.days <= 5 ? i * 0.5 : i);
-          const futureEM = spot * ivAnnual * Math.sqrt(Math.max(0.01, daysAhead) / 252);
-          // Curve toward king (magnet effect)
-          const kingPull = king && king !== spot ? (king - spot) * (i / projSteps) * 0.3 : 0;
-          projUpper.push({ time: futureTime, value: spot + futureEM + kingPull });
-          projCenter.push({ time: futureTime, value: spot + kingPull });
-          projLower.push({ time: futureTime, value: spot - futureEM + kingPull });
-        }
-
-        const projUpperSeries = chart.addLineSeries({
-          color: 'rgba(244,196,48,0.2)', lineWidth: 1, lineStyle: LineStyle.Dashed,
-          crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false,
-        });
-        projUpperSeries.setData(projUpper);
-        linesRef.current.push(projUpperSeries);
-
-        const projCenterSeries = chart.addLineSeries({
-          color: 'rgba(162,77,255,0.4)', lineWidth: 1, lineStyle: LineStyle.Dotted,
-          crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false,
-        });
-        projCenterSeries.setData(projCenter);
-        linesRef.current.push(projCenterSeries);
-
-        const projLowerSeries = chart.addLineSeries({
-          color: 'rgba(244,196,48,0.2)', lineWidth: 1, lineStyle: LineStyle.Dashed,
-          crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false,
-        });
-        projLowerSeries.setData(projLower);
-        linesRef.current.push(projLowerSeries);
+        // Forward projection disabled — was causing visual artifacts
+        // (large colored blocks instead of lines on some timeframes).
+        // The confidence cone static ±1σ lines are still shown above.
       }
     } else {
       // STANDARD MODE: discrete lines
