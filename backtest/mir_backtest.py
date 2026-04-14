@@ -165,9 +165,10 @@ def run_mir_backtest(
             current_pnl = estimate_option_pnl(trade.entry_spot, spot, trade.strike,
                                               trade.dte, trade.days_held, 0.30, trade.option_type)
 
-            # EXIT LADDER: take half off at +35%, move stop to breakeven
-            # Data shows 67 of 153 losers (44%) hit +35% before crashing to -50%
-            if not getattr(trade, '_ladder_triggered', False) and current_pnl >= 35:
+            # EXIT LADDER: take partial at +25%, move stop to breakeven
+            # Data: 57% of losers hit +20% before crashing to -50%
+            # Speed stop REMOVED (v4/v5 showed it kills recoverable trades)
+            if not getattr(trade, '_ladder_triggered', False) and current_pnl >= 25:
                 trade._ladder_triggered = True
                 trade._breakeven_stop = True
                 # Don't exit yet — just lock in partial and raise stop
@@ -181,7 +182,7 @@ def run_mir_backtest(
                 if getattr(trade, '_ladder_triggered', False):
                     # Stopped at breakeven after capturing +35% on first half
                     trade.exit_reason = "BREAKEVEN_STOP"
-                    trade.pnl_pct = 35 * 0.5  # kept half at +35%, other half at 0
+                    trade.pnl_pct = 25 * 0.5  # kept half at +25%, other half at 0
                     trade.outcome = "WIN"
                 else:
                     trade.exit_reason = "STOP_HIT"
