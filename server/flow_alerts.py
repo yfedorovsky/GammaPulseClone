@@ -361,6 +361,14 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                     # Minimum $5M notional for all flow alerts
                     if (a.get("notional", 0) or 0) < 5_000_000:
                         continue
+                    # Strike must be OTM by at least 1% — skip already-ITM chases
+                    strike = a.get("strike", 0) or 0
+                    spot = a.get("spot", 0) or 0
+                    if strike and spot:
+                        is_call = (a.get("option_type") or "").lower() == "call"
+                        otm_pct = ((strike - spot) / spot * 100) if is_call else ((spot - strike) / spot * 100)
+                        if otm_pct < 1.0:
+                            continue  # ITM or barely OTM — premium already jacked
                     await send(
                         format_flow_alert(a),
                         ticker=a.get("ticker", ""),

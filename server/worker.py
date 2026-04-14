@@ -253,16 +253,20 @@ async def _scan_cycle(
 ) -> None:
     settings = get_settings()
 
-    # Tiered scanning: Tier 1 every cycle, Tier 2+3 alternate → full coverage in 2 cycles.
+    # First cycle after restart: scan EVERYTHING (catch-up mode)
+    # Subsequent cycles: Tier 1 every cycle, Tier 2+3 alternate
+    is_first_cycle = cycle_num <= 1
     targets: list[str] = []
     for t in all_tickers():
         tier = tier_of(t)
-        if tier == 1:
+        if is_first_cycle or tier == 1:
             targets.append(t)
         elif tier == 2 and cycle_num % 2 == 0:
             targets.append(t)
         elif tier == 3 and cycle_num % 2 == 1:
             targets.append(t)
+    if is_first_cycle:
+        print(f"[worker] FIRST CYCLE — scanning ALL {len(targets)} tickers (catch-up)")
 
     source_label = "tradier+massive" if massive else "tradier"
     await cache.set_status(f"Running Cycle... [{source_label}] 0/{len(targets)}")
@@ -276,10 +280,12 @@ async def _scan_cycle(
     sem = asyncio.Semaphore(4)
     processed = 0
 
-    # Massive Greeks: Tier 1 every cycle, Tier 2+3 every other cycle
+    # Massive Greeks: first cycle = all, then Tier 1 every cycle, Tier 2+3 every other
     def _use_massive(t: str) -> MassiveClient | None:
         if not massive:
             return None
+        if is_first_cycle:
+            return massive  # First cycle: Massive for everything
         tier = tier_of(t)
         if tier == 1:
             return massive  # Always use Massive for majors

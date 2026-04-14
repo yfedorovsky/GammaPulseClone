@@ -18,6 +18,7 @@ class TickerCache:
         self._data: dict[str, dict[str, Any]] = {}
         self._mir_signals: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
+        self._load_mir_signals()  # Restore Mir signals from DB on startup
         self._last_cycle_end: float = 0.0
         self._worker_status: str = "Idle"
 
@@ -47,11 +48,49 @@ class TickerCache:
         async with self._lock:
             self._last_cycle_end = time.time()
 
-    # ── Mir signal cache ───────────────────────────────────────────
+    # ── Mir signal cache (in-memory + DB persistence) ──────────────
+    def _persist_mir_signal(self, ticker: str, signal: dict[str, Any]) -> None:
+        """Save Mir signal to DB so it survives restarts."""
+        try:
+            import sqlite3, json
+            from .config import get_settings
+            s = get_settings()
+            c = sqlite3.connect(s.snapshot_db)
+            c.execute("""CREATE TABLE IF NOT EXISTS mir_signal_cache (
+                ticker TEXT PRIMARY KEY, data TEXT, ts REAL)""")
+            c.execute("INSERT OR REPLACE INTO mir_signal_cache (ticker, data, ts) VALUES (?,?,?)",
+                      (ticker, json.dumps(signal, default=str), signal.get("_received_ts", time.time())))
+            c.commit()
+            c.close()
+        except Exception:
+            pass
+
+    def _load_mir_signals(self) -> None:
+        """Load active Mir signals from DB on startup."""
+        try:
+            import sqlite3, json
+            from .config import get_settings
+            s = get_settings()
+            c = sqlite3.connect(s.snapshot_db)
+            c.execute("""CREATE TABLE IF NOT EXISTS mir_signal_cache (
+                ticker TEXT PRIMARY KEY, data TEXT, ts REAL)""")
+            now = time.time()
+            rows = c.execute("SELECT ticker, data, ts FROM mir_signal_cache WHERE ts > ?",
+                             (now - MIR_SIGNAL_TTL,)).fetchall()
+            c.close()
+            for ticker, data, ts in rows:
+                sig = json.loads(data)
+                self._mir_signals[ticker] = sig
+            if rows:
+                print(f"[cache] Loaded {len(rows)} Mir signals from DB (survives restart)")
+        except Exception:
+            pass
+
     async def set_mir_signal(self, ticker: str, signal: dict[str, Any]) -> None:
         async with self._lock:
             signal["_received_ts"] = time.time()
             self._mir_signals[ticker] = signal
+            self._persist_mir_signal(ticker, signal)
 
     async def get_mir_signal(self, ticker: str) -> dict[str, Any] | None:
         async with self._lock:

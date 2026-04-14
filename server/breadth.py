@@ -469,15 +469,18 @@ def _score_breadth(nymo: dict[str, Any], namo: dict[str, Any], vix_ts: dict[str,
     # Bearish signals
     if score == 0:
         bearish = 0
-        if nymo_val > 40:
+        if nymo_val > 80:
             bearish += 1
             reasons.append(f"NYMO overbought {nymo_val:.0f}")
+        elif nymo_val > 120:
+            bearish += 2  # Extreme overbought — strong warning
+            reasons.append(f"NYMO extreme overbought {nymo_val:.0f}")
         if nymo.get("bearish_divergence"):
             bearish += 1
             reasons.append("NYMO bearish divergence")
-        if nymo.get("turning_down") and nymo_val > 0:
+        if nymo.get("turning_down") and nymo_val > 60:
             bearish += 1
-            reasons.append("NYMO turning down")
+            reasons.append("NYMO turning down from elevated")
         if bearish >= 2:
             score = -0.5
             reasons.append("Breadth deteriorating")

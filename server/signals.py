@@ -470,9 +470,15 @@ def _compute_signal_score(
         elif b_score < 0:
             # Breadth penalty: deteriorating internals into a bounce
             # Reduced penalty for indexes (intraday structure > daily breadth)
-            penalty_weight = 0.25 if is_index else 0.5
+            # When GEX confluence is 3/3 aligned, don't fight the tape —
+            # cap penalty so breadth alone can't block A-grade signals
+            if macro_score >= 0.5:  # GEX confluence already bullish/bearish
+                penalty_weight = 0.1 if is_index else 0.15  # Minimal penalty when tape agrees
+                macro_reasons.append(f"{b_reason} (reduced: GEX confirms trend)")
+            else:
+                penalty_weight = 0.25 if is_index else 0.5
+                macro_reasons.append(b_reason)
             macro_score = max(macro_score + b_score * penalty_weight, 0)
-            macro_reasons.append(b_reason)
 
     score += min(macro_score, 1.0)
     if macro_reasons:
@@ -977,8 +983,20 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
         _seen_signals.add(dedup_key)
         new_signals.append(sig)
 
-        # Telegram push for A/A+ signals (rate-limited, not spammy)
-        if sig.get("grade") in ("A+", "A") and not sig.get("_suppress_telegram"):
+        # Telegram push: A/A+ always, B+ only if solid (flow or volume quality)
+        should_push = False
+        if sig.get("grade") in ("A+", "A"):
+            should_push = True
+        elif sig.get("grade") == "B+" and contract:
+            # B+ needs quality confirmation: tight spread + decent OI + good R:R
+            spread_ok = contract.get("spread_pct", 99) < 5
+            oi_ok = contract.get("contract_oi", 0) >= 1000
+            rr_ok = contract.get("rr_ratio", 0) >= 1.5
+            mir_ok = (mir_sig or {}).get("conviction", "").upper() in ("HIGH", "MEDIUM")
+            if (spread_ok and oi_ok and rr_ok) or mir_ok:
+                should_push = True
+
+        if should_push and not sig.get("_suppress_telegram"):
             try:
                 from .telegram import send, format_soe_signal
                 await send(

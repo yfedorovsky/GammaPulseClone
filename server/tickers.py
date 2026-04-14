@@ -20,7 +20,7 @@ TIER_2 = [
     # Tech / semis
     "QCOM", "TXN", "AMAT", "LRCX", "KLAC", "ASML", "TSM", "ARM", "MRVL", "SMH", "SOXX",
     "NOW", "SHOP", "SNOW", "DDOG", "NET", "CRWD", "ZS", "PANW", "MDB",
-    "UBER", "LYFT", "ABNB", "PYPL", "XYZ", "HOOD", "RBLX", "U", "DELL", "HPE",
+    "UBER", "LYFT", "ABNB", "PYPL", "XYZ", "HOOD", "RBLX", "U", "DELL", "HPE", "SNDK",
     # Financials
     "WFC", "C", "GS", "MS", "SCHW", "AXP", "BLK", "SPGI", "BRK.B", "ICE",
     "CME", "PNC", "USB", "COF", "TFC",

@@ -339,7 +339,7 @@ def close_position(position_id: int, exit_price: float | None = None, reason: st
 
 async def update_positions() -> None:
     """Check open positions against current spot, update PnL, auto-close on target/stop/expiry."""
-    from . import cache
+    from .cache import cache
 
     snapshot = await cache.snapshot()
 
