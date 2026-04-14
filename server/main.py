@@ -728,9 +728,19 @@ async def bars(ticker: str, interval: str = "5min", days: int = 5):
             start = end - datetime.timedelta(days=max(days, 30))
             result = await tradier.history(t, interval=interval, start=start.isoformat(), end=end.isoformat())
         else:
-            # Intraday (timesales): don't pass start/end — Tradier returns
-            # empty when dates are provided. Without params it returns today's data.
-            result = await tradier.history(t, interval=interval)
+            # Multi-day intraday: fetch each day separately
+            # Tradier timesales needs full datetime format and only returns 1 day at a time
+            import asyncio as aio
+            all_bars = []
+            for d in range(days, -1, -1):
+                day = end - datetime.timedelta(days=d)
+                if day.weekday() >= 5:
+                    continue
+                start_dt = f"{day.isoformat()} 04:00"
+                end_dt = f"{day.isoformat()} 20:00"
+                day_bars = await tradier.history(t, interval=interval, start=start_dt, end=end_dt)
+                all_bars.extend(day_bars)
+            result = all_bars
     finally:
         await tradier.close()
     return {"ticker": t, "interval": interval, "bars": result}

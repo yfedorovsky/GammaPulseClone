@@ -775,7 +775,7 @@ input, select { font-family: inherit; }
 
 .overlay-wrap {
   display: grid;
-  grid-template-columns: 130px 1fr 130px;
+  grid-template-columns: 100px 1fr 220px;
   gap: 1px;
   background: var(--border-faint);
   height: 100%;
