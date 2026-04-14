@@ -546,7 +546,7 @@ export default function OverlayTab() {
         {showSidebar && (
           <div className="overlay-panel">
             {/* GammaPulse panel header */}
-            <div style={{ borderBottom: '1px solid var(--border-faint)', padding: '8px 10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ borderBottom: '1px solid var(--border-faint)', padding: '5px 8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontWeight: 800, color: '#10dc9a', fontSize: 11 }}>GAMMAPULSE</span>
               {signal && (
                 <span style={{
@@ -560,7 +560,7 @@ export default function OverlayTab() {
             </div>
 
             {/* Mode + IV + Alert */}
-            <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--border-faint)', fontSize: 10, fontFamily: 'var(--mono)' }}>
+            <div style={{ padding: '4px 8px', borderBottom: '1px solid var(--border-faint)', fontSize: 10 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
                 <span style={{ color: 'var(--text-3)' }}>MODE</span>
                 <span style={{ fontWeight: 700 }}>{tf.days <= 1 ? '0DTE SCALP' : tf.days <= 5 ? 'SWING TRADE' : 'POSITION'}</span>
@@ -587,7 +587,7 @@ export default function OverlayTab() {
             </div>
 
             {/* GEX Levels */}
-            <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--border-faint)' }}>
+            <div style={{ padding: '4px 8px', borderBottom: '1px solid var(--border-faint)' }}>
               <div style={{ fontSize: 10, fontWeight: 800, color: '#10dc9a', marginBottom: 6 }}>GEX LEVELS</div>
               <div style={{ fontFamily: 'var(--mono)', fontSize: 11 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
@@ -611,9 +611,9 @@ export default function OverlayTab() {
               </div>
             </div>
 
-            {/* Mini GEX strip (compact version of heatmap) */}
-            <div style={{ padding: '4px 10px', borderBottom: '1px solid var(--border-faint)', maxHeight: 200, overflowY: 'auto' }}>
-              {miniStrikes.slice(0, 30).map((s) => {
+            {/* Mini GEX strip (compact — top 12 strikes only) */}
+            <div style={{ padding: '4px 10px', borderBottom: '1px solid var(--border-faint)' }}>
+              {miniStrikes.slice(0, 12).map((s) => {
                 let bg;
                 if (s.node_type === 'king') bg = s.net_gex >= 0 ? '#f4c430' : '#a24dff';
                 else if (s.node_type === 'gatekeeper') bg = '#a24dff';
