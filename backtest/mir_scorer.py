@@ -26,23 +26,91 @@ for tickers in MIR_SECTORS.values():
 MIR_APPROVED_TICKERS.update(["SPY", "QQQ", "SMH", "IWM"])
 
 
+def compute_relative_strength(
+    ticker: str,
+    spot_history: list[float],
+    sector_histories: dict[str, list[float]] | None = None,
+    period: int = 20,
+) -> tuple[float, str]:
+    """Compute relative strength rank within sector.
+
+    Returns (rank 0-1 where 1 = strongest, label).
+    Mir: "find the strongest relative strength names in the market"
+    """
+    if not spot_history or len(spot_history) < period:
+        return 0.5, "insufficient data"
+
+    my_return = (spot_history[-1] - spot_history[-period]) / spot_history[-period] * 100
+
+    if not sector_histories:
+        return 0.5, f"{my_return:+.1f}% (no sector comparison)"
+
+    # Rank against sector peers
+    returns = []
+    for peer, hist in sector_histories.items():
+        if len(hist) >= period:
+            peer_ret = (hist[-1] - hist[-period]) / hist[-period] * 100
+            returns.append((peer, peer_ret))
+
+    if not returns:
+        return 0.5, f"{my_return:+.1f}% (no peers)"
+
+    returns.sort(key=lambda x: x[1], reverse=True)
+    rank_idx = next((i for i, (p, _) in enumerate(returns) if p == ticker), len(returns))
+    rank = 1 - (rank_idx / max(len(returns), 1))
+
+    return rank, f"{my_return:+.1f}% (rank {rank_idx+1}/{len(returns)} in sector)"
+
+
+def check_sma_filter(spot_history: list[float]) -> tuple[bool, str]:
+    """Mir's Finviz filter: price above SMA 20, 50, AND 200 (strict).
+
+    From his exact words: "These filters help you find the strongest
+    relative strength names in the market."
+    """
+    if not spot_history or len(spot_history) < 200:
+        if spot_history and len(spot_history) >= 50:
+            sma_20 = sum(spot_history[-20:]) / 20
+            sma_50 = sum(spot_history[-50:]) / 50
+            current = spot_history[-1]
+            if current > sma_20 and current > sma_50:
+                return True, f"Above SMA20 + SMA50 (no SMA200 data)"
+            return False, f"Below SMA20 or SMA50"
+        return False, "insufficient data for SMA filter"
+
+    current = spot_history[-1]
+    sma_20 = sum(spot_history[-20:]) / 20
+    sma_50 = sum(spot_history[-50:]) / 50
+    sma_200 = sum(spot_history[-200:]) / 200
+
+    if current > sma_20 > sma_50 > sma_200:
+        return True, f"STRONG: price > SMA20 > SMA50 > SMA200 (perfect alignment)"
+    elif current > sma_20 and current > sma_50 and current > sma_200:
+        return True, f"Above all 3 SMAs (not perfectly stacked)"
+    elif current > sma_20 and current > sma_50:
+        return False, f"Above SMA20/50 but below SMA200"
+    else:
+        return False, f"Below SMA20 or SMA50 -- no bullish structure"
+
+
 def score_mir_pattern(
     ticker: str,
     spot_history: list[float] | None = None,
     dte: int = 14,
     direction: str = "BULL",
+    sector_histories: dict[str, list[float]] | None = None,
 ) -> tuple[float, list[str]]:
-    """Score a trade setup against Mir's 5 rules.
+    """Score a trade setup against Mir's rules (enhanced with RAG insights).
 
-    Returns (score 0-5, reasons).
-    Each rule contributes 0 or 1 point.
+    Returns (score 0-6, reasons).
+    6 rules, each contributing 0-1 point.
     """
     score = 0.0
     reasons: list[str] = []
 
     # Rule 1: DTE alignment
     if dte == 0:
-        score += 0.5  # lotto, acceptable but not preferred
+        score += 0.5
         reasons.append(f"DTE {dte}: lotto (size for zero)")
     elif 1 <= dte <= 7:
         score += 0.75
@@ -57,85 +125,77 @@ def score_mir_pattern(
         score += 0.25
         reasons.append(f"DTE {dte}: LEAPS/macro only")
 
-    # Rule 2: Time of day (we only have daily data, so this is partial)
-    # Skip for backtest — would need intraday timestamps
-    # Default: assume mid-day entry (neutral, +0.5)
-    score += 0.5
-    reasons.append("Time: daily data (assuming mid-day entry)")
-
-    # Rule 3: Ticker quality — EMA filter + sector membership
-    ticker_score = 0.0
-    ticker_reasons = []
-
-    # Sector membership
-    if ticker in MIR_APPROVED_TICKERS:
-        ticker_score += 0.5
-        ticker_reasons.append(f"{ticker} in approved sector")
+    # Rule 2: SMA Filter (Mir's Finviz scanner -- price > SMA 20/50/200)
+    # From RAG: "Market cap: Mid (over $2B), Price: Over $5, Price above SMA20/50/200"
+    if spot_history:
+        sma_pass, sma_detail = check_sma_filter(spot_history)
+        if sma_pass:
+            score += 1.0
+            reasons.append(f"SMA filter PASS: {sma_detail}")
+        else:
+            reasons.append(f"SMA filter FAIL: {sma_detail}")
     else:
-        ticker_reasons.append(f"{ticker} not in Mir's sector list")
+        reasons.append("SMA filter: no data")
 
-    # EMA filter: price > EMA21 > EMA50 (bullish structure)
+    # Rule 3: Relative Strength (strongest name in sector)
+    # From RAG: "find the strongest relative strength names"
+    # Also from hourly 50SMA trick: "hovering above = very strong trend"
+    rs_rank, rs_detail = compute_relative_strength(
+        ticker, spot_history or [], sector_histories, period=20,
+    )
+    if rs_rank >= 0.75:
+        score += 1.0
+        reasons.append(f"RS top quartile: {rs_detail}")
+    elif rs_rank >= 0.5:
+        score += 0.5
+        reasons.append(f"RS above median: {rs_detail}")
+    else:
+        reasons.append(f"RS below median: {rs_detail}")
+
+    # Rule 4: EMA Structure (EMA21 > EMA50 for trend confirmation)
     if spot_history and len(spot_history) >= 50:
         ema_21 = _ema(spot_history, 21)
         ema_50 = _ema(spot_history, 50)
         current = spot_history[-1]
 
-        if direction == "BULL":
-            if current > ema_21 > ema_50:
-                ticker_score += 0.5
-                ticker_reasons.append(f"EMA aligned: price > EMA21 > EMA50")
-            elif current > ema_21:
-                ticker_score += 0.25
-                ticker_reasons.append(f"Price > EMA21 but EMA21 < EMA50")
-            else:
-                ticker_reasons.append(f"Price below EMA21 -- no bullish structure")
-        else:  # BEAR
-            if current < ema_21 < ema_50:
-                ticker_score += 0.5
-                ticker_reasons.append(f"Bearish EMA: price < EMA21 < EMA50")
-            elif current < ema_21:
-                ticker_score += 0.25
-                ticker_reasons.append(f"Price < EMA21 (bearish)")
-            else:
-                ticker_reasons.append(f"Price above EMA21 -- no bearish structure")
-    elif spot_history and len(spot_history) >= 21:
-        ema_21 = _ema(spot_history, 21)
-        current = spot_history[-1]
-        if (direction == "BULL" and current > ema_21) or (direction == "BEAR" and current < ema_21):
-            ticker_score += 0.25
-            ticker_reasons.append(f"EMA21 aligned (no EMA50 data)")
+        if direction == "BULL" and current > ema_21 > ema_50:
+            score += 1.0
+            reasons.append(f"EMA aligned: price > EMA21 > EMA50")
+        elif direction == "BULL" and current > ema_21:
+            score += 0.5
+            reasons.append(f"Price > EMA21 but EMAs not stacked")
+        elif direction == "BEAR" and current < ema_21 < ema_50:
+            score += 1.0
+            reasons.append(f"Bearish EMA: price < EMA21 < EMA50")
+        else:
+            reasons.append(f"EMA not aligned with {direction}")
 
-    score += ticker_score
-    reasons.append(f"Ticker quality ({ticker_score:.1f}/1): {'; '.join(ticker_reasons)}")
-
-    # Rule 4: Macro alignment (VIX proxy from spot vol)
+    # Rule 5: Macro / Volatility regime
     if spot_history and len(spot_history) >= 20:
-        # Use realized vol as VIX proxy
         returns = [(spot_history[i] - spot_history[i-1]) / spot_history[i-1]
                    for i in range(-19, 0) if spot_history[i-1] > 0]
         if returns:
             rv_daily = (sum(r**2 for r in returns) / len(returns)) ** 0.5
-            rv_annual = rv_daily * math.sqrt(252) * 100  # as percentage
+            rv_annual = rv_daily * math.sqrt(252) * 100
 
             if rv_annual < 18:
                 score += 1.0
-                reasons.append(f"Macro: low vol ({rv_annual:.0f}% RV) -- full size")
+                reasons.append(f"Macro: low vol ({rv_annual:.0f}% RV)")
             elif rv_annual < 25:
                 score += 0.5
-                reasons.append(f"Macro: moderate vol ({rv_annual:.0f}% RV) -- normal")
+                reasons.append(f"Macro: moderate vol ({rv_annual:.0f}% RV)")
             elif rv_annual < 35:
                 score += 0.25
-                reasons.append(f"Macro: elevated vol ({rv_annual:.0f}% RV) -- reduce size")
+                reasons.append(f"Macro: elevated ({rv_annual:.0f}% RV) -- reduce size")
             else:
-                reasons.append(f"Macro: HIGH vol ({rv_annual:.0f}% RV) -- Mir says go to cash")
-    else:
-        score += 0.5
-        reasons.append("Macro: insufficient data for vol check")
+                reasons.append(f"Macro: HIGH vol ({rv_annual:.0f}% RV) -- Mir says cash")
 
-    # Rule 5: Mir conviction (skip in backtest — would need Discord signal)
-    # Default: neutral 0.5
-    score += 0.5
-    reasons.append("Conviction: no Mir signal (backtest default)")
+    # Rule 6: Sector membership (approved tickers)
+    if ticker in MIR_APPROVED_TICKERS:
+        score += 0.5
+        reasons.append(f"{ticker} in Mir's approved sectors")
+    else:
+        reasons.append(f"{ticker} not in Mir's sector list")
 
     return score, reasons
 

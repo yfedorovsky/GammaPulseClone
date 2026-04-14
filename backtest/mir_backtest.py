@@ -42,7 +42,7 @@ CONFIGS = {
         "dte_range": (14, 21),
         "tickers": None,  # all approved tickers
         "direction": "BULL",  # Mir is primarily bullish momentum
-        "min_mir_score": 3.0,  # out of 5
+        "min_mir_score": 3.5,  # out of 6
         "stop_pct": 50,
         "target_pct": 100,
         "scale_out": 0.50,
@@ -244,9 +244,14 @@ def run_mir_backtest(
             if len(open_trades) >= 5:
                 continue
 
-            # Mir score
+            # Build sector histories for RS ranking
+            sector_histories = {t: spot_history[t] for t in allowed_tickers
+                               if t in spot_history and t != ticker}
+
+            # Mir score (with RS + SMA filters from RAG)
             mir_score, mir_reasons = score_mir_pattern(
                 ticker, spot_history.get(ticker), dte=dte_max, direction=direction,
+                sector_histories=sector_histories,
             )
 
             if mir_score < cfg["min_mir_score"]:
