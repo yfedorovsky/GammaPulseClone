@@ -164,12 +164,29 @@ def run_mir_backtest(
             # Check stop (-50% option value)
             current_pnl = estimate_option_pnl(trade.entry_spot, spot, trade.strike,
                                               trade.dte, trade.days_held, 0.30, trade.option_type)
-            if trade.stop_pct and current_pnl <= -trade.stop_pct:
+
+            # EXIT LADDER: take half off at +35%, move stop to breakeven
+            # Data shows 67 of 153 losers (44%) hit +35% before crashing to -50%
+            if not getattr(trade, '_ladder_triggered', False) and current_pnl >= 35:
+                trade._ladder_triggered = True
+                trade._breakeven_stop = True
+                # Don't exit yet — just lock in partial and raise stop
+
+            # If ladder triggered, use breakeven stop instead of -50%
+            effective_stop = 0 if getattr(trade, '_breakeven_stop', False) else -trade.stop_pct
+
+            if trade.stop_pct and current_pnl <= effective_stop:
                 trade.exit_date = date
                 trade.exit_spot = spot
-                trade.exit_reason = "STOP_HIT"
-                trade.pnl_pct = current_pnl
-                trade.outcome = "LOSS"
+                if getattr(trade, '_ladder_triggered', False):
+                    # Stopped at breakeven after capturing +35% on first half
+                    trade.exit_reason = "BREAKEVEN_STOP"
+                    trade.pnl_pct = 35 * 0.5  # kept half at +35%, other half at 0
+                    trade.outcome = "WIN"
+                else:
+                    trade.exit_reason = "STOP_HIT"
+                    trade.pnl_pct = current_pnl
+                    trade.outcome = "LOSS"
                 open_trades.remove(trade)
                 trades.append(trade)
                 continue
@@ -184,6 +201,26 @@ def run_mir_backtest(
                 open_trades.remove(trade)
                 trades.append(trade)
                 continue
+
+        # Track SPY spot for regime filter (must happen before filter check)
+        spy_spot_data = day_spots.get("SPY", {})
+        spy_close = spy_spot_data.get("close", 0)
+        if spy_close:
+            if "SPY" not in spot_history:
+                spot_history["SPY"] = []
+            spot_history["SPY"].append(spy_close)
+
+        # REGIME FILTER: skip entries when SPY 20d return is negative
+        # Data shows: BEAR months = 11% WR, -50% avg. BULL = 48% WR, +33% avg.
+        spy_history = spot_history.get("SPY", [])
+        if len(spy_history) >= 20:
+            spy_20d_return = (spy_history[-1] - spy_history[-20]) / spy_history[-20] * 100
+            if spy_20d_return < 0:
+                continue  # skip entire day -- bearish regime
+
+        # MONDAY SKIP: 34% WR vs 46-51% on other days
+        if date.weekday() == 0:
+            continue
 
         # Generate new signals
         for ticker in allowed_tickers:
