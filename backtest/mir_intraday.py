@@ -200,12 +200,12 @@ def run_intraday_backtest(
                     # Confirm bounce: current bar closed above SMA
                     # and prior bar touched or dipped to SMA
                     entry_price = current
-                    stop_price = sma_20 * 0.997  # stop just below SMA
-                    target_price = entry_price * 1.01  # +1% quick scalp target
+                    stop_price = sma_20 * 0.995  # stop 0.5% below SMA (was 0.3% -- too tight)
+                    target_price = entry_price * 1.012  # +1.2% scalp target
 
                     # Power hour gets wider target (Mir: "biggest plays in final minutes")
                     if window == "POWER_HOUR":
-                        target_price = entry_price * 1.015  # +1.5%
+                        target_price = entry_price * 1.018  # +1.8%
 
                     open_trade = IntradayTrade(
                         entry_time=bar["datetime"],
