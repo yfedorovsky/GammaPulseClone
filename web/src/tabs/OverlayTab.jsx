@@ -636,8 +636,19 @@ export default function OverlayTab() {
       <div className="overlay-wrap" style={{ flex: 1, minHeight: 0 }}>
         {/* Left sidebar: watchlist */}
         <div className="overlay-side">
+          <form onSubmit={(e) => {
+            e.preventDefault();
+            const val = e.target.elements.ticker.value.trim().toUpperCase();
+            if (val) { setCurrent(val); e.target.elements.ticker.value = ''; }
+          }} style={{ marginBottom: 6 }}>
+            <input
+              name="ticker"
+              placeholder="Ticker..."
+              style={{ width: '100%', padding: '4px 6px', fontSize: 10, background: 'var(--bg-1)', border: '1px solid var(--border-faint)', borderRadius: 4, color: 'var(--text-1)', fontFamily: 'var(--mono)' }}
+            />
+          </form>
           <div style={{ fontSize: 11, color: 'var(--text-2)', marginBottom: 6, fontWeight: 700 }}>
-            Lists <span style={{ cursor: 'pointer', marginLeft: 4 }}>⊕</span>
+            Lists
           </div>
           {wl.tickers.map((t) => (
             <div
