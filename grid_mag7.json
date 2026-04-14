@@ -1,0 +1,479 @@
+[
+  {
+    "label": "ATM/7",
+    "strike_offset": 0,
+    "target_dte": 7,
+    "trades": 5,
+    "win_rate": 0.0,
+    "avg_pnl": -57.9,
+    "avg_win": 0,
+    "avg_loss": -57.9,
+    "total_return": -4.3,
+    "max_drawdown": 4.3,
+    "expectancy": -57.9,
+    "overall_alpha": -270.3,
+    "by_grade": {
+      "A+": {
+        "trades": 5,
+        "wins": 0,
+        "losses": 5,
+        "win_rate": 0.0,
+        "avg_pnl": -57.9,
+        "max_win": -17.8,
+        "max_loss": -69.9
+      }
+    },
+    "by_ticker": {
+      "AAPL": {
+        "trades": 1,
+        "wins": 0,
+        "win_rate": 0.0,
+        "avg_pnl": -17.8
+      },
+      "QQQ": {
+        "trades": 2,
+        "wins": 0,
+        "win_rate": 0.0,
+        "avg_pnl": -67.6
+      },
+      "SPY": {
+        "trades": 2,
+        "wins": 0,
+        "win_rate": 0.0,
+        "avg_pnl": -68.2
+      }
+    }
+  },
+  {
+    "label": "1st OTM/7",
+    "strike_offset": 1,
+    "target_dte": 7,
+    "trades": 5,
+    "win_rate": 0.0,
+    "avg_pnl": -63.9,
+    "avg_win": 0,
+    "avg_loss": -63.9,
+    "total_return": -4.7,
+    "max_drawdown": 4.7,
+    "expectancy": -63.9,
+    "overall_alpha": -284.0,
+    "by_grade": {
+      "A+": {
+        "trades": 5,
+        "wins": 0,
+        "losses": 5,
+        "win_rate": 0.0,
+        "avg_pnl": -63.9,
+        "max_win": -34.3,
+        "max_loss": -72.2
+      }
+    },
+    "by_ticker": {
+      "AAPL": {
+        "trades": 1,
+        "wins": 0,
+        "win_rate": 0.0,
+        "avg_pnl": -34.3
+      },
+      "QQQ": {
+        "trades": 2,
+        "wins": 0,
+        "win_rate": 0.0,
+        "avg_pnl": -70.7
+      },
+      "SPY": {
+        "trades": 2,
+        "wins": 0,
+        "win_rate": 0.0,
+        "avg_pnl": -71.9
+      }
+    }
+  },
+  {
+    "label": "ATM/14",
+    "strike_offset": 0,
+    "target_dte": 14,
+    "trades": 21,
+    "win_rate": 33.3,
+    "avg_pnl": -12.2,
+    "avg_win": 67.9,
+    "avg_loss": -61.6,
+    "total_return": -3.9,
+    "max_drawdown": 5.4,
+    "expectancy": -12.2,
+    "overall_alpha": -241.1,
+    "by_grade": {
+      "A+": {
+        "trades": 21,
+        "wins": 7,
+        "losses": 14,
+        "win_rate": 33.3,
+        "avg_pnl": -12.2,
+        "max_win": 93.9,
+        "max_loss": -85.9
+      }
+    },
+    "by_ticker": {
+      "AAPL": {
+        "trades": 4,
+        "wins": 0,
+        "win_rate": 0.0,
+        "avg_pnl": -65.4
+      },
+      "MSFT": {
+        "trades": 1,
+        "wins": 0,
+        "win_rate": 0.0,
+        "avg_pnl": -0.9
+      },
+      "QQQ": {
+        "trades": 7,
+        "wins": 3,
+        "win_rate": 42.9,
+        "avg_pnl": 9.7
+      },
+      "SMH": {
+        "trades": 2,
+        "wins": 1,
+        "win_rate": 50.0,
+        "avg_pnl": -15.7
+      },
+      "SPY": {
+        "trades": 7,
+        "wins": 3,
+        "win_rate": 42.9,
+        "avg_pnl": -4.4
+      }
+    }
+  },
+  {
+    "label": "1st OTM/14",
+    "strike_offset": 1,
+    "target_dte": 14,
+    "trades": 21,
+    "win_rate": 33.3,
+    "avg_pnl": -13.1,
+    "avg_win": 70.3,
+    "avg_loss": -64.4,
+    "total_return": -4.2,
+    "max_drawdown": 5.7,
+    "expectancy": -13.1,
+    "overall_alpha": -256.8,
+    "by_grade": {
+      "A+": {
+        "trades": 21,
+        "wins": 7,
+        "losses": 14,
+        "win_rate": 33.3,
+        "avg_pnl": -13.1,
+        "max_win": 96.9,
+        "max_loss": -90.8
+      }
+    },
+    "by_ticker": {
+      "AAPL": {
+        "trades": 4,
+        "wins": 0,
+        "win_rate": 0.0,
+        "avg_pnl": -71.7
+      },
+      "MSFT": {
+        "trades": 1,
+        "wins": 0,
+        "win_rate": 0.0,
+        "avg_pnl": -3.3
+      },
+      "QQQ": {
+        "trades": 7,
+        "wins": 3,
+        "win_rate": 42.9,
+        "avg_pnl": 10.3
+      },
+      "SMH": {
+        "trades": 2,
+        "wins": 1,
+        "win_rate": 50.0,
+        "avg_pnl": -13.8
+      },
+      "SPY": {
+        "trades": 7,
+        "wins": 3,
+        "win_rate": 42.9,
+        "avg_pnl": -4.3
+      }
+    }
+  },
+  {
+    "label": "2nd OTM/7",
+    "strike_offset": 2,
+    "target_dte": 7,
+    "trades": 5,
+    "win_rate": 0.0,
+    "avg_pnl": -69.9,
+    "avg_win": 0,
+    "avg_loss": -69.9,
+    "total_return": -5.1,
+    "max_drawdown": 5.1,
+    "expectancy": -69.9,
+    "overall_alpha": -295.9,
+    "by_grade": {
+      "A+": {
+        "trades": 5,
+        "wins": 0,
+        "losses": 5,
+        "win_rate": 0.0,
+        "avg_pnl": -69.9,
+        "max_win": -52.5,
+        "max_loss": -77.5
+      }
+    },
+    "by_ticker": {
+      "AAPL": {
+        "trades": 1,
+        "wins": 0,
+        "win_rate": 0.0,
+        "avg_pnl": -52.5
+      },
+      "QQQ": {
+        "trades": 2,
+        "wins": 0,
+        "win_rate": 0.0,
+        "avg_pnl": -72.4
+      },
+      "SPY": {
+        "trades": 2,
+        "wins": 0,
+        "win_rate": 0.0,
+        "avg_pnl": -76.1
+      }
+    }
+  },
+  {
+    "label": "ATM/21",
+    "strike_offset": 0,
+    "target_dte": 21,
+    "trades": 21,
+    "win_rate": 42.9,
+    "avg_pnl": -13.5,
+    "avg_win": 39.1,
+    "avg_loss": -61.3,
+    "total_return": -4.2,
+    "max_drawdown": 5.6,
+    "expectancy": -13.5,
+    "overall_alpha": -315.8,
+    "by_grade": {
+      "A+": {
+        "trades": 21,
+        "wins": 9,
+        "losses": 12,
+        "win_rate": 42.9,
+        "avg_pnl": -13.5,
+        "max_win": 94.0,
+        "max_loss": -88.4
+      }
+    },
+    "by_ticker": {
+      "AAPL": {
+        "trades": 4,
+        "wins": 0,
+        "win_rate": 0.0,
+        "avg_pnl": -74.3
+      },
+      "MSFT": {
+        "trades": 1,
+        "wins": 1,
+        "win_rate": 100.0,
+        "avg_pnl": 35.9
+      },
+      "QQQ": {
+        "trades": 7,
+        "wins": 4,
+        "win_rate": 57.1,
+        "avg_pnl": 10.0
+      },
+      "SMH": {
+        "trades": 3,
+        "wins": 1,
+        "win_rate": 33.3,
+        "avg_pnl": -13.8
+      },
+      "SPY": {
+        "trades": 6,
+        "wins": 3,
+        "win_rate": 50.0,
+        "avg_pnl": -8.3
+      }
+    }
+  },
+  {
+    "label": "1st OTM/21",
+    "strike_offset": 1,
+    "target_dte": 21,
+    "trades": 21,
+    "win_rate": 42.9,
+    "avg_pnl": -14.2,
+    "avg_win": 39.9,
+    "avg_loss": -63.5,
+    "total_return": -4.5,
+    "max_drawdown": 5.7,
+    "expectancy": -14.2,
+    "overall_alpha": -332.4,
+    "by_grade": {
+      "A+": {
+        "trades": 21,
+        "wins": 9,
+        "losses": 12,
+        "win_rate": 42.9,
+        "avg_pnl": -14.2,
+        "max_win": 95.3,
+        "max_loss": -88.8
+      }
+    },
+    "by_ticker": {
+      "AAPL": {
+        "trades": 4,
+        "wins": 0,
+        "win_rate": 0.0,
+        "avg_pnl": -79.0
+      },
+      "MSFT": {
+        "trades": 1,
+        "wins": 1,
+        "win_rate": 100.0,
+        "avg_pnl": 36.6
+      },
+      "QQQ": {
+        "trades": 7,
+        "wins": 4,
+        "win_rate": 57.1,
+        "avg_pnl": 10.1
+      },
+      "SMH": {
+        "trades": 3,
+        "wins": 1,
+        "win_rate": 33.3,
+        "avg_pnl": -13.3
+      },
+      "SPY": {
+        "trades": 6,
+        "wins": 3,
+        "win_rate": 50.0,
+        "avg_pnl": -8.4
+      }
+    }
+  },
+  {
+    "label": "2nd OTM/14",
+    "strike_offset": 2,
+    "target_dte": 14,
+    "trades": 21,
+    "win_rate": 33.3,
+    "avg_pnl": -14.1,
+    "avg_win": 72.1,
+    "avg_loss": -67.2,
+    "total_return": -4.5,
+    "max_drawdown": 5.9,
+    "expectancy": -14.1,
+    "overall_alpha": -275.2,
+    "by_grade": {
+      "A+": {
+        "trades": 21,
+        "wins": 7,
+        "losses": 14,
+        "win_rate": 33.3,
+        "avg_pnl": -14.1,
+        "max_win": 99.9,
+        "max_loss": -94.3
+      }
+    },
+    "by_ticker": {
+      "AAPL": {
+        "trades": 4,
+        "wins": 0,
+        "win_rate": 0.0,
+        "avg_pnl": -77.5
+      },
+      "MSFT": {
+        "trades": 1,
+        "wins": 0,
+        "win_rate": 0.0,
+        "avg_pnl": -6.0
+      },
+      "QQQ": {
+        "trades": 7,
+        "wins": 3,
+        "win_rate": 42.9,
+        "avg_pnl": 10.3
+      },
+      "SMH": {
+        "trades": 2,
+        "wins": 1,
+        "win_rate": 50.0,
+        "avg_pnl": -11.5
+      },
+      "SPY": {
+        "trades": 7,
+        "wins": 3,
+        "win_rate": 42.9,
+        "avg_pnl": -4.2
+      }
+    }
+  },
+  {
+    "label": "2nd OTM/21",
+    "strike_offset": 2,
+    "target_dte": 21,
+    "trades": 21,
+    "win_rate": 38.1,
+    "avg_pnl": -16.3,
+    "avg_win": 42.1,
+    "avg_loss": -60.1,
+    "total_return": -5.1,
+    "max_drawdown": 5.9,
+    "expectancy": -16.3,
+    "overall_alpha": -375.8,
+    "by_grade": {
+      "A+": {
+        "trades": 21,
+        "wins": 8,
+        "losses": 13,
+        "win_rate": 38.1,
+        "avg_pnl": -16.3,
+        "max_win": 96.7,
+        "max_loss": -90.5
+      }
+    },
+    "by_ticker": {
+      "AAPL": {
+        "trades": 4,
+        "wins": 0,
+        "win_rate": 0.0,
+        "avg_pnl": -83.1
+      },
+      "MSFT": {
+        "trades": 1,
+        "wins": 1,
+        "win_rate": 100.0,
+        "avg_pnl": 37.1
+      },
+      "QQQ": {
+        "trades": 7,
+        "wins": 3,
+        "win_rate": 42.9,
+        "avg_pnl": 6.1
+      },
+      "SMH": {
+        "trades": 3,
+        "wins": 1,
+        "win_rate": 33.3,
+        "avg_pnl": -12.6
+      },
+      "SPY": {
+        "trades": 6,
+        "wins": 3,
+        "win_rate": 50.0,
+        "avg_pnl": -8.6
+      }
+    }
+  }
+]
