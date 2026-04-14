@@ -20,7 +20,14 @@ const LS = {
 };
 
 const defaultWatchlist = [
-  { id: 'default', name: 'Main', tickers: ['SPY', 'QQQ', 'NVDA', 'AAPL', 'MSFT'] },
+  { id: 'default', name: 'Main', tickers: [
+    'SPY', 'QQQ', 'IWM', 'NVDA', 'AAPL', 'MSFT', 'AMD', 'TSLA', 'META', 'AMZN', 'GOOGL',
+    'MU', 'LRCX', 'AMAT', 'KLAC', 'SMH', 'AVGO', 'ARM',
+    'AAOI', 'COHR', 'LITE', 'CIEN', 'GLW', 'AXTI',
+    'AEHR', 'TER', 'VRT', 'ANET',
+    'ASTS', 'RKLB', 'NBIS', 'OKLO', 'IREN',
+    'PLTR', 'COIN', 'IBIT',
+  ] },
 ];
 
 export const useStore = create((set, get) => ({

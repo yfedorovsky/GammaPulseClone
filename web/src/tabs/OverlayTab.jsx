@@ -171,9 +171,34 @@ export default function OverlayTab() {
 
         rawBarsRef.current = rawBars;
 
-        const bars = rawBars.map((b) => ({
-          time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
-        }));
+        // Classify each bar's session for coloring
+        const bars = rawBars.map((b) => {
+          const bar = { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close };
+          // Apply session-based coloring on intraday views when extended hours visible
+          if (!showSessions && tf.interval !== 'daily' && typeof b.time === 'number') {
+            const d = new Date(b.time * 1000);
+            const etHour = (d.getUTCHours() - 4 + 24) % 24;
+            const etMin = d.getUTCMinutes();
+            const mod = etHour * 60 + etMin;
+            const isRTH = mod >= 570 && mod <= 960; // 9:30-16:00
+            if (!isRTH) {
+              const isUp = b.close >= b.open;
+              // Dimmed colors for extended hours
+              if (mod > 960 && mod <= 1200) {
+                // After-hours 4:00-8:00 PM — blue tint
+                bar.color = isUp ? 'rgba(16,160,200,0.5)' : 'rgba(100,60,160,0.5)';
+                bar.borderColor = bar.color;
+                bar.wickColor = bar.color;
+              } else {
+                // Overnight + premarket — faint gray
+                bar.color = isUp ? 'rgba(80,90,110,0.4)' : 'rgba(110,80,90,0.4)';
+                bar.borderColor = bar.color;
+                bar.wickColor = bar.color;
+              }
+            }
+          }
+          return bar;
+        });
         candleRef.current.setData(bars);
 
         if (chartRef.current && bars.length) {
@@ -195,15 +220,25 @@ export default function OverlayTab() {
   useEffect(() => {
     if (!volumeRef.current || !rawBarsRef.current.length) return;
     if (showVolume) {
-      const volBars = rawBarsRef.current.map((b) => ({
-        time: b.time, value: b.volume || 0,
-        color: b.close >= b.open ? 'rgba(16,220,154,0.15)' : 'rgba(255,86,86,0.15)',
-      }));
+      const volBars = rawBarsRef.current.map((b) => {
+        let alpha = 0.15;
+        // Dim extended-hours volume when visible
+        if (!showSessions && tf.interval !== 'daily' && typeof b.time === 'number') {
+          const d = new Date(b.time * 1000);
+          const etHour = (d.getUTCHours() - 4 + 24) % 24;
+          const mod = etHour * 60 + d.getUTCMinutes();
+          if (mod < 570 || mod > 960) alpha = 0.06;
+        }
+        return {
+          time: b.time, value: b.volume || 0,
+          color: b.close >= b.open ? `rgba(16,220,154,${alpha})` : `rgba(255,86,86,${alpha})`,
+        };
+      });
       volumeRef.current.setData(volBars);
     } else {
       volumeRef.current.setData([]);
     }
-  }, [showVolume, indicators]); // indicators changes when bars load
+  }, [showVolume, indicators, showSessions, tf.interval]);
 
   // Render EMA lines + AVWAP (separate effect — toggle doesn't re-fetch)
   useEffect(() => {
@@ -606,7 +641,7 @@ export default function OverlayTab() {
         <label className="ov-check" style={{ opacity: showVision ? 0.3 : 1 }}><input type="checkbox" checked={showGates} disabled={showVision} onChange={(e) => setShowGates(e.target.checked)} /> <span className="check-label">Gates</span></label>
         <label className="ov-check" style={{ opacity: showVision ? 0.3 : 1 }}><input type="checkbox" checked={showOrbs} disabled={showVision} onChange={(e) => setShowOrbs(e.target.checked)} /> <span className="check-label">Orbs</span></label>
         <label className="ov-check"><input type="checkbox" checked={showSidebar} onChange={(e) => setShowSidebar(e.target.checked)} /> <span className="check-label" style={{ color: '#10dc9a' }}>Sidebar</span></label>
-        <label className="ov-check"><input type="checkbox" checked={showSessions} onChange={(e) => setShowSessions(e.target.checked)} /> <span className="check-label" style={{ color: '#10dc9a' }}>Sessions</span></label>
+        <label className="ov-check"><input type="checkbox" checked={!showSessions} onChange={(e) => setShowSessions(!e.target.checked)} /> <span className="check-label" style={{ color: !showSessions ? '#00bfff' : undefined }}>Ext Hrs</span></label>
         <label className="ov-check"><input type="checkbox" checked={showVolume} onChange={(e) => setShowVolume(e.target.checked)} /> <span className="check-label" style={{ color: '#10dc9a' }}>Volume</span></label>
         <label className="ov-check"><input type="checkbox" checked={showEMAs} onChange={(e) => setShowEMAs(e.target.checked)} /> <span className="check-label" style={{ color: '#a24dff' }}>EMAs</span></label>
         <label className="ov-check"><input type="checkbox" checked={showVP} onChange={(e) => setShowVP(e.target.checked)} /> <span className="check-label" style={{ color: '#00bfff' }}>VP</span></label>
