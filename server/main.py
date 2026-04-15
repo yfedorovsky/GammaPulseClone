@@ -62,6 +62,13 @@ async def lifespan(app: FastAPI):
     init_breadth_db()
     await db.start()  # Single-writer queue for SQLite (prevents SQLITE_BUSY)
     await streamer.ensure_running()
+    # Compute quarterly basket on startup (PIT sector selection)
+    try:
+        from .basket import get_active_basket
+        basket = await get_active_basket()
+        print(f"[STARTUP] Active basket: {basket.get('sectors')} ({len(basket.get('tickers', set()))} tickers)")
+    except Exception as e:
+        print(f"[STARTUP] Basket computation failed: {e} — using static fallback")
     global _worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task
     _worker_task = asyncio.create_task(run_worker(_stop))
     _flow_task = asyncio.create_task(run_flow_scanner(_stop))
@@ -732,6 +739,24 @@ async def ab_results():
     c.close()
     return {"total": total, "summary": summary, "gex_contribution": gex_contribution,
             "by_conviction": by_conviction, "daily": daily}
+
+
+@app.get("/api/basket")
+async def basket_info():
+    """Current quarterly basket — which sectors and tickers are active."""
+    from .basket import get_basket_info
+    info = get_basket_info()
+    if not info:
+        return {"status": "not_computed", "sectors": [], "tickers": []}
+    return {
+        "status": "active",
+        "quarter": info.get("quarter"),
+        "sectors": info.get("sectors", []),
+        "tickers": sorted(info.get("tickers", set())),
+        "scores": info.get("scores", []),
+        "computed_at": info.get("computed_at"),
+        "valid_until": info.get("valid_until"),
+    }
 
 
 @app.get("/api/ab/block-reasons")

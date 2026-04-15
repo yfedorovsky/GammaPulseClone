@@ -754,6 +754,14 @@ def enrich_signal(
     enriched["kelly_capped_by"] = kelly["capped_by"]
     enriched["kelly_reason"] = kelly["reason"]
 
+    # 2b. Frozen spec override: validation phase = 1.5% fixed
+    # FROZEN_SPEC_V1.md: "1.5% of account per trade, Kelly suspended"
+    if signal.get("signal_type") == "MIR_MOMENTUM":
+        enriched["kelly_size_pct"] = 1.5
+        enriched["kelly_size_dollars"] = round(account_value * 0.015, 2)
+        enriched["kelly_capped_by"] = "FROZEN_SPEC_V1"
+        enriched["kelly_reason"] = "Frozen spec v1.0 — 1.5% fixed, Kelly suspended until 50 paper trades"
+
     # 3. Circuit breaker check
     cb = get_circuit_breaker()
     enriched["circuit_breaker_level"] = cb["level"]

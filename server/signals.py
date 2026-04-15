@@ -856,6 +856,16 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
         trend_mode = trend_day.get("trend_mode", "NORMAL")
         gap_dir = trend_day.get("gap_direction", "")
 
+        # Frozen spec v1.0: max 5 open positions for Mir signals
+        if is_mir_originated:
+            try:
+                from .paper_trading import get_account_status
+                acct = get_account_status()
+                if acct.get("open_positions", 0) >= 5:
+                    continue  # Max positions reached
+            except Exception:
+                pass
+
         # PM window gate for Mir-originated signals
         # Normal days: only 2:00-4:00 PM (backtest-validated window)
         # Trend days: allow from 10:00 AM (gap-and-go, no pullback)

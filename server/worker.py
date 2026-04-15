@@ -209,14 +209,16 @@ def _detect_trend_day(ticker: str, spot: float) -> dict[str, Any]:
 try:
     from backtest.mir_scorer import (
         score_mir_pattern,
-        MIR_APPROVED_TICKERS,
+        MIR_APPROVED_TICKERS as _STATIC_MIR_TICKERS,
         MIR_SECTORS,
     )
     _MIR_AVAILABLE = True
 except ImportError:
     _MIR_AVAILABLE = False
-    MIR_APPROVED_TICKERS = set()
+    _STATIC_MIR_TICKERS = set()
     MIR_SECTORS = {}
+
+from .basket import get_basket_tickers, STOCK_SECTORS
 
 _mir_cache: dict[str, tuple[str, dict[str, Any] | None]] = {}  # ticker -> (date_str, result)
 
@@ -231,7 +233,12 @@ def _compute_mir_signal(
     """
     if not _MIR_AVAILABLE:
         return None
-    if ticker not in MIR_APPROVED_TICKERS:
+
+    # PIT quarterly basket: only trade tickers in the active basket
+    # Falls back to static MIR_APPROVED_TICKERS if basket not yet computed
+    basket_tickers = get_basket_tickers()
+    approved = basket_tickers if basket_tickers else _STATIC_MIR_TICKERS
+    if ticker not in approved:
         return None
 
     # Day filter: Mondays have 34% WR vs 46-51% other days
@@ -292,15 +299,15 @@ def _compute_mir_signal(
         return None
 
     # Build sector peer histories for RS comparison
+    # Use STOCK_SECTORS (SPDR mapping) for PIT basket peers
     sector_histories: dict[str, list[float]] = {}
-    for sector, peers in MIR_SECTORS.items():
-        if ticker in peers:
-            for peer in peers:
-                if peer != ticker:
-                    peer_closes = get_daily_closes(peer, days=100)
-                    if len(peer_closes) >= 20:
-                        sector_histories[peer] = peer_closes
-            break
+    my_sector = STOCK_SECTORS.get(ticker)
+    if my_sector:
+        for peer, peer_sector in STOCK_SECTORS.items():
+            if peer_sector == my_sector and peer != ticker:
+                peer_closes = get_daily_closes(peer, days=100)
+                if len(peer_closes) >= 20:
+                    sector_histories[peer] = peer_closes
 
     # Score against Mir's 6 rules
     mir_score, reasons = score_mir_pattern(
