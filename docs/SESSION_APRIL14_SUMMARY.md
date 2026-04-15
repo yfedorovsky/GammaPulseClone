@@ -167,24 +167,62 @@
 
 ---
 
+## Session 3 — April 14 Evening
+
+### Features Built (All Three Critical Priorities)
+
+#### 1. Trend Day Detection (`server/worker.py`)
+- `_detect_trend_day(ticker, spot)` — compares today's open to yesterday's close
+- Three modes: `NORMAL` (<2% gap), `TREND_DAY` (2-4%), `EXTREME_TREND` (>4%)
+- Cached per day per ticker (first worker cycle captures opening gap)
+- Stored in state as `_trend_day` dict — consumed by signals.py and scalp_alerts.py
+- Trend days skip PM window requirement for entries (gap-and-go)
+- Extreme trend days reduce conviction (chasing risk)
+
+#### 2. Mir Momentum Signal Engine (`server/worker.py` + `server/signals.py`)
+- `_compute_mir_signal(ticker, spot, rts)` — native Mir scoring using `backtest/mir_scorer.py`
+- Gates: approved sectors only, skip Mondays, SPY 20d regime filter, SMA 20/50/200, EMA 21>50, RTS >= 70
+- Computes sector peer RS comparison from snapshot daily closes
+- Score >= 4.0/6 → stores `MIR_MOMENTUM` signal in cache via `set_mir_signal()`
+- Dual pathway in `generate_signals()`: Mir-originated signals use GEX as quality gate (not generator)
+  - GEX quality gate: king above spot, positive gamma, king distance 0.5-3% (2+ issues = block)
+  - PM window: 2:00-4:00 PM for normal days, 10:00 AM+ for trend days
+  - Contract: `mir_mode=True` → 7-14 DTE, delta 0.35-0.50, skip 0DTE
+- Existing GEX-only pathway completely untouched (additive, not replacement)
+
+#### 3. 15-min 8 EMA Pullback Detection (`server/scalp_alerts.py`)
+- `_refresh_bars(ticker)` — Tradier 15-min bars with 5-min TTL cache (2 API calls/5min max)
+- `_compute_ema8(closes)` — standard 8-period EMA computation
+- `_detect_ema_pullback(ticker, state)` — state transition detection:
+  - `EMA_PULLBACK`: prev bar at/below EMA → current above = bullish bounce (Mir's #1 trigger)
+  - `EMA_REJECTION`: prev bar at/above EMA → current below = bearish breakdown
+  - `TREND_CONTINUATION`: gap-and-go day, price above EMA with momentum
+- Time gate refactored per-ticker: normal days 1:30 PM+, trend days 10:00 AM+
+- Integrated into existing alert loop alongside structure alerts
+
+### Files Modified
+- `server/worker.py` — `_detect_trend_day()`, `_compute_mir_signal()`, wired into `_compute_one()` and `_scan_cycle()`
+- `server/signals.py` — Mir-originated dual pathway in `generate_signals()`, `mir_mode` param on `_select_contract()`
+- `server/scalp_alerts.py` — 15-min bar cache, EMA8 computation, `_detect_ema_pullback()`, per-ticker time gate
+
+---
+
 ## Next Session Priorities
 
 ### CRITICAL
-1. **SOE engine switch to bullish Mir momentum** (PRODUCTION_STRATEGY.md has full spec)
-2. **15-min 8 EMA tracking** for SPY/QQQ scalp alerts
-3. **Trend day detector** (gap-and-go vs pullback mode)
-4. **Mac Mini bridge reliability** investigation
+1. **Mac Mini bridge reliability** investigation
+2. **Prove the strategy with data** — let A/B test + paper portfolio run 30+ resolved decisions
 
 ### MEDIUM
-5. Scanner: Mir Score column + green highlight
-6. Overlay: "Mir Signal Active" badge + power hour countdown
-7. Screenshot/export summary report
-8. Heartbeat alerts (Telegram if server down > 5 min)
+3. Scanner: Mir Score column + green highlight for passing tickers
+4. Overlay: "Mir Signal Active" badge + power hour countdown
+5. Screenshot/export summary report
+6. Heartbeat alerts (Telegram if server down > 5 min)
 
 ### LATER
-9. ZGL migration tracking (intraday)
-10. Bayesian scoring upgrade (needs 50+ AB decisions)
-11. ThetaData migration ($40/mo)
+7. ZGL migration tracking (intraday)
+8. Bayesian scoring upgrade (needs 50+ AB decisions)
+9. ThetaData migration ($40/mo)
 
 ---
 
