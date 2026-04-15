@@ -276,6 +276,18 @@ function SignalCard({ sig, expanded, onToggle }) {
             color: sig.greeks_source === 'massive' ? '#10dc9a' : '#ffc800',
           }}>{sig.greeks_source === 'massive' ? 'MASSIVE' : 'TRADIER'}</span>
         )}
+        {/* Pathway badge: Mir-originated vs GEX-originated */}
+        {sig.signal_type === 'MIR_MOMENTUM' ? (
+          <span style={{
+            padding: '1px 6px', borderRadius: 4, fontSize: 9, fontWeight: 800, fontFamily: 'var(--mono)',
+            background: 'rgba(16,220,154,0.2)', color: '#10dc9a',
+          }}>MIR PATHWAY</span>
+        ) : (
+          <span style={{
+            padding: '1px 6px', borderRadius: 4, fontSize: 9, fontWeight: 800, fontFamily: 'var(--mono)',
+            background: 'rgba(100,100,255,0.15)', color: '#8888ff',
+          }}>GEX PATHWAY</span>
+        )}
         {/* Mir conviction badge */}
         {sig._mir_conviction && (
           <span style={{

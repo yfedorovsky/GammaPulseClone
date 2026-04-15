@@ -47,6 +47,7 @@ _flow_task: asyncio.Task | None = None
 _monitor_task: asyncio.Task | None = None
 _signal_task: asyncio.Task | None = None
 _scalp_task: asyncio.Task | None = None
+_discord_task: asyncio.Task | None = None
 
 
 @asynccontextmanager
@@ -61,19 +62,26 @@ async def lifespan(app: FastAPI):
     init_breadth_db()
     await db.start()  # Single-writer queue for SQLite (prevents SQLITE_BUSY)
     await streamer.ensure_running()
-    global _worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task
+    global _worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task
     _worker_task = asyncio.create_task(run_worker(_stop))
     _flow_task = asyncio.create_task(run_flow_scanner(_stop))
     _monitor_task = asyncio.create_task(run_position_monitor(_stop))
     _signal_task = asyncio.create_task(run_signal_engine(_stop))
     _scalp_task = asyncio.create_task(run_scalp_scanner(_stop))
+    # Discord listener: opt-in via DISCORD_ENABLED=true in .env
+    _discord_task = None
+    s = get_settings()
+    if s.discord_enabled and s.discord_token:
+        from .discord_listener import run_discord_listener
+        _discord_task = asyncio.create_task(run_discord_listener(_stop))
     try:
         yield
     finally:
         _stop.set()
         await streamer.stop()
         await db.stop()  # Drain write queue before shutdown
-        for task in (_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task):
+        all_tasks = [_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task]
+        for task in all_tasks:
             if task:
                 try:
                     await asyncio.wait_for(task, timeout=5)
@@ -301,6 +309,12 @@ async def scanner():
             "signal": state.get("signal"),
             "regime": state.get("regime"),
             "iv": state.get("iv"),
+            # Mir momentum signal (computed in worker for approved sector tickers)
+            "_mir_score": (state.get("_mir_signal") or {}).get("mir_score"),
+            "_mir_conviction": (state.get("_mir_signal") or {}).get("conviction"),
+            # Trend day detection (gap-and-go vs pullback mode)
+            "_trend_mode": (state.get("_trend_day") or {}).get("trend_mode"),
+            "_gap_pct": (state.get("_trend_day") or {}).get("gap_pct"),
             # exp_data excluded from scanner list (too heavy for 300+ tickers)
             # Use /api/chains for full exp_data per ticker
             "exps": state.get("exps"),
@@ -718,6 +732,60 @@ async def ab_results():
     c.close()
     return {"total": total, "summary": summary, "gex_contribution": gex_contribution,
             "by_conviction": by_conviction, "daily": daily}
+
+
+@app.get("/api/ab/block-reasons")
+async def ab_block_reasons():
+    """Block reason distribution — why signals were missed/blocked."""
+    import sqlite3
+    s = get_settings()
+    c = sqlite3.connect(s.snapshot_db)
+    c.row_factory = sqlite3.Row
+
+    # Book A block reasons (Mir+GEX pathway)
+    a_blocks = c.execute("""
+        SELECT a_blocked_by as reason, COUNT(*) as count,
+            SUM(CASE WHEN b_outcome = 'WIN' THEN 1 ELSE 0 END) as would_have_won,
+            SUM(CASE WHEN b_outcome = 'LOSS' THEN 1 ELSE 0 END) as would_have_lost
+        FROM ab_decisions
+        WHERE a_blocked_by IS NOT NULL
+        GROUP BY a_blocked_by ORDER BY count DESC
+    """).fetchall()
+
+    # Book B block reasons (Mir-only pathway)
+    b_blocks = c.execute("""
+        SELECT b_blocked_by as reason, COUNT(*) as count
+        FROM ab_decisions
+        WHERE b_blocked_by IS NOT NULL
+        GROUP BY b_blocked_by ORDER BY count DESC
+    """).fetchall()
+
+    # Mir-originated vs standard pathway counts
+    pathway = c.execute("""
+        SELECT
+            SUM(CASE WHEN mir_signal_type = 'MIR_MOMENTUM' THEN 1 ELSE 0 END) as mir_originated,
+            SUM(CASE WHEN mir_signal_type IS NULL OR mir_signal_type != 'MIR_MOMENTUM' THEN 1 ELSE 0 END) as gex_originated,
+            COUNT(*) as total
+        FROM ab_decisions
+    """).fetchone()
+
+    # Recent blocks (last 50) for debugging
+    recent = c.execute("""
+        SELECT datetime(ts, 'unixepoch') as time, ticker, direction,
+            a_blocked_by, b_blocked_by, mir_conviction, mir_signal_type,
+            a_score, a_grade, spot
+        FROM ab_decisions
+        WHERE a_blocked_by IS NOT NULL
+        ORDER BY ts DESC LIMIT 50
+    """).fetchall()
+
+    c.close()
+    return {
+        "book_a_blocks": [dict(r) for r in a_blocks],
+        "book_b_blocks": [dict(r) for r in b_blocks],
+        "pathway": dict(pathway) if pathway else {},
+        "recent_blocks": [dict(r) for r in recent],
+    }
 
 
 @app.get("/api/earnings")
@@ -1287,6 +1355,242 @@ class TradeLogReq(BaseModel):
     signal_id: int | None = None
 
 
+def _build_strike_matrix(
+    state: dict, spot: float, is_call: bool,
+) -> list[dict] | None:
+    """Build 3-tier strike matrix: Aggressive (2-3 DTE), Base (5-7 DTE), Sniper (9-14 DTE).
+
+    Uses cached chain data from worker — zero API calls.
+    """
+    import datetime
+
+    raw_contracts = state.get("_raw_contracts", {})
+    if not raw_contracts:
+        return None
+
+    today = datetime.date.today()
+    otype = "call" if is_call else "put"
+
+    tiers = [
+        {"label": "AGGRESSIVE", "dte_lo": 1, "dte_hi": 3, "delta_target": 0.50},
+        {"label": "BASE", "dte_lo": 5, "dte_hi": 9, "delta_target": 0.40},
+        {"label": "SNIPER", "dte_lo": 10, "dte_hi": 16, "delta_target": 0.30},
+    ]
+
+    results = []
+    for tier in tiers:
+        best = None
+        best_dist = 999
+
+        for exp_str, chain in raw_contracts.items():
+            try:
+                exp_date = datetime.date.fromisoformat(exp_str)
+                dte = (exp_date - today).days
+            except (ValueError, TypeError):
+                continue
+
+            if not (tier["dte_lo"] <= dte <= tier["dte_hi"]):
+                continue
+
+            for c in chain:
+                if (c.get("option_type") or "").lower() != otype:
+                    continue
+                c_strike = c.get("strike", 0)
+                if not c_strike:
+                    continue
+                # OTM filter
+                if is_call and c_strike < spot:
+                    continue
+                if not is_call and c_strike > spot:
+                    continue
+
+                greeks = c.get("greeks") or {}
+                delta = abs(greeks.get("delta", 0) or 0)
+                bid = c.get("bid", 0) or 0
+                ask = c.get("ask", 0) or 0
+                mid = (bid + ask) / 2 if (bid + ask) > 0 else 0
+                oi = c.get("open_interest", 0) or 0
+
+                # Skip illiquid
+                if mid <= 0 or oi < 50:
+                    continue
+
+                dist = abs(delta - tier["delta_target"])
+                if dist < best_dist:
+                    best_dist = dist
+                    best = {
+                        "label": tier["label"],
+                        "strike": c_strike,
+                        "dte": dte,
+                        "delta": delta,
+                        "mid": mid,
+                        "bid": bid,
+                        "ask": ask,
+                        "oi": oi,
+                        "expiration": exp_str,
+                    }
+
+        if best:
+            results.append(best)
+
+    return results if results else None
+
+
+def _build_mir_telegram(
+    ticker: str, signal_type: str, option_type: str,
+    strike: float | None, price: float | None, expiry: str | None,
+    conviction: str, channel: str,
+    state: dict | None, gex_context: dict,
+) -> str:
+    """Build a rich Telegram alert for a Mir signal using cached chain data."""
+    spot = gex_context.get("spot") or (state.get("actual_spot") if state else 0) or 0
+    king = gex_context.get("king", 0)
+    floor_val = gex_context.get("floor", 0)
+    regime = gex_context.get("regime", "?")
+    gex_signal = gex_context.get("signal", "?")
+
+    lines = [f"🎯 <b>MIR {conviction}: ${ticker}</b>"]
+    lines.append(f"{signal_type} — {option_type} ${strike or '?'} {expiry or ''}")
+    if price:
+        lines.append(f"Mir price: ${price}")
+
+    # ── Resolve contract from cached chains ──
+    is_call = "CALL" in (option_type or "").upper() or option_type == "C"
+    otype_label = "C" if is_call else "P"
+
+    if state and strike and option_type:
+        from .discord_listener import _resolve_contract_from_cache
+        contract = _resolve_contract_from_cache(state, strike, option_type, expiry)
+        if contract:
+            bid = contract.get("bid", 0)
+            ask = contract.get("ask", 0)
+            mid = contract.get("mid", 0)
+            delta = contract.get("delta")
+            oi = contract.get("oi", 0)
+            iv = contract.get("iv")
+            vol = contract.get("volume", 0)
+
+            lines.append("")
+            lines.append(f"<b>Contract: ${strike}{otype_label} {contract.get('expiration', expiry or '')}</b>")
+            lines.append(f"Bid ${bid:.2f} | Ask ${ask:.2f} | Mid ${mid:.2f}")
+            if oi:
+                lines.append(f"OI: {oi:,}  Vol: {vol:,}")
+            if delta is not None:
+                delta_str = f"Δ {delta:.2f}"
+                if iv:
+                    iv_pct = iv * 100 if iv < 5 else iv
+                    delta_str += f"  IV {iv_pct:.0f}%"
+                lines.append(delta_str)
+
+            # R:R using Mir's rules: target +100% on premium, stop -50%
+            if mid > 0:
+                target_premium = mid * 2
+                stop_premium = mid * 0.5
+                lines.append(f"Target: ${target_premium:.2f} (+100%) | Stop: ${stop_premium:.2f} (-50%)")
+                lines.append(f"R:R 2.0:1 (Mir standard)")
+            if spot and king and king > spot:
+                lines.append(f"GEX target: King ${king} (+${king - spot:.2f})")
+
+    # ── Strike matrix (Aggressive / Base / Sniper) ──
+    if state and spot:
+        matrix = _build_strike_matrix(state, spot, is_call)
+        if matrix:
+            lines.append("")
+            lines.append("<b>── Strike Matrix ──</b>")
+            for entry in matrix:
+                lines.append(
+                    f"<b>{entry['label']}</b>: ${entry['strike']}{otype_label} "
+                    f"· {entry['dte']}DTE · ${entry['mid']:.2f} · Δ{entry['delta']:.2f}"
+                )
+
+    # ── GEX structure context ──
+    lines.append("")
+    if spot:
+        lines.append(f"Spot ${spot:.2f} | {gex_signal} | {regime} γ")
+    if king:
+        king_dist = ((king - spot) / spot * 100) if spot else 0
+        lines.append(f"King ${king} ({king_dist:+.1f}%) | Floor ${floor_val or '?'}")
+
+    # ── Mir 6-point scoring ──
+    mir_score_shown = False
+    if state:
+        mir_native = state.get("_mir_signal")
+        if mir_native and mir_native.get("mir_score"):
+            ms = mir_native["mir_score"]
+            reasons = mir_native.get("mir_reasons", [])
+            lines.append("")
+            lines.append(f"<b>Mir Score: {ms}/6</b>")
+            for r in reasons:
+                check = "✓" if any(w in r.lower() for w in ("pass", "top", "sweet", "aligned", "strong", "low vol", "approved", "above")) else "✗"
+                lines.append(f"  {check} {r}")
+            mir_score_shown = True
+
+    if not mir_score_shown:
+        # Compute on the fly — try snapshots first, then Tradier daily history
+        try:
+            from backtest.mir_scorer import score_mir_pattern
+            from .snapshots import get_daily_closes
+            closes = get_daily_closes(ticker, days=250)
+            if len(closes) < 50:
+                # Fallback: fetch from Tradier daily history
+                import httpx
+                s = get_settings()
+                if s.tradier_token:
+                    r = httpx.get(
+                        f"{s.tradier_base_url}/markets/history",
+                        params={"symbol": ticker, "interval": "daily"},
+                        headers={"Authorization": f"Bearer {s.tradier_token}", "Accept": "application/json"},
+                        timeout=10,
+                    )
+                    if r.status_code == 200:
+                        bars = (r.json().get("history") or {}).get("day") or []
+                        if isinstance(bars, dict):
+                            bars = [bars]
+                        closes = [b["close"] for b in bars if b.get("close")]
+            if len(closes) >= 50:
+                ms, reasons = score_mir_pattern(ticker, closes, dte=10, direction="BULL")
+                lines.append("")
+                lines.append(f"<b>Mir Score: {ms}/6</b>")
+                for r in reasons:
+                    check = "✓" if any(w in r.lower() for w in ("pass", "top", "sweet", "aligned", "strong", "low vol", "approved", "above")) else "✗"
+                    lines.append(f"  {check} {r}")
+        except Exception:
+            pass
+
+    # ── RTS / trend context ──
+    if state:
+        rts = state.get("_rts")
+        if rts:
+            rts_score = rts.get("score", 0)
+            ext = rts.get("extension", "")
+            lines.append(f"RS {rts_score}{' ⚠️EXT' if ext == 'EXTENDED' else ''}")
+
+        trend = state.get("_trend_day") or {}
+        if trend.get("trend_mode") != "NORMAL":
+            lines.append(f"🔥 {trend['trend_mode']} ({trend.get('gap_pct', 0):+.1f}% gap)")
+
+    # ── Flow confirmation ──
+    try:
+        from .flow_alerts import get_recent_flow
+        flow = get_recent_flow(ticker, minutes=60)
+        if flow:
+            f_sent = flow.get("sentiment", "?")
+            f_notional = flow.get("notional", 0)
+            f_strike = flow.get("strike", 0)
+            f_type = (flow.get("option_type") or "?").upper()
+            f_side = flow.get("side", "?")
+            f_vol = flow.get("volume", 0)
+            emoji = "🟢" if f_sent == "BULLISH" else "🔴" if f_sent == "BEARISH" else "🟡"
+            lines.append("")
+            lines.append(f"{emoji} <b>FLOW CONFIRMS</b>: {f_sent}")
+            lines.append(f"${f_strike} {f_type} | {f_vol:,} contracts | ${f_notional/1e6:.1f}M | {f_side} side")
+    except Exception:
+        pass
+
+    lines.append(f"\n📡 {channel}")
+    return "\n".join(lines)
+
+
 class MirSignalReq(BaseModel):
     """Inbound Mir signal from Mac Mini discord listener webhook."""
     signal_type: str = ""  # ENTRY | WATCH | ADD | PARTIAL_EXIT | EXIT | STOP_LEVEL
@@ -1352,23 +1656,18 @@ async def ingest_mir_signal(req: MirSignalReq):
     # Store in proper cache (1-hour TTL, used by discipline.py Factor 1)
     await cache.set_mir_signal(t, mir_entry)
 
-    # Telegram alert for Mir ENTRY signals
+    # Telegram alert with full enrichment
     if req.signal_type in ("ENTRY", "ADD") and req.conviction in ("HIGH", "MEDIUM"):
         try:
             from .telegram import send
-            gex_signal = gex_context.get("signal", "?")
-            gex_regime = gex_context.get("regime", "?")
-            spot = gex_context.get("spot", 0)
-            text = (
-                f"🎯 <b>MIR {req.conviction}</b>: {t}\n"
-                f"{req.signal_type} — {req.option_type} ${req.strike or '?'} {req.expiry or ''}\n"
-                f"Price: ${req.price or req.entry_price or '?'}\n"
-                f"GEX: {gex_signal} | {gex_regime} | Spot ${spot:.2f if spot else '?'}\n"
-                f"Channel: {req.channel}"
+            text = _build_mir_telegram(
+                t, req.signal_type, req.option_type, req.strike,
+                req.price or req.entry_price, req.expiry, req.conviction,
+                req.channel, state, gex_context,
             )
-            await send(text, ticker=t, priority=True)
-        except Exception:
-            pass
+            await send(text, ticker=t, force=True)
+        except Exception as e:
+            print(f"[MIR] Telegram error: {e}")
 
     print(f"[MIR] {req.conviction} {req.signal_type}: {t} ${req.strike or '?'} {req.option_type} (from {req.channel})")
 

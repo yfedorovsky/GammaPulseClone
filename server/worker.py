@@ -142,6 +142,190 @@ def _compute_ivhv(iv: float | None, ticker: str) -> float | None:
     return round(iv_decimal / rv, 2)
 
 
+# ── Trend Day Detection ─────────────────────────────────────────────
+# Detects gap-and-go days where waiting for a pullback = missed entry.
+# Computed once per day per ticker (first worker cycle captures the open).
+
+import datetime as _dt
+
+_gap_cache: dict[str, tuple[str, dict[str, Any]]] = {}  # ticker -> (date_str, result)
+
+
+def _detect_trend_day(ticker: str, spot: float) -> dict[str, Any]:
+    """Compare today's live spot to yesterday's close to detect gap days.
+
+    Returns {gap_pct, trend_mode, gap_direction, prev_close}.
+    Cached per day — first call captures approximate open for gap calc.
+    """
+    today = _dt.date.today().isoformat()
+    cached = _gap_cache.get(ticker)
+    if cached and cached[0] == today:
+        return cached[1]
+
+    closes = get_daily_closes(ticker, days=5)
+    if not closes:
+        result: dict[str, Any] = {
+            "gap_pct": 0.0, "trend_mode": "NORMAL",
+            "gap_direction": "FLAT", "prev_close": 0,
+        }
+        _gap_cache[ticker] = (today, result)
+        return result
+
+    prev_close = closes[-1]
+    if prev_close <= 0:
+        result = {
+            "gap_pct": 0.0, "trend_mode": "NORMAL",
+            "gap_direction": "FLAT", "prev_close": prev_close,
+        }
+        _gap_cache[ticker] = (today, result)
+        return result
+
+    gap_pct = round((spot - prev_close) / prev_close * 100, 2)
+    abs_gap = abs(gap_pct)
+
+    if abs_gap > 4.0:
+        mode = "EXTREME_TREND"
+    elif abs_gap > 2.0:
+        mode = "TREND_DAY"
+    else:
+        mode = "NORMAL"
+
+    direction = "UP" if gap_pct > 0 else "DOWN" if gap_pct < 0 else "FLAT"
+
+    result = {
+        "gap_pct": gap_pct,
+        "trend_mode": mode,
+        "gap_direction": direction,
+        "prev_close": prev_close,
+    }
+    _gap_cache[ticker] = (today, result)
+    return result
+
+
+# ── Mir Momentum Scoring ─────────────────────────────────────────────
+# Computes Mir's bullish momentum rules natively from snapshot data.
+# Uses backtest/mir_scorer.py (standalone, no server deps).
+
+try:
+    from backtest.mir_scorer import (
+        score_mir_pattern,
+        MIR_APPROVED_TICKERS,
+        MIR_SECTORS,
+    )
+    _MIR_AVAILABLE = True
+except ImportError:
+    _MIR_AVAILABLE = False
+    MIR_APPROVED_TICKERS = set()
+    MIR_SECTORS = {}
+
+_mir_cache: dict[str, tuple[str, dict[str, Any] | None]] = {}  # ticker -> (date_str, result)
+
+
+def _compute_mir_signal(
+    ticker: str, spot: float, state_rts: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Compute Mir momentum score for approved sector tickers.
+
+    Returns a Mir signal dict if score >= 4.0/6, else None.
+    Cached per day (momentum alignment is a daily condition).
+    """
+    if not _MIR_AVAILABLE:
+        return None
+    if ticker not in MIR_APPROVED_TICKERS:
+        return None
+
+    # Day filter: Mondays have 34% WR vs 46-51% other days
+    now = _dt.datetime.now()
+    if now.weekday() == 0:
+        return None
+
+    # Daily cache: momentum alignment doesn't change intraday
+    today = _dt.date.today().isoformat()
+    cached = _mir_cache.get(ticker)
+    if cached and cached[0] == today:
+        return cached[1]
+
+    if spot < 5:
+        _mir_cache[ticker] = (today, None)
+        return None
+
+    # Regime filter: skip when SPY 20-day return < 0
+    spy_closes = get_daily_closes("SPY", days=25)
+    if len(spy_closes) >= 20:
+        spy_ret = (spy_closes[-1] - spy_closes[-20]) / spy_closes[-20]
+        if spy_ret < 0:
+            _mir_cache[ticker] = (today, None)
+            return None
+
+    # Get price history for SMA/EMA checks
+    closes = get_daily_closes(ticker, days=250)
+    if len(closes) < 50:
+        _mir_cache[ticker] = (today, None)
+        return None
+
+    # Quick SMA/EMA pre-filter (avoid expensive sector peer lookups)
+    sma_20 = sum(closes[-20:]) / 20
+    sma_50 = sum(closes[-50:]) / 50
+    if spot <= sma_20 or spot <= sma_50:
+        _mir_cache[ticker] = (today, None)
+        return None
+
+    # EMA 21 > EMA 50 check
+    def _ema(data: list[float], period: int) -> float:
+        if len(data) < period:
+            return sum(data) / len(data)
+        multiplier = 2 / (period + 1)
+        ema = sum(data[:period]) / period
+        for val in data[period:]:
+            ema = (val - ema) * multiplier + ema
+        return ema
+
+    ema_21 = _ema(closes, 21)
+    ema_50 = _ema(closes, 50)
+    if ema_21 <= ema_50:
+        _mir_cache[ticker] = (today, None)
+        return None
+
+    # RTS filter: top quartile (score >= 70)
+    if state_rts and state_rts.get("score", 0) < 70:
+        _mir_cache[ticker] = (today, None)
+        return None
+
+    # Build sector peer histories for RS comparison
+    sector_histories: dict[str, list[float]] = {}
+    for sector, peers in MIR_SECTORS.items():
+        if ticker in peers:
+            for peer in peers:
+                if peer != ticker:
+                    peer_closes = get_daily_closes(peer, days=100)
+                    if len(peer_closes) >= 20:
+                        sector_histories[peer] = peer_closes
+            break
+
+    # Score against Mir's 6 rules
+    mir_score, reasons = score_mir_pattern(
+        ticker, closes, dte=10, direction="BULL",
+        sector_histories=sector_histories,
+    )
+
+    if mir_score >= 4.0:
+        result: dict[str, Any] = {
+            "ticker": ticker,
+            "signal_type": "MIR_MOMENTUM",
+            "option_type": "CALL",
+            "conviction": "HIGH" if mir_score >= 5 else "MEDIUM",
+            "mir_score": round(mir_score, 1),
+            "mir_reasons": reasons,
+            "direction": "BULL",
+            "_computed_ts": time.time(),
+        }
+        _mir_cache[ticker] = (today, result)
+        return result
+
+    _mir_cache[ticker] = (today, None)
+    return None
+
+
 async def _compute_one(
     tradier: TradierClient,
     ticker: str,
@@ -242,9 +426,16 @@ async def _compute_one(
         "_realized_vol": _compute_rv(ticker),
         "_ivhv_ratio": _compute_ivhv(macro.get("iv"), ticker),
         "_rts": _compute_rts_from_snapshots(ticker, spot),
+        "_trend_day": _detect_trend_day(ticker, spot),
         "_greeks_spot_stale": ticker in _spot_stale_flag,
         "_greeks_spot_divergence": _spot_stale_flag.get(ticker, 0),
     }
+
+    # Compute Mir momentum signal for approved sector tickers
+    mir_signal = _compute_mir_signal(ticker, spot, state.get("_rts"))
+    if mir_signal:
+        state["_mir_signal"] = mir_signal
+
     return state
 
 
@@ -306,6 +497,9 @@ async def _scan_cycle(
                 if state is None:
                     return
                 await cache.put(t, state)
+                # Store Mir signal in cache (used by signal engine)
+                if state.get("_mir_signal"):
+                    await cache.set_mir_signal(t, state["_mir_signal"])
                 await snapshot_insert(t, state)
                 processed += 1
                 if processed % 10 == 0:

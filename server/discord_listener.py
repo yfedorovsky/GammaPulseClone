@@ -1,0 +1,514 @@
+"""Discord listener — receives Mir's signals in-process.
+
+Ported from mirbot_project Mac Mini bridge. Connects to Discord via
+discord.py-self (user token), parses messages with Claude Haiku,
+and stores signals directly in the GammaPulse cache.
+
+No HTTP bridge needed — signals go straight to cache.set_mir_signal().
+"""
+from __future__ import annotations
+
+import asyncio
+import re
+import time
+from collections import defaultdict, deque
+from datetime import datetime
+from typing import Any
+
+from .cache import cache
+from .config import get_settings
+
+# ── Channel & Author Config ──────────────────────────────────────────────────
+
+GENERAL_ALERTS_ID = 929783372857884742   # #general-alerts-weekly-swing-and-day-trades
+CHALLENGE_ACCT_ID = 1181849319570149426  # #challenge-account
+WIFEY_SWINGS_ID   = 929782846544027688   # #wifey-swing-trades-with-at-least-30days-to-expiration
+
+MIR_AUTHORS = {"tradermir", ".tradermir", "mir"}
+P_AUTHORS = {"p (bookie)", "princesspeach1310", "peach", "bookie"}
+
+MIR_SIGNAL_TTL = 300  # 5 min before alerting without P relay
+
+# Role ID resolution
+ROLE_ID_MAP = {
+    "1170803594061168640": "account challenge",
+    "955554341224333413": "Day Trades",
+}
+
+
+def _resolve_mentions(content: str) -> str:
+    """Resolve Discord role/user mentions to readable text."""
+    def replace_role(m):
+        rid = m.group(1)
+        name = ROLE_ID_MAP.get(rid)
+        return f"@{name}" if name else f"<@&{rid}>"
+    content = re.sub(r'<@&(\d+)>', replace_role, content)
+    content = re.sub(r'<@!?\d+>', '', content)
+    return content.strip()
+
+
+def _author_type(display_name: str) -> str | None:
+    name = display_name.lower().strip()
+    if any(a in name for a in MIR_AUTHORS):
+        return "mir"
+    if any(a in name for a in P_AUTHORS):
+        return "p"
+    return None
+
+
+def _infer_conviction(parsed: dict[str, Any], channel_name: str) -> str:
+    """Map signal to conviction level per DISCORD_SYSTEM.md.
+
+    | Author | Audience         | Signal Type              | Conviction |
+    |--------|-----------------|--------------------------|-----------|
+    | Mir    | @Day Trades/BOTH | any                      | HIGH      |
+    | Mir    | any              | ENTRY/ADD in #general    | HIGH      |
+    | Mir    | any              | ENTRY/ADD in #challenge  | MEDIUM    |
+    | Mir    | any              | WATCH / STOP / EXIT      | MEDIUM    |
+    | P      | any              | any                      | LOW       |
+    """
+    author = (parsed.get("author") or "").lower()
+    sig_type = parsed.get("signal_type", "")
+    audience = parsed.get("audience", "UNKNOWN")
+    is_mir = any(a in author for a in MIR_AUTHORS)
+
+    if not is_mir:
+        return "LOW"
+    # @Day Trades or BOTH audience = HIGH (larger account = higher conviction)
+    if audience in ("DAY_TRADES", "BOTH"):
+        return "HIGH"
+    # ENTRY/ADD in #general-alerts = HIGH
+    if sig_type in ("ENTRY", "ADD") and "general" in channel_name.lower():
+        return "HIGH"
+    # ENTRY/ADD in #challenge = MEDIUM
+    if sig_type in ("ENTRY", "ADD") and "challenge" in channel_name.lower():
+        return "MEDIUM"
+    return "MEDIUM"
+
+
+def _build_telegram_alert(parsed: dict[str, Any], conviction: str,
+                          source: str, channel: str) -> str:
+    """Build a concise Telegram alert for a Mir signal."""
+    sig_type = parsed.get("signal_type", "?")
+    ticker = parsed.get("ticker", "?")
+    strike = parsed.get("strike")
+    opt_type = parsed.get("option_type", "")
+    price = parsed.get("price")
+    watch_level = parsed.get("watch_level")
+
+    emoji = {"ENTRY": "🟢", "ADD": "🟢", "WATCH": "👀",
+             "EXIT": "🔴", "PARTIAL_EXIT": "🟡", "STOP_LEVEL": "🛑"}.get(sig_type, "📡")
+
+    lines = [f"{emoji} <b>MIR {sig_type}: ${ticker}</b>"]
+
+    if strike and opt_type:
+        lines.append(f"Contract: ${strike}{opt_type}")
+    if price:
+        lines.append(f"Price: ${price}")
+    if watch_level:
+        lines.append(f"Watch level: ${watch_level}")
+
+    lines.append(f"Conviction: {conviction} | Source: {source}")
+    lines.append(f"Channel: {channel}")
+
+    if parsed.get("is_lotto"):
+        lines.append("⚠️ LOTTO — size for zero")
+
+    raw = parsed.get("raw_content", "")
+    if raw:
+        lines.append(f"\n<i>{raw[:200]}</i>")
+
+    return "\n".join(lines)
+
+
+def _resolve_contract_from_cache(
+    state: dict[str, Any], strike: float, option_type: str,
+    expiry_raw: str | None = None,
+) -> dict[str, Any] | None:
+    """Look up contract from worker's cached Tradier chain data.
+
+    Zero API cost — uses _raw_contracts already in memory from the last
+    worker scan cycle.
+    """
+    import datetime
+
+    raw_contracts = state.get("_raw_contracts", {})
+    if not raw_contracts:
+        return None
+
+    otype = "call" if option_type.upper() in ("C", "CALL") else "put"
+    today = datetime.date.today()
+
+    # Find best matching expiration
+    target_exp = None
+    if expiry_raw:
+        # Try to match expiry_raw like "17apr", "this week", "0DTE"
+        er = (expiry_raw or "").lower().strip()
+        if er in ("0dte", "today", "same_day"):
+            target_exp = today.isoformat()
+        elif er in ("this week", "this_week"):
+            # Nearest Friday
+            days_to_fri = (4 - today.weekday()) % 7
+            target_exp = (today + datetime.timedelta(days=days_to_fri)).isoformat()
+        else:
+            # Try matching against available expirations
+            for exp in sorted(raw_contracts.keys()):
+                if er.replace(" ", "") in exp.replace("-", "").lower():
+                    target_exp = exp
+                    break
+
+    # Fallback: nearest expiration with this strike
+    if not target_exp:
+        for exp in sorted(raw_contracts.keys()):
+            target_exp = exp
+            break
+
+    if not target_exp or target_exp not in raw_contracts:
+        # Try all expirations for the strike
+        for exp, contracts in sorted(raw_contracts.items()):
+            for c in contracts:
+                if (c.get("strike") == strike and
+                    (c.get("option_type") or "").lower() == otype):
+                    target_exp = exp
+                    break
+            if target_exp == exp:
+                break
+
+    chain = raw_contracts.get(target_exp, [])
+    for c in chain:
+        if (c.get("strike") == strike and
+            (c.get("option_type") or "").lower() == otype):
+            greeks = c.get("greeks") or {}
+            bid = c.get("bid", 0) or 0
+            ask = c.get("ask", 0) or 0
+            return {
+                "strike": strike,
+                "option_type": otype,
+                "expiration": target_exp,
+                "bid": bid,
+                "ask": ask,
+                "mid": round((bid + ask) / 2, 2) if (bid + ask) > 0 else 0,
+                "oi": c.get("open_interest", 0) or 0,
+                "volume": c.get("volume", 0) or 0,
+                "delta": greeks.get("delta"),
+                "gamma": greeks.get("gamma"),
+                "iv": greeks.get("mid_iv") or greeks.get("smv_vol"),
+                "symbol": c.get("symbol", ""),
+            }
+
+    return None
+
+
+class MirDiscordClient:
+    """Discord listener that feeds signals into GammaPulse cache."""
+
+    def __init__(self):
+        # ticker -> {mir_parsed, mir_msg, timestamp, alerted}
+        self._pending: dict[str, dict[str, Any]] = {}
+        # message_id -> parsed (edit dedup)
+        self._seen_messages: dict[int, dict[str, Any]] = {}
+        # author -> deque of last 3 content strings (LLM context window)
+        self._context: dict[str, deque] = defaultdict(lambda: deque(maxlen=3))
+
+    async def start(self, token: str, stop_event: asyncio.Event) -> None:
+        """Connect to Discord and run until stop_event is set."""
+        try:
+            import discord
+        except ImportError:
+            print("[DISCORD] ERROR: discord.py-self not installed.")
+            print("  pip install discord.py-self")
+            return
+
+        client = discord.Client()
+        self_ref = self
+
+        @client.event
+        async def on_ready():
+            print(f"[DISCORD] Connected as {client.user}")
+            print(f"[DISCORD] Watching #challenge-account + #general-alerts + #wifey-swing-trades")
+
+        @client.event
+        async def on_message(message):
+            await self_ref._process(message)
+
+        @client.event
+        async def on_message_edit(before, after):
+            if before.content != after.content:
+                await self_ref._process(after, is_edit=True)
+
+        # Run Discord client with graceful shutdown
+        try:
+            # Start client in background
+            task = asyncio.create_task(client.start(token))
+
+            # Wait for stop event
+            await stop_event.wait()
+
+            # Graceful shutdown
+            print("[DISCORD] Shutting down...")
+            await client.close()
+            task.cancel()
+        except asyncio.CancelledError:
+            await client.close()
+        except Exception as e:
+            print(f"[DISCORD] Error: {e}")
+
+    async def _process(self, message: Any, is_edit: bool = False) -> None:
+        """Process a Discord message."""
+        if message.channel.id not in {GENERAL_ALERTS_ID, CHALLENGE_ACCT_ID, WIFEY_SWINGS_ID}:
+            return
+
+        display_name = (message.author.display_name or message.author.name or "").strip()
+        author_type = _author_type(display_name)
+        if not author_type:
+            return
+
+        raw_content = message.content.strip()
+        if not raw_content:
+            return
+
+        content = _resolve_mentions(raw_content)
+        channel = (
+            "#challenge-account" if message.channel.id == CHALLENGE_ACCT_ID
+            else "#wifey-swing-trades" if message.channel.id == WIFEY_SWINGS_ID
+            else "#general-alerts"
+        )
+        timestamp = message.created_at.isoformat()
+
+        print(f"[DISCORD] [{channel}{'|EDIT' if is_edit else ''}] {display_name}: {content[:120]}")
+
+        # Build context window for LLM
+        prev_context = list(self._context[display_name])
+
+        # Parse with Claude Haiku
+        from .signal_parser import parse_signal, verify_signals, is_day_trades_only
+        parsed = parse_signal(content, display_name, timestamp, context=prev_context)
+
+        # Always update context (even NOISE helps next message)
+        self._context[display_name].append(content)
+
+        if not parsed:
+            return
+
+        sig_type = parsed.get("signal_type")
+        ticker = parsed.get("ticker")
+
+        print(f"[DISCORD]   -> {sig_type} | {ticker} {parsed.get('strike')}"
+              f"{parsed.get('option_type')} @ {parsed.get('price')} | "
+              f"conf={parsed.get('confidence')}")
+
+        # @Day Trades only — relay to GammaPulse as HIGH conviction, no Telegram alert
+        if is_day_trades_only(parsed) and sig_type in ("ENTRY", "WATCH", "ADD"):
+            ticker = parsed.get("ticker")
+            if ticker:
+                conviction = "HIGH"  # Day Trades = larger account = high conviction
+                state = await cache.get(ticker)
+                gex_context = {}
+                if state:
+                    gex_context = {
+                        "king": state.get("king"), "floor": state.get("floor"),
+                        "regime": state.get("regime"),
+                        "spot": state.get("actual_spot") or state.get("_spot"),
+                    }
+                mir_signal = {
+                    "ticker": ticker, "signal_type": parsed.get("signal_type"),
+                    "option_type": (parsed.get("option_type") or "").upper().replace("C", "CALL").replace("P", "PUT"),
+                    "strike": parsed.get("strike"), "price": parsed.get("price"),
+                    "conviction": conviction, "channel": channel,
+                    "author": display_name, "source": "discord_listener",
+                    "agreement": "DAY_TRADES", "gex_context": gex_context,
+                    "_received_ts": time.time(),
+                }
+                await cache.set_mir_signal(ticker, mir_signal)
+                print(f"[DISCORD]   -> @Day Trades {ticker} — stored as HIGH (no Telegram)")
+            return
+
+        # Edit dedup
+        if is_edit:
+            prev = self._seen_messages.get(message.id)
+            if prev:
+                had_price = prev.get("price") is not None
+                has_price = parsed.get("price") is not None
+                if had_price and has_price and prev.get("price") == parsed.get("price"):
+                    return
+                if had_price and not has_price:
+                    return
+        self._seen_messages[message.id] = parsed
+
+        # Route by signal type
+        if sig_type in ("EXIT", "PARTIAL_EXIT", "STOP_LEVEL"):
+            # Log exits but don't store as Mir signal (existing trade_tracker handles)
+            print(f"[DISCORD]   -> {sig_type} logged (trade_tracker handles exits)")
+            conviction = _infer_conviction(parsed, channel)
+            alert = _build_telegram_alert(parsed, conviction, f"{author_type} ({display_name})", channel)
+            try:
+                from .telegram import send
+                await send(alert, ticker=ticker)
+            except Exception:
+                pass
+            return
+
+        if sig_type in ("ENTRY", "WATCH", "ADD"):
+            await self._route_entry(parsed, author_type, message.channel.id,
+                                    display_name, content, channel)
+
+    async def _route_entry(self, parsed: dict[str, Any], author_type: str,
+                           channel_id: int, display_name: str,
+                           content: str, channel_name: str) -> None:
+        """Route entry signals with Mir/P cross-verification."""
+        ticker = parsed.get("ticker")
+        if not ticker:
+            return
+
+        # Case 1: Mir direct in #challenge-account -> immediate
+        if author_type == "mir" and channel_id == CHALLENGE_ACCT_ID:
+            print("[DISCORD]   -> Mir direct in #challenge — immediate")
+            await self._handle_entry(parsed, "MIR_DIRECT", display_name, channel_name)
+
+        # Case 2: Mir in #general-alerts -> buffer for P relay
+        elif author_type == "mir" and channel_id == GENERAL_ALERTS_ID:
+            print("[DISCORD]   -> Mir in #general — buffering for P relay...")
+            self._pending[ticker] = {
+                "mir_parsed": parsed,
+                "mir_msg": {"content": content, "author": display_name},
+                "timestamp": time.time(),
+                "alerted": False,
+            }
+            asyncio.create_task(self._timeout_alert(ticker, display_name, channel_name))
+
+        # Case 3: P in #challenge-account -> cross-verify
+        elif author_type == "p" and channel_id == CHALLENGE_ACCT_ID:
+            pending = self._pending.get(ticker)
+            if pending and not pending["alerted"]:
+                print("[DISCORD]   -> P relay — cross-verifying with Mir...")
+                from .signal_parser import verify_signals
+                verification = verify_signals(
+                    mir_msg=pending["mir_msg"],
+                    p_msg={"content": content, "author": display_name},
+                    mir_parsed=pending["mir_parsed"],
+                    p_parsed=parsed,
+                )
+                merged = (verification or {}).get("recommended_signal") or pending["mir_parsed"]
+                await self._handle_entry(merged, "MIR_VERIFIED", display_name, channel_name)
+                pending["alerted"] = True
+            else:
+                print("[DISCORD]   -> P signal, no Mir buffer — P_ONLY")
+                await self._handle_entry(parsed, "P_ONLY", display_name, channel_name)
+
+    async def _handle_entry(self, parsed: dict[str, Any], agreement: str,
+                            display_name: str, channel_name: str) -> None:
+        """Store signal in cache and send Telegram alert."""
+        ticker = parsed.get("ticker")
+        if not ticker:
+            return
+
+        conviction = _infer_conviction(parsed, channel_name)
+
+        # Enrich with GEX context from current state
+        state = await cache.get(ticker)
+        gex_context = {}
+        if state:
+            gex_context = {
+                "king": state.get("king"),
+                "floor": state.get("floor"),
+                "ceiling": state.get("ceiling"),
+                "regime": state.get("regime"),
+                "signal": state.get("signal"),
+                "iv": state.get("iv"),
+                "spot": state.get("actual_spot") or state.get("_spot"),
+            }
+
+        # Build signal dict matching the webhook format
+        mir_signal = {
+            "ticker": ticker,
+            "signal_type": parsed.get("signal_type", "ENTRY"),
+            "option_type": (parsed.get("option_type") or "").upper().replace("C", "CALL").replace("P", "PUT"),
+            "strike": parsed.get("strike"),
+            "price": parsed.get("price"),
+            "expiry": parsed.get("expiry_raw"),
+            "conviction": conviction,
+            "channel": channel_name,
+            "author": display_name,
+            "raw": parsed.get("raw_content", ""),
+            "source": "discord_listener",
+            "agreement": agreement,
+            "timestamp": parsed.get("timestamp", ""),
+            "gex_context": gex_context,
+            "_received_ts": time.time(),
+        }
+
+        # Resolve contract from cached Tradier chains (zero API cost)
+        contract_info = None
+        if state and parsed.get("strike") and parsed.get("option_type"):
+            contract_info = _resolve_contract_from_cache(
+                state, parsed.get("strike"), parsed.get("option_type"),
+                parsed.get("expiry_raw"),
+            )
+            if contract_info:
+                mir_signal["_contract"] = contract_info
+
+        # Store directly in cache (no HTTP hop)
+        await cache.set_mir_signal(ticker, mir_signal)
+        print(f"[DISCORD]   -> Stored: {ticker} {conviction} ({agreement})")
+
+        # Telegram alert with full enrichment (contract, Greeks, GEX, RTS)
+        if conviction in ("HIGH", "MEDIUM"):
+            try:
+                from .main import _build_mir_telegram
+                from .telegram import send
+                alert = _build_mir_telegram(
+                    ticker, parsed.get("signal_type", "ENTRY"),
+                    parsed.get("option_type", ""),
+                    parsed.get("strike"), parsed.get("price"),
+                    parsed.get("expiry_raw"), conviction, channel_name,
+                    state, gex_context,
+                )
+                await send(alert, ticker=ticker, force=True)
+            except Exception as e:
+                print(f"[DISCORD] Telegram error: {e}")
+
+    async def _timeout_alert(self, ticker: str, display_name: str,
+                             channel_name: str) -> None:
+        """Alert on Mir alone if P doesn't relay within timeout."""
+        await asyncio.sleep(MIR_SIGNAL_TTL)
+        pending = self._pending.get(ticker)
+        if pending and not pending["alerted"]:
+            print(f"[DISCORD]   -> P relay timeout ({MIR_SIGNAL_TTL}s) — alerting Mir alone")
+            await self._handle_entry(
+                pending["mir_parsed"], "MIR_ONLY", display_name, channel_name,
+            )
+            pending["alerted"] = True
+
+    def _cleanup(self) -> None:
+        """Remove stale buffered signals and seen messages."""
+        now = time.time()
+        stale = [k for k, v in self._pending.items()
+                 if now - v["timestamp"] > MIR_SIGNAL_TTL * 2]
+        for k in stale:
+            del self._pending[k]
+        if len(self._seen_messages) > 500:
+            for k in list(self._seen_messages.keys())[:100]:
+                del self._seen_messages[k]
+
+
+async def run_discord_listener(stop_event: asyncio.Event) -> None:
+    """Background task: connect to Discord and listen for Mir signals."""
+    s = get_settings()
+    if not s.discord_enabled or not s.discord_token:
+        print("[DISCORD] Disabled (set DISCORD_ENABLED=true and DISCORD_TOKEN in .env)")
+        return
+
+    client = MirDiscordClient()
+
+    while not stop_event.is_set():
+        try:
+            print("[DISCORD] Starting listener...")
+            await client.start(s.discord_token, stop_event)
+        except Exception as e:
+            print(f"[DISCORD] Disconnected: {e}")
+            if not stop_event.is_set():
+                print("[DISCORD] Reconnecting in 30s...")
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=30)
+                except asyncio.TimeoutError:
+                    pass

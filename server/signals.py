@@ -492,6 +492,7 @@ def _select_contract(
     direction: str,
     tradier_chains: dict | None = None,
     relaxed: bool = False,
+    mir_mode: bool = False,
 ) -> dict[str, Any] | None:
     """Select the optimal contract for the signal.
 
@@ -503,11 +504,26 @@ def _select_contract(
 
     When relaxed=True (setup forming alerts), gates are loosened:
       - Spread < 25%, OI > 50, Delta 0.15-0.75
+
+    When mir_mode=True (Mir momentum signals):
+      - DTE 7-14 preferred, skip 0DTE entirely
+      - Delta 0.35-0.50 (narrower sweet spot)
     """
-    spread_limit = 0.25 if relaxed else 0.10
-    oi_limit = 50 if relaxed else 500
-    delta_lo = 0.15 if relaxed else 0.25
-    delta_hi = 0.75 if relaxed else 0.60
+    if mir_mode:
+        spread_limit = 0.10
+        oi_limit = 500
+        delta_lo = 0.35
+        delta_hi = 0.50
+    elif relaxed:
+        spread_limit = 0.25
+        oi_limit = 50
+        delta_lo = 0.15
+        delta_hi = 0.75
+    else:
+        spread_limit = 0.10
+        oi_limit = 500
+        delta_lo = 0.25
+        delta_hi = 0.60
     spot = state.get("actual_spot") or state.get("_spot") or 0
     king = state.get("king", 0)
     if not spot:
@@ -526,8 +542,8 @@ def _select_contract(
     target_exp = None
     target_dte = 0
 
-    # For SPY/QQQ: try 0DTE first (today's expiration)
-    if is_0dte_eligible:
+    # For SPY/QQQ: try 0DTE first (today's expiration) — skip in mir_mode
+    if is_0dte_eligible and not mir_mode:
         for exp in exps:
             if exp == today_str:
                 target_exp = exp
@@ -535,6 +551,9 @@ def _select_contract(
                 break
 
     # Standard: 7-21 DTE, sweet spot 10 (backtest: 7-14 DTE >> 14-21 >> 21-35)
+    # Mir mode: 7-14 DTE (backtest validated: 7-14 >> 14-21 >> 21-35)
+    dte_lo = 7
+    dte_hi = 14 if mir_mode else 21
     if not target_exp:
         for exp in exps:
             if exp.startswith("MACRO"):
@@ -542,7 +561,7 @@ def _select_contract(
             try:
                 exp_date = datetime.date.fromisoformat(exp)
                 dte = (exp_date - today).days
-                if 7 <= dte <= 21:
+                if dte_lo <= dte <= dte_hi:
                     if target_exp is None or abs(dte - 10) < abs(target_dte - 10):
                         target_exp = exp
                         target_dte = dte
@@ -814,8 +833,43 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
         if direction is None and mir_sig:
             ot = (mir_sig.get("option_type") or "").upper()
             direction = "BULL" if ot == "CALL" else "BEAR" if ot == "PUT" else None
+
+        # ── Mir-originated pathway ──────────────────────────────────
+        # When Mir momentum scoring (computed in worker) identifies a
+        # high-conviction bullish setup, generate signal even without
+        # GEX directional confirmation.  GEX becomes quality gate.
+        is_mir_originated = False
+        if (
+            direction is None
+            and mir_sig
+            and mir_sig.get("signal_type") == "MIR_MOMENTUM"
+            and mir_sig.get("mir_score", 0) >= 4.0
+        ):
+            direction = "BULL"
+            is_mir_originated = True
+
         if direction is None:
             continue
+
+        # Trend day context (used by both pathways)
+        trend_day = state.get("_trend_day") or {}
+        trend_mode = trend_day.get("trend_mode", "NORMAL")
+        gap_dir = trend_day.get("gap_direction", "")
+
+        # PM window gate for Mir-originated signals
+        # Normal days: only 2:00-4:00 PM (backtest-validated window)
+        # Trend days: allow from 10:00 AM (gap-and-go, no pullback)
+        if is_mir_originated:
+            mins = now.hour * 60 + now.minute
+
+            if trend_mode in ("TREND_DAY", "EXTREME_TREND") and gap_dir == "UP":
+                # Gap-and-go: allow from 10:00 AM onward
+                if mins < 600:
+                    continue
+            else:
+                # Normal mode: require PM window (2:00-4:00 PM)
+                if mins < 840 or mins > 960:
+                    continue
 
         # Dedup: only one signal per ticker per 2 hours (direction-independent)
         dedup_key = f"{ticker}:{now.strftime('%Y%m%d')}{now.hour // 2}"
@@ -823,23 +877,79 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
             continue
 
         # Inject breadth context into state for scoring
+        # Mir-originated trend-day signals: zero out breadth penalty entirely.
+        # On gap-and-go days, NYMO overbought is expected and should not block.
         if breadth_data:
-            state["_breadth"] = breadth_data
+            if is_mir_originated and trend_mode in ("TREND_DAY", "EXTREME_TREND"):
+                pass  # Skip breadth injection — don't penalize strong tape
+            else:
+                state["_breadth"] = breadth_data
 
         score, reasons = _compute_signal_score(state, direction, confluence, iv_universe)
         grade = _score_to_grade(score)
         signal_type = _determine_signal_type(state, direction)
-        contract = _select_contract(state, direction)
+
+        # Mir-originated signals use narrower contract selection
+        if is_mir_originated:
+            signal_type = "MIR_MOMENTUM"
+            contract = _select_contract(state, direction, mir_mode=True)
+            # Fallback to standard selection if mir_mode is too restrictive
+            if not contract:
+                contract = _select_contract(state, direction)
+        else:
+            contract = _select_contract(state, direction)
+
         spot = state.get("actual_spot") or state.get("_spot") or 0
 
         # ── Track blocking reasons as flags (don't continue yet) ──
         a_blocked_by = None
-        if score < 2.5:
-            a_blocked_by = "score_threshold"
-        elif not contract:
-            a_blocked_by = "no_contract"
-        elif contract.get("rr_ratio", 0) < 1.0:
-            a_blocked_by = "rr_ratio"
+
+        if is_mir_originated:
+            # GEX as quality gate (not signal generator):
+            # King above spot, floor below, positive gamma, king distance 0.5-3%
+            # 2+ issues = block
+            king = state.get("king", 0)
+            floor_v = state.get("floor", 0)
+            regime = state.get("regime", "")
+            gex_issues: list[str] = []
+            if king and spot and king < spot:
+                gex_issues.append("king_below_spot")
+            if regime == "NEG":
+                gex_issues.append("neg_gamma")
+            king_dist = abs(king - spot) / spot if spot and king else 0
+            if king_dist < 0.005 or king_dist > 0.03:
+                gex_issues.append(f"king_dist_{king_dist*100:.1f}pct")
+
+            if len(gex_issues) >= 2:
+                a_blocked_by = f"mir_gex_gate:{','.join(gex_issues)}"
+            elif not contract:
+                a_blocked_by = "no_contract"
+            elif contract.get("rr_ratio", 0) < 1.0:
+                a_blocked_by = "rr_ratio"
+
+            # Add Mir + trend context to reasons
+            mir_reasons = mir_sig.get("mir_reasons", [])
+            for mr in mir_reasons:
+                reasons.append(f"Mir: {mr}")
+            trend_day = state.get("_trend_day") or {}
+            if trend_day.get("trend_mode") != "NORMAL":
+                reasons.append(
+                    f"TREND DAY: {trend_day.get('gap_pct', 0):+.1f}% gap "
+                    f"({trend_day.get('trend_mode')})"
+                )
+
+            # Reduce conviction for extreme gaps (chasing risk)
+            if trend_day.get("trend_mode") == "EXTREME_TREND" and mir_sig:
+                mir_sig = {**mir_sig, "conviction": "LOW"}
+                reasons.append("EXTREME GAP — reduced conviction (chasing risk)")
+        else:
+            # Standard GEX pathway
+            if score < 2.5:
+                a_blocked_by = "score_threshold"
+            elif not contract:
+                a_blocked_by = "no_contract"
+            elif contract.get("rr_ratio", 0) < 1.0:
+                a_blocked_by = "rr_ratio"
 
         # 0DTE freshness gate
         dte = contract.get("dte", 99) if contract else 99

@@ -79,8 +79,12 @@ export default function ScannerTab() {
       r = r.filter((x) => x._ticker?.includes(s));
     }
     r.sort((a, b) => {
-      const av = sortKey === '_rts_score' ? (a._rts?.score ?? 0) : (a[sortKey] ?? 0);
-      const bv = sortKey === '_rts_score' ? (b._rts?.score ?? 0) : (b[sortKey] ?? 0);
+      const av = sortKey === '_rts_score' ? (a._rts?.score ?? 0)
+        : sortKey === '_mir_score' ? (a._mir_score ?? 0)
+        : (a[sortKey] ?? 0);
+      const bv = sortKey === '_rts_score' ? (b._rts?.score ?? 0)
+        : sortKey === '_mir_score' ? (b._mir_score ?? 0)
+        : (b[sortKey] ?? 0);
       if (typeof av === 'string')
         return sortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
       return sortDir === 'asc' ? av - bv : bv - av;
@@ -324,6 +328,8 @@ export default function ScannerTab() {
                   GEX MAG {sortKey === 'pos_gex' ? (sortDir === 'desc' ? '▼' : '▲') : ''}
                 </th>
                 <th onClick={() => toggleSort('_rts_score')}>RS</th>
+                <th onClick={() => toggleSort('_mir_score')}>Mir</th>
+                <th>Mode</th>
                 <th onClick={() => toggleSort('iv')}>IV</th>
                 <th onClick={() => toggleSort('_ivp')}>IVP</th>
                 <th onClick={() => toggleSort('net_delta')}>NET Δ</th>
@@ -402,6 +408,32 @@ export default function ScannerTab() {
                         );
                       })()}
                     </td>
+                    <td>
+                      {r._mir_score != null ? (
+                        <span style={{
+                          fontWeight: 700,
+                          color: r._mir_score >= 5 ? '#10dc9a' : r._mir_score >= 4 ? '#f4c430' : 'var(--text-3)',
+                        }}>
+                          {r._mir_score}
+                          {r._mir_conviction && (
+                            <span style={{ fontSize: 8, marginLeft: 2, color: r._mir_conviction === 'HIGH' ? '#10dc9a' : '#f4c430' }}>
+                              {r._mir_conviction === 'HIGH' ? 'H' : 'M'}
+                            </span>
+                          )}
+                        </span>
+                      ) : <span style={{ color: 'var(--text-3)' }}>-</span>}
+                    </td>
+                    <td>
+                      {r._trend_mode && r._trend_mode !== 'NORMAL' ? (
+                        <span style={{
+                          fontSize: 9, fontWeight: 800, padding: '1px 4px', borderRadius: 3,
+                          background: r._trend_mode === 'EXTREME_TREND' ? 'rgba(255,86,86,0.15)' : 'rgba(244,196,48,0.15)',
+                          color: r._trend_mode === 'EXTREME_TREND' ? '#ff5656' : '#f4c430',
+                        }}>
+                          {r._gap_pct > 0 ? '+' : ''}{r._gap_pct}%
+                        </span>
+                      ) : <span style={{ color: 'var(--text-3)' }}>-</span>}
+                    </td>
                     <td>{fmtIV(r.iv)}</td>
                     <td style={{ color: r._ivp != null ? (r._ivp <= 30 ? '#10dc9a' : r._ivp <= 50 ? '#f4c430' : '#ff5656') : 'var(--text-3)' }}>
                       {r._ivp != null ? `${r._ivp}%` : '-'}
@@ -423,7 +455,7 @@ export default function ScannerTab() {
               {!rows.length && (
                 <tr>
                   <td
-                    colSpan={13}
+                    colSpan={15}
                     style={{
                       textAlign: 'center',
                       padding: 40,

@@ -13,6 +13,8 @@ Trigger conditions:
   - ZGL CROSS UP: spot crosses above ZGL (regime improving)
   - ZGL CROSS DOWN: spot crosses below ZGL (regime deteriorating)
   - CEILING TEST: spot within 0.3% of ceiling (potential rejection)
+  - EMA_PULLBACK: 15-min price pulls back to 8 EMA and bounces (Mir's entry trigger)
+  - TREND_CONTINUATION: gap-and-go day, price above 8 EMA with momentum
 """
 from __future__ import annotations
 
@@ -31,6 +33,169 @@ ALERT_COOLDOWN = 900  # 15 minutes per ticker per alert type
 
 # Track previous state for cross detection
 _prev_state: dict[str, dict[str, Any]] = {}
+
+# ── 15-min 8 EMA tracking ───────────────────────────────────────────
+# Mir's actual entry trigger from RAG: "pullback to the 8 EMA on 15-min"
+# Cached to avoid hammering Tradier — refresh every 5 minutes.
+
+_bar_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}  # ticker -> (ts, bars)
+_BAR_CACHE_TTL = 300  # 5 minutes
+
+_ema8_state: dict[str, dict[str, Any]] = {}
+# {ticker: {prev_close, prev_ema, prev_relation ("ABOVE"/"BELOW"/"TOUCHING")}}
+
+_tradier_client = None  # lazy-init
+
+
+def _compute_ema8(closes: list[float]) -> float:
+    """Compute 8-period EMA from a list of closing prices."""
+    period = 8
+    if len(closes) < period:
+        return sum(closes) / len(closes)
+    multiplier = 2.0 / (period + 1)
+    ema = sum(closes[:period]) / period
+    for val in closes[period:]:
+        ema = val * multiplier + ema * (1 - multiplier)
+    return ema
+
+
+async def _refresh_bars(ticker: str) -> list[dict[str, Any]] | None:
+    """Fetch 15-min bars from Tradier with caching (5-min TTL)."""
+    global _tradier_client
+
+    cached = _bar_cache.get(ticker)
+    if cached and (time.time() - cached[0]) < _BAR_CACHE_TTL:
+        return cached[1]
+
+    try:
+        if _tradier_client is None:
+            from .tradier import TradierClient
+            _tradier_client = TradierClient()
+
+        bars = await _tradier_client.history(ticker, interval="15min")
+        if bars:
+            _bar_cache[ticker] = (time.time(), bars)
+            return bars
+    except Exception as e:
+        print(f"[SCALP] 15-min bars fetch failed for {ticker}: {e}")
+
+    # Return stale cache if available
+    return cached[1] if cached else None
+
+
+async def _detect_ema_pullback(ticker: str, state: dict[str, Any]) -> dict[str, Any] | None:
+    """Detect 15-min 8 EMA pullback/bounce entry (Mir's trigger).
+
+    Returns an alert dict or None.
+    """
+    bars = await _refresh_bars(ticker)
+    if not bars or len(bars) < 10:
+        return None
+
+    closes = [b["close"] for b in bars]
+    ema_val = _compute_ema8(closes)
+    current_close = closes[-1]
+    spot = state.get("actual_spot") or state.get("_spot") or current_close
+
+    # Determine current relation to EMA
+    ema_dist_pct = (spot - ema_val) / ema_val if ema_val else 0
+    if abs(ema_dist_pct) < 0.001:
+        relation = "TOUCHING"
+    elif spot > ema_val:
+        relation = "ABOVE"
+    else:
+        relation = "BELOW"
+
+    prev = _ema8_state.get(ticker, {})
+    prev_relation = prev.get("prev_relation")
+
+    # Update state for next cycle
+    _ema8_state[ticker] = {
+        "prev_close": spot,
+        "prev_ema": ema_val,
+        "prev_relation": relation,
+    }
+
+    if prev_relation is None:
+        return None  # First cycle — need history
+
+    king = state.get("king", 0)
+    floor_val = state.get("floor", 0)
+    regime = state.get("regime", "")
+
+    # ── Trend day check ──
+    trend_day = state.get("_trend_day") or {}
+    trend_mode = trend_day.get("trend_mode", "NORMAL")
+    gap_dir = trend_day.get("gap_direction", "")
+
+    # TREND CONTINUATION: gap-and-go day, price above EMA with momentum
+    if (
+        trend_mode in ("TREND_DAY", "EXTREME_TREND")
+        and gap_dir == "UP"
+        and relation == "ABOVE"
+        and ema_dist_pct > 0.001
+    ):
+        contract = _suggest_contract(ticker, spot, "CALLS", king)
+        king_dist = ((king - spot) / spot * 100) if king > spot else 0
+        return {
+            "ticker": ticker,
+            "type": "TREND_CONTINUATION",
+            "emoji": "🔥",
+            "headline": f"TREND DAY — Gap +{trend_day.get('gap_pct', 0):.1f}%, above 8 EMA",
+            "detail": (
+                f"Spot ${spot:.2f} | 8 EMA ${ema_val:.2f} (+{ema_dist_pct*100:.2f}%)\n"
+                f"Gap-and-go — no pullback wait, ride the trend\n"
+                f"King: ${king} ({king_dist:+.1f}%) | Regime: {regime}"
+            ),
+            "contract": contract,
+            "direction": "CALLS",
+            "spot": spot,
+            "target": king if king > spot else spot * 1.01,
+            "stop": ema_val,
+        }
+
+    # EMA PULLBACK: previous bar was at/below EMA, now bouncing above
+    if prev_relation in ("BELOW", "TOUCHING") and relation == "ABOVE" and ema_dist_pct > 0.001:
+        contract = _suggest_contract(ticker, spot, "CALLS", king)
+        king_dist = ((king - spot) / spot * 100) if king > spot else 0
+        return {
+            "ticker": ticker,
+            "type": "EMA_PULLBACK",
+            "emoji": "📈",
+            "headline": "8 EMA PULLBACK — Bounce confirmed",
+            "detail": (
+                f"Spot ${spot:.2f} bounced off 15-min 8 EMA ${ema_val:.2f}\n"
+                f"Mir's #1 entry trigger — pullback to trend support\n"
+                f"King magnet: ${king} ({king_dist:+.1f}%) | Regime: {regime}"
+            ),
+            "contract": contract,
+            "direction": "CALLS",
+            "spot": spot,
+            "target": king if king > spot else spot * 1.01,
+            "stop": ema_val * 0.998,  # Just below EMA
+        }
+
+    # EMA REJECTION: previous bar was at/above EMA, now breaking below
+    if prev_relation in ("ABOVE", "TOUCHING") and relation == "BELOW" and ema_dist_pct < -0.001:
+        contract = _suggest_contract(ticker, spot, "PUTS")
+        return {
+            "ticker": ticker,
+            "type": "EMA_REJECTION",
+            "emoji": "📉",
+            "headline": "8 EMA REJECTION — Breaking below trend",
+            "detail": (
+                f"Spot ${spot:.2f} broke below 15-min 8 EMA ${ema_val:.2f}\n"
+                f"Trend support lost — momentum reversal\n"
+                f"Floor: ${floor_val} | Regime: {regime}"
+            ),
+            "contract": contract,
+            "direction": "PUTS",
+            "spot": spot,
+            "target": floor_val if floor_val and floor_val < spot else spot * 0.99,
+            "stop": ema_val * 1.002,  # Just above EMA
+        }
+
+    return None
 
 
 def _can_alert(ticker: str, alert_type: str) -> bool:
@@ -70,13 +235,11 @@ async def _check_scalp_alerts() -> list[dict[str, Any]]:
     if now.hour > 16 or (now.hour == 16 and now.minute > 15):
         return []
 
-    # Mir rule + backtest confirmed: only PM momentum and power hour have edge
-    # AM_MOMENTUM: 48% WR, 0% EV — disabled for live per ChatGPT final review
-    # CHOP: not tested, Mir avoids — disabled
-    # PM_MOMENTUM: 58% WR, +0.24% — enabled
-    # POWER_HOUR: 62% WR, +0.37% — enabled (best window)
+    # Time gates moved per-ticker to allow trend-day exceptions.
+    # Normal mode: PM momentum + power hour only (1:30 PM+)
+    # Trend day: allow from 10:00 AM (after first-hour settle)
     mins = now.hour * 60 + now.minute
-    if mins < 810:  # Before 1:30 PM — no scalp alerts
+    if mins < 600:  # Before 10:00 AM absolute minimum
         return []
 
     alerts: list[dict[str, Any]] = []
@@ -85,6 +248,12 @@ async def _check_scalp_alerts() -> list[dict[str, Any]]:
         state = await cache.get(ticker)
         if not state:
             continue
+
+        # Per-ticker time gate: trend days allow earlier scanning
+        trend_day = state.get("_trend_day") or {}
+        trend_mode = trend_day.get("trend_mode", "NORMAL")
+        if trend_mode == "NORMAL" and mins < 810:
+            continue  # Normal mode: skip until 1:30 PM
 
         spot = state.get("actual_spot") or state.get("_spot") or 0
         king = state.get("king") or 0
@@ -279,6 +448,17 @@ async def _check_scalp_alerts() -> list[dict[str, Any]]:
                     "stop": zgl * 1.003,
                 })
                 _record_alert(ticker, "ZGL_CROSS_DOWN")
+
+        # ── 8 EMA PULLBACK: Mir's #1 intraday entry trigger ─────────
+        ema_alert = await _detect_ema_pullback(ticker, state)
+        if ema_alert and _can_alert(ticker, ema_alert["type"]):
+            # Add trend day context to headline
+            if trend_mode == "TREND_DAY":
+                ema_alert["headline"] += " (TREND DAY)"
+            elif trend_mode == "EXTREME_TREND":
+                ema_alert["headline"] += " (EXTREME GAP — reduced size)"
+            alerts.append(ema_alert)
+            _record_alert(ticker, ema_alert["type"])
 
         # Store state for next cycle
         _prev_state[ticker] = {"spot": spot, "king": king, "floor": floor_val, "zgl": zgl}

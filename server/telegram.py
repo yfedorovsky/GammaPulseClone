@@ -26,8 +26,11 @@ _message_times: deque[float] = deque()
 _ticker_last_sent: dict[str, float] = {}
 
 
-def _can_send(ticker: str = "", priority: bool = False) -> bool:
+def _can_send(ticker: str = "", priority: bool = False, force: bool = False) -> bool:
     """Check if we can send a message without being spammy."""
+    if force:
+        return True  # Mir Discord signals bypass all rate limits
+
     now = time.time()
 
     # Priority messages (A/A+ signals) bypass rate limit but not ticker cooldown
@@ -59,6 +62,7 @@ async def send(
     ticker: str = "",
     priority: bool = False,
     suppress: bool = False,
+    force: bool = False,
 ) -> bool:
     """Send a Telegram message with rate limiting.
 
@@ -67,6 +71,7 @@ async def send(
         ticker: Ticker symbol for per-ticker cooldown
         priority: If True, bypass global rate limit (still respects ticker cooldown)
         suppress: If True, skip entirely (used by 0DTE experimental)
+        force: If True, bypass ALL rate limits (for Mir Discord signals)
 
     Returns True if sent, False if rate-limited or suppressed.
     """
@@ -77,7 +82,7 @@ async def send(
     if not s.telegram_bot_token or not s.telegram_chat_id:
         return False
 
-    if not _can_send(ticker, priority):
+    if not _can_send(ticker, priority, force):
         return False
 
     try:
