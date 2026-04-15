@@ -1,0 +1,865 @@
+[
+  {
+    "variant": "A: Curated",
+    "trades": 405,
+    "wins": 218,
+    "wr": 53.827160493827165,
+    "avg_pnl": 140.08153065577335,
+    "total_pnl": 56733.01991558821,
+    "quarter_stats": {
+      "2025-06": {
+        "trades": 38,
+        "wins": 20,
+        "pnl": 4364.084440653458,
+        "sectors": "",
+        "eligible": 20
+      },
+      "2025-07": {
+        "trades": 51,
+        "wins": 26,
+        "pnl": 2992.629328190611,
+        "sectors": "",
+        "eligible": 20
+      },
+      "2025-08": {
+        "trades": 39,
+        "wins": 17,
+        "pnl": 1049.1684735003457,
+        "sectors": "",
+        "eligible": 20
+      },
+      "2025-09": {
+        "trades": 47,
+        "wins": 29,
+        "pnl": 4542.457292820632,
+        "sectors": "",
+        "eligible": 20
+      },
+      "2025-10": {
+        "trades": 56,
+        "wins": 34,
+        "pnl": 5946.910048797139,
+        "sectors": "",
+        "eligible": 20
+      },
+      "2025-11": {
+        "trades": 36,
+        "wins": 14,
+        "pnl": 2293.0523197247576,
+        "sectors": "",
+        "eligible": 20
+      },
+      "2025-12": {
+        "trades": 55,
+        "wins": 31,
+        "pnl": 9394.116053753101,
+        "sectors": "",
+        "eligible": 20
+      },
+      "2026-01": {
+        "trades": 53,
+        "wins": 31,
+        "pnl": 23273.260543462064,
+        "sectors": "",
+        "eligible": 20
+      },
+      "2026-02": {
+        "trades": 15,
+        "wins": 8,
+        "pnl": 850.6245611156115,
+        "sectors": "",
+        "eligible": 20
+      },
+      "2026-03": {
+        "trades": 5,
+        "wins": 0,
+        "pnl": -446.88611799802726,
+        "sectors": "",
+        "eligible": 20
+      },
+      "2026-04": {
+        "trades": 10,
+        "wins": 8,
+        "pnl": 2473.6029715685117,
+        "sectors": "",
+        "eligible": 20
+      }
+    },
+    "by_ticker": {
+      "ASTS": {
+        "trades": 59,
+        "wins": 36,
+        "wr": 61.016949152542374,
+        "total_pnl": 10359.252040574627
+      },
+      "VRT": {
+        "trades": 15,
+        "wins": 6,
+        "wr": 40.0,
+        "total_pnl": -4.614223507183894
+      },
+      "RKLB": {
+        "trades": 64,
+        "wins": 38,
+        "wr": 59.375,
+        "total_pnl": 7884.887224347066
+      },
+      "GLW": {
+        "trades": 48,
+        "wins": 29,
+        "wr": 60.416666666666664,
+        "total_pnl": 2159.4034039216353
+      },
+      "LRCX": {
+        "trades": 33,
+        "wins": 21,
+        "wr": 63.63636363636363,
+        "total_pnl": 2672.283491682815
+      },
+      "AMAT": {
+        "trades": 48,
+        "wins": 26,
+        "wr": 54.166666666666664,
+        "total_pnl": 1382.334540299053
+      },
+      "LITE": {
+        "trades": 12,
+        "wins": 9,
+        "wr": 75.0,
+        "total_pnl": 3339.2601085684682
+      },
+      "MU": {
+        "trades": 12,
+        "wins": 6,
+        "wr": 50.0,
+        "total_pnl": 293.75392133842075
+      },
+      "AAOI": {
+        "trades": 63,
+        "wins": 28,
+        "wr": 44.44444444444444,
+        "total_pnl": 9326.304796202901
+      },
+      "AXTI": {
+        "trades": 28,
+        "wins": 8,
+        "wr": 28.57142857142857,
+        "total_pnl": 18105.07417118704
+      },
+      "ANET": {
+        "trades": 17,
+        "wins": 8,
+        "wr": 47.05882352941176,
+        "total_pnl": 1076.3521832445044
+      },
+      "COHR": {
+        "trades": 5,
+        "wins": 3,
+        "wr": 60.0,
+        "total_pnl": 231.49590458204372
+      },
+      "CIEN": {
+        "trades": 1,
+        "wins": 0,
+        "wr": 0.0,
+        "total_pnl": -92.76764685318338
+      }
+    }
+  },
+  {
+    "variant": "B: PIT Quarterly",
+    "trades": 239,
+    "wins": 126,
+    "wr": 52.719665271966534,
+    "avg_pnl": 138.46272413842988,
+    "total_pnl": 33092.59106908474,
+    "quarter_stats": {
+      "2025-08": {
+        "trades": 11,
+        "wins": 5,
+        "pnl": -80.89279011868365,
+        "sectors": "",
+        "eligible": 29
+      },
+      "2025-09": {
+        "trades": 33,
+        "wins": 16,
+        "pnl": 1848.4344509367859,
+        "sectors": "",
+        "eligible": 29
+      },
+      "2025-10": {
+        "trades": 48,
+        "wins": 25,
+        "pnl": 3508.473540967132,
+        "sectors": "",
+        "eligible": 27
+      },
+      "2025-11": {
+        "trades": 32,
+        "wins": 11,
+        "pnl": 488.85807002250067,
+        "sectors": "",
+        "eligible": 27
+      },
+      "2025-12": {
+        "trades": 43,
+        "wins": 27,
+        "pnl": 4411.591093595842,
+        "sectors": "",
+        "eligible": 27
+      },
+      "2026-01": {
+        "trades": 49,
+        "wins": 32,
+        "pnl": 22150.445915095836,
+        "sectors": "",
+        "eligible": 26
+      },
+      "2026-02": {
+        "trades": 14,
+        "wins": 7,
+        "pnl": 640.244274932297,
+        "sectors": "",
+        "eligible": 26
+      },
+      "2026-03": {
+        "trades": 5,
+        "wins": 0,
+        "pnl": -432.84192158070647,
+        "sectors": "",
+        "eligible": 26
+      },
+      "2026-04": {
+        "trades": 4,
+        "wins": 3,
+        "pnl": 558.2784352337444,
+        "sectors": "",
+        "eligible": 4
+      }
+    },
+    "by_ticker": {
+      "META": {
+        "trades": 6,
+        "wins": 1,
+        "wr": 16.666666666666664,
+        "total_pnl": -245.6739811686847
+      },
+      "VRT": {
+        "trades": 17,
+        "wins": 12,
+        "wr": 70.58823529411765,
+        "total_pnl": 1313.570456062933
+      },
+      "GOOGL": {
+        "trades": 13,
+        "wins": 6,
+        "wr": 46.15384615384615,
+        "total_pnl": 487.5920867600461
+      },
+      "RKLB": {
+        "trades": 12,
+        "wins": 7,
+        "wr": 58.333333333333336,
+        "total_pnl": 727.5148395984005
+      },
+      "SATL": {
+        "trades": 5,
+        "wins": 1,
+        "wr": 20.0,
+        "total_pnl": -143.97835807363947
+      },
+      "ASTS": {
+        "trades": 3,
+        "wins": 1,
+        "wr": 33.33333333333333,
+        "total_pnl": -147.60802213692517
+      },
+      "PLTR": {
+        "trades": 15,
+        "wins": 7,
+        "wr": 46.666666666666664,
+        "total_pnl": 263.13097752655483
+      },
+      "TSM": {
+        "trades": 16,
+        "wins": 10,
+        "wr": 62.5,
+        "total_pnl": 716.1487643044646
+      },
+      "AMAT": {
+        "trades": 35,
+        "wins": 21,
+        "wr": 60.0,
+        "total_pnl": 1321.3290828365582
+      },
+      "LRCX": {
+        "trades": 34,
+        "wins": 20,
+        "wr": 58.82352941176471,
+        "total_pnl": 2184.628583304951
+      },
+      "ANET": {
+        "trades": 9,
+        "wins": 3,
+        "wr": 33.33333333333333,
+        "total_pnl": -322.43518435068165
+      },
+      "AAOI": {
+        "trades": 35,
+        "wins": 17,
+        "wr": 48.57142857142857,
+        "total_pnl": 7248.053568254877
+      },
+      "AXTI": {
+        "trades": 17,
+        "wins": 5,
+        "wr": 29.411764705882355,
+        "total_pnl": 17895.46196065278
+      },
+      "MU": {
+        "trades": 10,
+        "wins": 9,
+        "wr": 90.0,
+        "total_pnl": 1677.9200883245317
+      },
+      "SNOW": {
+        "trades": 2,
+        "wins": 2,
+        "wr": 100.0,
+        "total_pnl": 25.0
+      },
+      "AMZN": {
+        "trades": 3,
+        "wins": 0,
+        "wr": 0.0,
+        "total_pnl": -217.5526241715228
+      },
+      "TSEM": {
+        "trades": 1,
+        "wins": 0,
+        "wr": 0.0,
+        "total_pnl": -93.75137156759932
+      },
+      "AVGO": {
+        "trades": 1,
+        "wins": 0,
+        "wr": 0.0,
+        "total_pnl": -95.11299893402261
+      },
+      "CIEN": {
+        "trades": 1,
+        "wins": 0,
+        "wr": 0.0,
+        "total_pnl": -62.947582897224706
+      },
+      "TSLA": {
+        "trades": 1,
+        "wins": 1,
+        "wr": 100.0,
+        "total_pnl": 102.33599493870793
+      },
+      "COHR": {
+        "trades": 1,
+        "wins": 1,
+        "wr": 100.0,
+        "total_pnl": 102.88488198636546
+      },
+      "LITE": {
+        "trades": 1,
+        "wins": 1,
+        "wr": 100.0,
+        "total_pnl": 198.12223762115423
+      },
+      "AMD": {
+        "trades": 1,
+        "wins": 1,
+        "wr": 100.0,
+        "total_pnl": 157.9576702127137
+      }
+    }
+  },
+  {
+    "variant": "C: PIT Monthly",
+    "trades": 298,
+    "wins": 161,
+    "wr": 54.0268456375839,
+    "avg_pnl": 125.12286179751347,
+    "total_pnl": 37286.61281565901,
+    "quarter_stats": {
+      "2025-06": {
+        "trades": 2,
+        "wins": 0,
+        "pnl": -149.45289410589305,
+        "sectors": "",
+        "eligible": 28
+      },
+      "2025-07": {
+        "trades": 35,
+        "wins": 20,
+        "pnl": 1756.380378879408,
+        "sectors": "",
+        "eligible": 29
+      },
+      "2025-08": {
+        "trades": 41,
+        "wins": 16,
+        "pnl": 594.592767575981,
+        "sectors": "",
+        "eligible": 29
+      },
+      "2025-09": {
+        "trades": 41,
+        "wins": 28,
+        "pnl": 4183.264680183026,
+        "sectors": "",
+        "eligible": 28
+      },
+      "2025-10": {
+        "trades": 48,
+        "wins": 26,
+        "pnl": 3708.138732452556,
+        "sectors": "",
+        "eligible": 27
+      },
+      "2025-11": {
+        "trades": 32,
+        "wins": 9,
+        "pnl": -202.7637779917753,
+        "sectors": "",
+        "eligible": 24
+      },
+      "2025-12": {
+        "trades": 43,
+        "wins": 27,
+        "pnl": 4780.330155047346,
+        "sectors": "",
+        "eligible": 25
+      },
+      "2026-01": {
+        "trades": 49,
+        "wins": 31,
+        "pnl": 21933.413407288546,
+        "sectors": "",
+        "eligible": 29
+      },
+      "2026-02": {
+        "trades": 2,
+        "wins": 1,
+        "pnl": 197.37298861168972,
+        "sectors": "",
+        "eligible": 7
+      },
+      "2026-03": {
+        "trades": 1,
+        "wins": 0,
+        "pnl": -72.94205751560389,
+        "sectors": "",
+        "eligible": 4
+      },
+      "2026-04": {
+        "trades": 4,
+        "wins": 3,
+        "pnl": 558.2784352337444,
+        "sectors": "",
+        "eligible": 4
+      }
+    },
+    "by_ticker": {
+      "VRT": {
+        "trades": 21,
+        "wins": 15,
+        "wr": 71.42857142857143,
+        "total_pnl": 1342.237181416619
+      },
+      "RKLB": {
+        "trades": 5,
+        "wins": 3,
+        "wr": 60.0,
+        "total_pnl": 855.8849898856665
+      },
+      "AAOI": {
+        "trades": 47,
+        "wins": 20,
+        "wr": 42.5531914893617,
+        "total_pnl": 7365.3284326166095
+      },
+      "PLTR": {
+        "trades": 31,
+        "wins": 18,
+        "wr": 58.06451612903226,
+        "total_pnl": 933.558353607114
+      },
+      "TSM": {
+        "trades": 27,
+        "wins": 14,
+        "wr": 51.85185185185185,
+        "total_pnl": 769.041857495988
+      },
+      "AMAT": {
+        "trades": 36,
+        "wins": 20,
+        "wr": 55.55555555555556,
+        "total_pnl": 1179.6979430235822
+      },
+      "LRCX": {
+        "trades": 44,
+        "wins": 26,
+        "wr": 59.09090909090909,
+        "total_pnl": 2968.5994032639805
+      },
+      "ANET": {
+        "trades": 18,
+        "wins": 12,
+        "wr": 66.66666666666666,
+        "total_pnl": 1656.0717890204646
+      },
+      "MSFT": {
+        "trades": 4,
+        "wins": 1,
+        "wr": 25.0,
+        "total_pnl": -184.20560504510524
+      },
+      "AMD": {
+        "trades": 3,
+        "wins": 2,
+        "wr": 66.66666666666666,
+        "total_pnl": 168.2554766757626
+      },
+      "MU": {
+        "trades": 15,
+        "wins": 11,
+        "wr": 73.33333333333333,
+        "total_pnl": 1822.783019585779
+      },
+      "INTC": {
+        "trades": 2,
+        "wins": 1,
+        "wr": 50.0,
+        "total_pnl": 144.87402197276117
+      },
+      "GLW": {
+        "trades": 2,
+        "wins": 2,
+        "wr": 100.0,
+        "total_pnl": 236.0891812251767
+      },
+      "AAPL": {
+        "trades": 1,
+        "wins": 0,
+        "wr": 0.0,
+        "total_pnl": -100
+      },
+      "SNOW": {
+        "trades": 5,
+        "wins": 3,
+        "wr": 60.0,
+        "total_pnl": -135.6163221936613
+      },
+      "AVGO": {
+        "trades": 3,
+        "wins": 2,
+        "wr": 66.66666666666666,
+        "total_pnl": 579.8276759047557
+      },
+      "AXTI": {
+        "trades": 20,
+        "wins": 5,
+        "wr": 25.0,
+        "total_pnl": 17595.46196065278
+      },
+      "AMZN": {
+        "trades": 3,
+        "wins": 1,
+        "wr": 33.33333333333333,
+        "total_pnl": -131.95705221915313
+      },
+      "TSEM": {
+        "trades": 1,
+        "wins": 0,
+        "wr": 0.0,
+        "total_pnl": -93.75137156759932
+      },
+      "CIEN": {
+        "trades": 2,
+        "wins": 0,
+        "wr": 0.0,
+        "total_pnl": -131.18798802900153
+      },
+      "GOOGL": {
+        "trades": 4,
+        "wins": 2,
+        "wr": 50.0,
+        "total_pnl": -11.40889316738641
+      },
+      "COHR": {
+        "trades": 1,
+        "wins": 1,
+        "wr": 100.0,
+        "total_pnl": 102.88488198636546
+      },
+      "LITE": {
+        "trades": 1,
+        "wins": 1,
+        "wr": 100.0,
+        "total_pnl": 198.12223762115423
+      },
+      "SATL": {
+        "trades": 2,
+        "wins": 1,
+        "wr": 50.0,
+        "total_pnl": 156.02164192636053
+      }
+    }
+  },
+  {
+    "variant": "D: Scanner-only",
+    "trades": 356,
+    "wins": 183,
+    "wr": 51.40449438202247,
+    "avg_pnl": 111.87131521109221,
+    "total_pnl": 39826.188215148824,
+    "quarter_stats": {
+      "2025-06": {
+        "trades": 30,
+        "wins": 14,
+        "pnl": 1259.7967014893543,
+        "sectors": "",
+        "eligible": 34
+      },
+      "2025-07": {
+        "trades": 38,
+        "wins": 19,
+        "pnl": 857.6617745344112,
+        "sectors": "",
+        "eligible": 34
+      },
+      "2025-08": {
+        "trades": 45,
+        "wins": 16,
+        "pnl": 311.03944467985866,
+        "sectors": "",
+        "eligible": 34
+      },
+      "2025-09": {
+        "trades": 42,
+        "wins": 29,
+        "pnl": 4706.386489351805,
+        "sectors": "",
+        "eligible": 34
+      },
+      "2025-10": {
+        "trades": 47,
+        "wins": 27,
+        "pnl": 3718.129392394094,
+        "sectors": "",
+        "eligible": 34
+      },
+      "2025-11": {
+        "trades": 35,
+        "wins": 10,
+        "pnl": -29.69806963090042,
+        "sectors": "",
+        "eligible": 34
+      },
+      "2025-12": {
+        "trades": 44,
+        "wins": 25,
+        "pnl": 4568.602085770879,
+        "sectors": "",
+        "eligible": 34
+      },
+      "2026-01": {
+        "trades": 48,
+        "wins": 29,
+        "pnl": 21679.35178952073,
+        "sectors": "",
+        "eligible": 34
+      },
+      "2026-02": {
+        "trades": 13,
+        "wins": 7,
+        "pnl": 708.0813987994411,
+        "sectors": "",
+        "eligible": 34
+      },
+      "2026-03": {
+        "trades": 5,
+        "wins": 0,
+        "pnl": -432.84192158070647,
+        "sectors": "",
+        "eligible": 34
+      },
+      "2026-04": {
+        "trades": 9,
+        "wins": 7,
+        "pnl": 2479.679129819857,
+        "sectors": "",
+        "eligible": 34
+      }
+    },
+    "by_ticker": {
+      "PLTR": {
+        "trades": 36,
+        "wins": 22,
+        "wr": 61.111111111111114,
+        "total_pnl": 1339.714368637773
+      },
+      "VRT": {
+        "trades": 11,
+        "wins": 6,
+        "wr": 54.54545454545454,
+        "total_pnl": 134.59200502444565
+      },
+      "LRCX": {
+        "trades": 34,
+        "wins": 22,
+        "wr": 64.70588235294117,
+        "total_pnl": 2690.398500140845
+      },
+      "SNOW": {
+        "trades": 7,
+        "wins": 2,
+        "wr": 28.57142857142857,
+        "total_pnl": -406.95350367255196
+      },
+      "MSFT": {
+        "trades": 6,
+        "wins": 1,
+        "wr": 16.666666666666664,
+        "total_pnl": -327.66199941901584
+      },
+      "AMAT": {
+        "trades": 48,
+        "wins": 26,
+        "wr": 54.166666666666664,
+        "total_pnl": 1382.334540299053
+      },
+      "MU": {
+        "trades": 8,
+        "wins": 6,
+        "wr": 75.0,
+        "total_pnl": 774.2035498563092
+      },
+      "TSM": {
+        "trades": 35,
+        "wins": 20,
+        "wr": 57.14285714285714,
+        "total_pnl": 1224.2331740086656
+      },
+      "AAOI": {
+        "trades": 62,
+        "wins": 28,
+        "wr": 45.16129032258064,
+        "total_pnl": 9390.245815048878
+      },
+      "INTC": {
+        "trades": 49,
+        "wins": 25,
+        "wr": 51.02040816326531,
+        "total_pnl": 2951.336752716008
+      },
+      "ANET": {
+        "trades": 14,
+        "wins": 7,
+        "wr": 50.0,
+        "total_pnl": 768.0803929577042
+      },
+      "GOOGL": {
+        "trades": 6,
+        "wins": 5,
+        "wr": 83.33333333333334,
+        "total_pnl": 800.0761235595794
+      },
+      "TSEM": {
+        "trades": 2,
+        "wins": 0,
+        "wr": 0.0,
+        "total_pnl": -191.24501989111423
+      },
+      "AMZN": {
+        "trades": 11,
+        "wins": 1,
+        "wr": 9.090909090909092,
+        "total_pnl": -727.4793107517303
+      },
+      "GLW": {
+        "trades": 1,
+        "wins": 1,
+        "wr": 100.0,
+        "total_pnl": 117.64399528561844
+      },
+      "AXTI": {
+        "trades": 20,
+        "wins": 7,
+        "wr": 35.0,
+        "total_pnl": 19213.537061703075
+      },
+      "SMH": {
+        "trades": 1,
+        "wins": 0,
+        "wr": 0.0,
+        "total_pnl": -100
+      },
+      "RKLB": {
+        "trades": 2,
+        "wins": 1,
+        "wr": 50.0,
+        "total_pnl": 389.78865509905495
+      },
+      "TSLA": {
+        "trades": 1,
+        "wins": 1,
+        "wr": 100.0,
+        "total_pnl": 102.33599493870793
+      },
+      "COHR": {
+        "trades": 1,
+        "wins": 1,
+        "wr": 100.0,
+        "total_pnl": 102.88488198636546
+      },
+      "LITE": {
+        "trades": 1,
+        "wins": 1,
+        "wr": 100.0,
+        "total_pnl": 198.12223762115423
+      }
+    }
+  },
+  {
+    "variant": "E: Random",
+    "trades": 0,
+    "wins": 0,
+    "wr": 0.0,
+    "avg_pnl": 0.0,
+    "total_pnl": 0,
+    "quarter_stats": {},
+    "by_ticker": {}
+  },
+  {
+    "variant": "F: Bottom 3",
+    "trades": 1,
+    "wins": 1,
+    "wr": 100.0,
+    "avg_pnl": 250.4357765697911,
+    "total_pnl": 250.4357765697911,
+    "quarter_stats": {
+      "2026-04": {
+        "trades": 1,
+        "wins": 1,
+        "pnl": 250.4357765697911,
+        "sectors": "",
+        "eligible": 5
+      }
+    },
+    "by_ticker": {
+      "AMZN": {
+        "trades": 1,
+        "wins": 1,
+        "wr": 100.0,
+        "total_pnl": 250.4357765697911
+      }
+    }
+  }
+]
