@@ -112,10 +112,25 @@ The 2-year sample added **one OIL_SPIKE day that completely flips the signal**:
 |------|-----|-----|-----|--------|----------|
 | 2025-04-09 | +9.48% | +9.89% | +8.89% | **+11.18%** | -1.43% |
 
-This is the day **Trump paused reciprocal tariffs for 90 days**, triggering a massive relief rally — everything green, oil +9% AND SPY +11% together. It inverts the OIL_SPIKE thesis because the oil spike wasn't geopolitical risk-off — it was pure risk-on pricing out deflationary tariff fears.
+This is the day **Trump paused reciprocal tariffs for 90 days** ("Liberation Day"), triggering a massive relief rally — everything green, oil +9% AND SPY +11% AND XLE +10% AND BNO +9% together. It inverts the OIL_SPIKE thesis because the oil spike wasn't geopolitical risk-off — it was pure risk-on pricing out deflationary tariff fears. Demand expectations re-priced up, not a supply shock.
 
 Remove that one day, and OIL_SPIKE reverts to the 1-year pattern:
 - 2 days, 0% WR, avg SPY -0.55%
+
+### Proposed fix: "Not-a-relief-rally" filter
+
+The core insight from the outlier is that **oil spikes alone are ambiguous** — you need equity/energy co-movement to disambiguate:
+
+| Pattern | Interpretation | What it actually is |
+|---------|---------------|---------------------|
+| Oil ↑ + SPY ↓ + XLE ↑ | ✅ Classic geopolitical risk-off | What we want to catch (Hormuz, tanker attacks) |
+| Oil ↑ + SPY ↑ + XLE ↑ | ❌ Relief rally / demand re-pricing | Liberation Day, trade deal announcements, recession-off |
+| Oil ↑ + SPY ↓ + XLE ↓ | ❌ Stagflation fear | Bad data day (oil cost-push) |
+| Oil ↓ + SPY ↑ + XLE ↓ | Deflationary bullish | OIL_CRASH rally pattern |
+
+**Refined classification**: `OIL_SPIKE_RISKOFF` requires **USO +4%+ AND SPY red AND XLE not leading the market up**. This would have cleanly excluded April 9, 2025.
+
+The pure `OIL_SPIKE` by USO alone is not the signal — it's just the trigger condition. The risk-off classification requires confirmation from the equity side.
 
 ### The OIL_UP_MILD Signal
 
