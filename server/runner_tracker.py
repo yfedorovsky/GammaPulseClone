@@ -109,6 +109,7 @@ def init_runner_db() -> None:
             ("entry_path", "ALTER TABLE runner_tracker ADD COLUMN entry_path TEXT DEFAULT 'SWING'"),
             ("runner_shape", "ALTER TABLE runner_tracker ADD COLUMN runner_shape TEXT"),
             ("adr_at_entry", "ALTER TABLE runner_tracker ADD COLUMN adr_at_entry REAL"),
+            ("vix_regime_at_entry", "ALTER TABLE runner_tracker ADD COLUMN vix_regime_at_entry TEXT"),
         ]:
             try:
                 c.execute(ddl)
@@ -383,6 +384,28 @@ def _compute_runner_score(runner: dict) -> float:
     else:
         score += 1
 
+    # 11. VIX regime modifier (additive, adjusts base /20 score)
+    # Backtest: BULL_COMPRESS=80%WR, ELEVATED_COMP=87%WR, RISING=13%WR.
+    # Rewards entering a runner on days where broad tape supports longs.
+    regime = runner.get("vix_regime_at_entry")
+    if regime == "VIX_BULL_COMPRESS":
+        score += 2
+    elif regime == "VIX_ELEVATED_COMP":
+        score += 2  # Actually highest WR but same bonus to avoid over-weighting
+    elif regime == "VIX_LOW_FLAT":
+        score += 0  # neutral
+    elif regime == "VIX_ELEVATED_FLAT":
+        score -= 1
+    elif regime == "VIX_LOW_RISING":
+        score -= 2
+    elif regime == "VIX_HIGH":
+        score -= 1
+    elif regime == "VIX_SPIKE":
+        score -= 3
+    # else UNKNOWN / None — no adjustment
+
+    # Cap score at [0, 20]
+    score = max(0.0, min(20.0, score))
     return round(score, 1)
 
 
@@ -660,7 +683,7 @@ def _persist(runner: dict) -> None:
         if row:
             c.execute("""UPDATE runner_tracker SET
                 state=?, swing_score=?, rts_score=?, ivp=?, dist_to_high=?,
-                runner_shape=?, adr_at_entry=?,
+                runner_shape=?, adr_at_entry=?, vix_regime_at_entry=?,
                 d1_date=?, d1_open=?, d1_high=?, d1_low=?, d1_close=?,
                 d1_volume=?, d1_rvol=?, d1_gain_pct=?,
                 d2_date=?, d2_open=?, d2_high=?, d2_low=?, d2_close=?,
@@ -673,6 +696,7 @@ def _persist(runner: dict) -> None:
                 runner.get("state"), runner.get("swing_score"), runner.get("rts_score"),
                 runner.get("ivp"), runner.get("dist_to_high"),
                 runner.get("runner_shape"), runner.get("adr_at_entry"),
+                runner.get("vix_regime_at_entry"),
                 runner.get("d1_date"), runner.get("d1_open"), runner.get("d1_high"),
                 runner.get("d1_low"), runner.get("d1_close"),
                 runner.get("d1_volume"), runner.get("d1_rvol"), runner.get("d1_gain_pct"),
@@ -690,15 +714,16 @@ def _persist(runner: dict) -> None:
         else:
             c.execute("""INSERT INTO runner_tracker
                 (ticker, state, entry_ts, entry_date, entry_path,
-                 runner_shape, adr_at_entry,
+                 runner_shape, adr_at_entry, vix_regime_at_entry,
                  swing_score, rts_score, ivp, dist_to_high,
                  d1_date, d1_open, d1_high, d1_low, d1_close,
                  d1_volume, d1_rvol, d1_gain_pct,
                  total_gain_pct, consecutive_2pct_days, runner_score)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
                 runner["ticker"], runner["state"], runner["entry_ts"], runner["entry_date"],
                 runner.get("entry_path", "SWING"),
                 runner.get("runner_shape"), runner.get("adr_at_entry"),
+                runner.get("vix_regime_at_entry"),
                 runner.get("swing_score"), runner.get("rts_score"),
                 runner.get("ivp"), runner.get("dist_to_high"),
                 runner.get("d1_date"), runner.get("d1_open"), runner.get("d1_high"),
@@ -745,6 +770,16 @@ async def update_runners() -> None:
 
     watchlist = {r["ticker"]: r for r in results if r.get("_in_watchlist")}
     snapshot = await cache.snapshot()
+
+    # Fetch VIX regime once per cycle for Day 1 entry tagging
+    # (backtest-validated: BULL_COMPRESS=80%WR, ELEVATED_COMP=87%WR, RISING=13%WR)
+    vix_regime_label = None
+    try:
+        from .breadth import get_vix_intraday_regime
+        vix_regime = await get_vix_intraday_regime()
+        vix_regime_label = vix_regime.get("regime")
+    except Exception:
+        pass
 
     # ── Day finalization (runs once at first cycle of new trading day) ─
     if date_changed:
@@ -857,12 +892,14 @@ async def update_runners() -> None:
             "total_gain_pct": round(pct_change, 2),
             "consecutive_2pct_days": 1,
             "_current_date": today,
+            "vix_regime_at_entry": vix_regime_label,
         }
         runner["runner_score"] = _compute_runner_score(runner)
         _runners[ticker] = runner
         _persist(runner)
         await _alert_transition(ticker, "DAY1_BREAKOUT", runner, state=state)
-        print(f"[runner_tracker] DAY1_BREAKOUT [SWING/{shape}]: {ticker} +{pct_change:.1f}% rvol={rvol:.1f}x score={runner['runner_score']:.0f}/20")
+        regime_tag = f" vix={vix_regime_label}" if vix_regime_label else ""
+        print(f"[runner_tracker] DAY1_BREAKOUT [SWING/{shape}]: {ticker} +{pct_change:.1f}% rvol={rvol:.1f}x score={runner['runner_score']:.0f}/20{regime_tag}")
 
     # ── Reclaim path: catch V-bottom mega-cap reclaims that the swing
     # scanner's uptrend-continuation gates filter out (e.g., MSFT Apr 13). ──
@@ -885,6 +922,7 @@ async def update_runners() -> None:
             continue
         reclaim_runner = _check_reclaim_entry(ticker, state, today)
         if reclaim_runner:
+            reclaim_runner["vix_regime_at_entry"] = vix_regime_label
             reclaim_runner["runner_score"] = _compute_runner_score(reclaim_runner)
             _runners[ticker] = reclaim_runner
             _persist(reclaim_runner)

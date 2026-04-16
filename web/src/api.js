@@ -20,6 +20,7 @@ export const api = {
   quotes: (tickers) => json('POST', '/api/quotes', { tickers }),
   scanner: () => json('GET', '/api/scanner'),
   swingScanner: (mode = 'standard') => json('GET', `/api/swing-scanner?mode=${mode}`),
+  vixRegime: () => json('GET', '/api/vix-regime'),
   subscribe: (tickers) => json('POST', '/api/stream/subscribe', { tickers }),
   logSignal: (payload) => json('POST', '/api/signals/log', payload),
   history: (ticker, limit = 500) =>

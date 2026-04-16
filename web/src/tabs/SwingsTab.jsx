@@ -18,6 +18,17 @@ const RUNNER_STATES = {
   DAY3_EXPLOSION: { color: '#ff5656', label: 'DAY 3' },
 };
 
+// Backtest-validated WR per regime (365d, 251 trading days)
+const VIX_REGIMES = {
+  VIX_BULL_COMPRESS:  { color: '#10dc9a', label: 'BULL COMPRESS', wr: 80 },
+  VIX_ELEVATED_COMP:  { color: '#10dc9a', label: 'VOL NORMALIZING', wr: 87 },
+  VIX_LOW_FLAT:       { color: '#8a93a8', label: 'VIX FLAT', wr: 46 },
+  VIX_ELEVATED_FLAT:  { color: '#ff9800', label: 'VIX STUCK', wr: 29 },
+  VIX_LOW_RISING:     { color: '#ff5656', label: 'VIX RISING', wr: 13 },
+  VIX_HIGH:           { color: '#ff9800', label: 'VIX HIGH', wr: 58 },
+  VIX_SPIKE:          { color: '#ff5656', label: 'VIX SPIKE', wr: 20 },
+};
+
 const REFRESH_MS = 30_000;
 
 function TagBadge({ tag }) {
@@ -55,6 +66,7 @@ function SectorRankBar({ ranks }) {
 
 export default function SwingsTab() {
   const [data, setData] = useState(null);
+  const [vixRegime, setVixRegime] = useState(null);
   const [mode, setMode] = useState('standard');
   const [loading, setLoading] = useState(true);
   const [sortCol, setSortCol] = useState('swing_score');
@@ -62,8 +74,12 @@ export default function SwingsTab() {
 
   const load = useCallback(async () => {
     try {
-      const d = await api.swingScanner(mode);
+      const [d, v] = await Promise.all([
+        api.swingScanner(mode),
+        api.vixRegime().catch(() => null),
+      ]);
       setData(d);
+      if (v) setVixRegime(v);
     } catch (e) {
       console.error('[SwingsTab] load error:', e);
     } finally {
@@ -124,6 +140,24 @@ export default function SwingsTab() {
             </button>
           ))}
         </div>
+
+        {/* VIX regime badge */}
+        {vixRegime && vixRegime.regime && VIX_REGIMES[vixRegime.regime] && (() => {
+          const r = VIX_REGIMES[vixRegime.regime];
+          return (
+            <span
+              title={vixRegime.label || ''}
+              style={{
+                fontSize: 10, fontWeight: 800, padding: '4px 10px', borderRadius: 4,
+                background: `${r.color}22`, color: r.color, border: `1px solid ${r.color}55`,
+                fontFamily: 'var(--mono)', whiteSpace: 'nowrap', marginLeft: 8,
+              }}
+            >
+              {r.label} · VIX {vixRegime.vix_current?.toFixed(1)}{' '}
+              ({vixRegime.change_pct >= 0 ? '+' : ''}{vixRegime.change_pct?.toFixed(1)}%) · {r.wr}% WR
+            </span>
+          );
+        })()}
 
         {/* Stats */}
         <span style={{ fontSize: 10, color: 'var(--text-3)', marginLeft: 'auto', fontFamily: 'var(--mono)' }}>

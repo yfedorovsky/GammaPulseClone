@@ -302,12 +302,15 @@ async def _check_scalp_alerts() -> list[dict[str, Any]]:
     global _VIX_CACHE_TS
     if time.time() - _VIX_CACHE_TS > _VIX_CACHE_TTL:
         try:
-            from .breadth import get_vix_term_structure
+            from .breadth import get_vix_term_structure, get_vix_intraday_regime
             vix_ts = await get_vix_term_structure()
+            vix_regime_data = await get_vix_intraday_regime()
             vix_level = vix_ts.get("vix", 0)
             _current_vix.update({
                 "level": vix_level,
                 "structure": vix_ts.get("structure", ""),
+                "regime": vix_regime_data.get("regime", "UNKNOWN"),
+                "bull_bias": vix_regime_data.get("bull_bias", False),
             })
             _VIX_CACHE_TS = time.time()
         except Exception:
@@ -497,9 +500,14 @@ async def _check_scalp_alerts() -> list[dict[str, Any]]:
         # ── SELL THE POP: price hit ceiling and rejecting ──────────
         # 4-LLM consensus: only fire when trend_mode == NORMAL
         # "Selling pop into a trend day is how 0DTE traders donate money"
+        # VIX regime gate (added Apr 16): skip on bull compress days —
+        # the backtest shows these are 80%+ bull tape, fading is suicide.
+        _vix_regime = _current_vix.get("regime", "UNKNOWN")
+        _skip_sell_pop_regime = _vix_regime in ("VIX_BULL_COMPRESS", "VIX_ELEVATED_COMP")
         if (ceiling and ceiling > spot and prev_spot
             and prev_spot >= ceiling * 0.997 and spot < ceiling * 0.997
-            and trend_mode == "NORMAL"):
+            and trend_mode == "NORMAL"
+            and not _skip_sell_pop_regime):
             if _can_alert(ticker, "SELL_POP"):
                 contract = _suggest_contract(ticker, spot, "PUTS")
                 alerts.append({
