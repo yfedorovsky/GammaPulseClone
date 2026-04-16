@@ -72,6 +72,38 @@ class TradierClient:
                         pass
         return out
 
+    async def quotes_full(self, symbols: list[str]) -> dict[str, dict[str, Any]]:
+        """Return rich quote data: last, volume, average_volume, high, low, etc."""
+        if not symbols:
+            return {}
+        client = await self._get_client()
+        out: dict[str, dict[str, Any]] = {}
+        for i in range(0, len(symbols), 50):
+            batch = symbols[i : i + 50]
+            r = await client.get(
+                "/markets/quotes",
+                params={"symbols": ",".join(batch), "greeks": "false"},
+            )
+            if r.status_code != 200:
+                continue
+            data = r.json().get("quotes") or {}
+            quotes = data.get("quote") or []
+            if isinstance(quotes, dict):
+                quotes = [quotes]
+            for q in quotes:
+                sym = q.get("symbol")
+                if sym:
+                    out[sym] = {
+                        "last": q.get("last") or q.get("close") or q.get("prevclose"),
+                        "volume": q.get("volume", 0),
+                        "average_volume": q.get("average_volume", 0),
+                        "open": q.get("open"),
+                        "high": q.get("high"),
+                        "low": q.get("low"),
+                        "prevclose": q.get("prevclose"),
+                    }
+        return out
+
     async def expirations(self, symbol: str) -> list[str]:
         client = await self._get_client()
         r = await client.get(

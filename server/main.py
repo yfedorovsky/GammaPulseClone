@@ -60,6 +60,8 @@ async def lifespan(app: FastAPI):
     init_paper_db()
     init_discipline_db()
     init_breadth_db()
+    from .runner_tracker import init_runner_db
+    init_runner_db()
     await db.start()  # Single-writer queue for SQLite (prevents SQLITE_BUSY)
     await streamer.ensure_running()
     # Compute quarterly basket on startup (PIT sector selection)
@@ -1067,6 +1069,92 @@ async def tickers_remove(req: TickerModReq):
                 removed.append(sym)
                 break
     return {"removed": removed, "total": len(all_tickers())}
+
+
+@app.get("/api/swing-scanner")
+async def swing_scanner_route(mode: str = "standard"):
+    """Swing watchlist scanner — separate from GEX/SOE signals.
+
+    Modes: 'standard' (7-14 DTE, 1-5 day holds) or 'wifey' (14-30 DTE, longer holds).
+    """
+    from .swing_scanner import compute_swing_watchlist
+    from .runner_tracker import get_runner_for_ticker
+    results, meta = await compute_swing_watchlist(mode=mode)
+    # Annotate with runner tracker state
+    for r in results:
+        runner = get_runner_for_ticker(r["ticker"])
+        if runner:
+            r["runner_state"] = runner.get("state")
+            r["runner_score"] = runner.get("runner_score")
+            r["runner_day"] = runner.get("consecutive_2pct_days", 0)
+            r["runner_total_gain"] = runner.get("total_gain_pct")
+        else:
+            r["runner_state"] = None
+    return {
+        "tickers": results,
+        **meta,
+    }
+
+
+@app.get("/api/runners")
+async def runners_route(status: str = "active"):
+    """Runner tracker — multi-day explosive breakout tracking.
+
+    status: 'active' (in-progress runners) or 'history' (completed).
+    """
+    from .runner_tracker import get_active_runners, get_recent_runners
+    if status == "history":
+        return {"runners": get_recent_runners(limit=50)}
+    return {"runners": get_active_runners()}
+
+
+def _debug_atm_contracts(raw: dict, spot: float) -> dict:
+    """Show ATM call+put for each expiration with quality gate results."""
+    import datetime
+    today = datetime.date.today()
+    result = {}
+    for exp, contracts in raw.items():
+        dte = (datetime.date.fromisoformat(exp) - today).days
+        calls = [c for c in contracts if (c.get("option_type") or "").lower() == "call" and c.get("strike", 0) >= spot]
+        puts = [c for c in contracts if (c.get("option_type") or "").lower() == "put" and c.get("strike", 0) <= spot]
+        atm_call = min(calls, key=lambda c: abs(c["strike"] - spot)) if calls else None
+        atm_put = min(puts, key=lambda c: abs(c["strike"] - spot)) if puts else None
+        for label, c in [("call", atm_call), ("put", atm_put)]:
+            if c:
+                g = c.get("greeks") or {}
+                bid, ask = c.get("bid", 0) or 0, c.get("ask", 0) or 0
+                mid = (bid + ask) / 2 if (bid + ask) > 0 else 0
+                spread_pct = ((ask - bid) / mid * 100) if mid > 0 else 999
+                delta = abs(g.get("delta", 0) or 0)
+                oi = c.get("open_interest", 0) or 0
+                # Quality gate check
+                gates = []
+                if spread_pct > 10: gates.append(f"spread={spread_pct:.0f}%>10%")
+                if oi < 500: gates.append(f"OI={oi}<500")
+                if delta < 0.25 or delta > 0.60: gates.append(f"delta={delta:.2f}")
+                result[f"{exp} DTE={dte} {label}"] = {
+                    "strike": c["strike"], "bid": bid, "ask": ask, "OI": oi,
+                    "delta": round(delta, 3), "spread_pct": round(spread_pct, 1),
+                    "PASS": len(gates) == 0, "fails": gates or "ALL_PASS",
+                }
+    return result
+
+
+@app.get("/api/debug/raw-contracts/{ticker}")
+async def debug_raw_contracts(ticker: str):
+    """DEBUG: Check if _raw_contracts is in cache for a ticker."""
+    state = await cache.get(ticker.upper())
+    if not state:
+        return {"error": f"{ticker} not in cache"}
+    raw = state.get("_raw_contracts", {})
+    exps = state.get("exps", [])
+    return {
+        "ticker": ticker.upper(),
+        "exps": exps,
+        "raw_contracts_keys": list(raw.keys()),
+        "raw_contracts_total": sum(len(v) for v in raw.values()),
+        "sample_atm": _debug_atm_contracts(raw, state.get("actual_spot") or state.get("_spot") or 0),
+    }
 
 
 # --- News ---

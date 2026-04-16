@@ -19,6 +19,7 @@ export const api = {
   confluence: () => json('GET', '/api/confluence'),
   quotes: (tickers) => json('POST', '/api/quotes', { tickers }),
   scanner: () => json('GET', '/api/scanner'),
+  swingScanner: (mode = 'standard') => json('GET', `/api/swing-scanner?mode=${mode}`),
   subscribe: (tickers) => json('POST', '/api/stream/subscribe', { tickers }),
   logSignal: (payload) => json('POST', '/api/signals/log', payload),
   history: (ticker, limit = 500) =>
@@ -48,6 +49,7 @@ export const api = {
   sectorDetail: (sector) => json('GET', `/api/sectors/${encodeURIComponent(sector)}`),
   breadth: () => json('GET', '/api/breadth'),
   rts: (direction = 'BULL', limit = 50) => json('GET', `/api/rts?direction=${direction}&limit=${limit}`),
+  runners: (status = 'active') => json('GET', `/api/runners?status=${status}`),
   get: (url) => json('GET', url),
 };
 

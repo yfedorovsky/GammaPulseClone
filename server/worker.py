@@ -65,7 +65,7 @@ def _chain_fresh(ticker: str, exp: str) -> list[dict] | None:
 
 
 async def _fetch_chain_cached(
-    tradier: TradierClient, ticker: str, max_exp: int = 6
+    tradier: TradierClient, ticker: str, max_exp: int = 12
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Fetch chain with aggressive caching. Only hits API for stale data."""
     # Expirations: cached for 1 hour
@@ -390,6 +390,9 @@ async def _compute_one(
         if exp:
             by_exp[exp].append(c)
 
+    if not by_exp and contracts:
+        print(f"[worker] WARNING: {ticker} has {len(contracts)} contracts but 0 grouped by exp — missing expiration_date field?")
+
     exp_data: dict[str, dict[str, Any]] = {}
     for exp, batch in by_exp.items():
         exp_data[exp] = compute_exp_data(batch, spot)
@@ -469,8 +472,9 @@ async def _scan_cycle(
     source_label = "tradier+massive" if massive else "tradier"
     await cache.set_status(f"Running Cycle... [{source_label}] 0/{len(targets)}")
 
-    # Batch spot quotes (1 API call per 50 tickers — very cheap)
-    quotes = await tradier.quotes(targets)
+    # Batch spot quotes with volume data (1 API call per 50 tickers — very cheap)
+    quotes_full = await tradier.quotes_full(targets)
+    quotes = {sym: q["last"] for sym, q in quotes_full.items() if q.get("last")}
 
     # Process with concurrency control. Thanks to the chain cache, repeat
     # cycles only fetch chains that expired from cache (2min TTL). First
@@ -499,10 +503,20 @@ async def _scan_cycle(
         async with sem:
             try:
                 state = await _compute_one(
-                    tradier, t, spot, max_exp=6, massive=_use_massive(t)
+                    tradier, t, spot,
+                        max_exp=12 if tier_of(t) <= 2 else 6,
+                        massive=_use_massive(t)
                 )
                 if state is None:
                     return
+                # Inject OHLCV data from quotes_full (swing scanner + runner tracker)
+                qf = quotes_full.get(t) or {}
+                state["_today_volume"] = qf.get("volume", 0)
+                state["_avg_volume"] = qf.get("average_volume", 0)
+                state["_today_open"] = qf.get("open")
+                state["_today_high"] = qf.get("high")
+                state["_today_low"] = qf.get("low")
+                state["_prevclose"] = qf.get("prevclose")
                 await cache.put(t, state)
                 # Store Mir signal in cache (used by signal engine)
                 if state.get("_mir_signal"):
@@ -526,6 +540,14 @@ async def _scan_cycle(
             await asyncio.sleep(3)
 
     await cache.mark_cycle_end()
+
+    # Update runner tracker (multi-day breakout state machine)
+    try:
+        from .runner_tracker import update_runners
+        await update_runners()
+    except Exception as e:
+        print(f"[runner_tracker] Error: {e!r}")
+
     await cache.set_status("Idle (waiting for next cycle)")
 
 
