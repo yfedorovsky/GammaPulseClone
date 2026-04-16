@@ -403,16 +403,35 @@ async def update_positions() -> None:
         for row in positions:
             pos = dict(row)
             ticker = pos["ticker"]
-            state = snapshot.get(ticker)
-            if not state:
-                continue
+            state = snapshot.get(ticker) or {}
 
-            spot = state.get("actual_spot") or state.get("_spot") or 0
-            if not spot:
-                continue
+            # Exit rules MUST fire even when we have no live data — dropped ticker,
+            # after-hours, stale spot, whatever. An expired 0DTE is still expired.
+            # Fall back to last-known current_spot stored on the position row.
+            spot = state.get("actual_spot") or state.get("_spot") or pos.get("current_spot") or pos.get("entry_spot") or 0
+
+            # Force-close expired contracts unconditionally (highest priority,
+            # no data needed). Previously gated behind `if not state: continue`
+            # so positions on delisted/dropped tickers sat open forever.
+            import datetime as _dt_early
+            exp_str = pos.get("expiration")
+            if exp_str:
+                try:
+                    _exp_early = _dt_early.date.fromisoformat(exp_str)
+                    if _dt_early.date.today() > _exp_early:
+                        close_position(pos["id"], exit_price=0.01, reason="EXPIRED",
+                                       exit_bid=0, exit_ask=0)
+                        continue
+                except (ValueError, TypeError):
+                    pass
+
+            # If we still have no spot after all fallbacks, we can't evaluate
+            # spot-based target/stop rules, but we can't skip entirely — we still
+            # need the 0DTE EOD and WORTHLESS/FLOOR/LOSS_CAP rules below.
+            # Downstream code handles spot=0 gracefully (no target/stop hits).
 
             is_bull = pos["direction"] == "BULL"
-            entry_spot = pos["entry_spot"] or spot
+            entry_spot = pos["entry_spot"] or spot or 0
             entry_price = pos["entry_price"]
 
             # Estimate current option price from cached chain or delta approx
@@ -438,8 +457,8 @@ async def update_positions() -> None:
             if cur_bid and cur_bid > 0:
                 # GROK RULE: fill at the bid on exit, not mid. No fantasy fills.
                 estimated_price = round(cur_bid, 4)
-            else:
-                # Fallback: delta approximation
+            elif spot and entry_spot:
+                # Fallback: delta approximation — only when we have both spots
                 if state.get("exp_data"):
                     macro = state["exp_data"].get("MACRO (ALL 200D)", {})
                     for s in (macro.get("strikes") or []):
@@ -450,12 +469,22 @@ async def update_positions() -> None:
                 if not is_bull:
                     spot_move = -spot_move
                 estimated_price = max(0.01, entry_price + spot_move * delta)
+            else:
+                # No bid AND no valid spot — keep prior current_price (don't
+                # guess with spot=0 which would fake a massive bearish move
+                # against every bull position and trigger false LOSS_CAP).
+                estimated_price = pos.get("current_price") or entry_price
 
             unrealized = round((estimated_price - entry_price) * pos["contracts"] * 100, 2)
 
-            # Track min/max spot
-            min_spot = min(pos.get("min_spot") or spot, spot)
-            max_spot = max(pos.get("max_spot") or spot, spot)
+            # Track min/max spot — only update when we have a valid spot
+            # (avoid recording 0 as min_spot when after-hours/stale data).
+            if spot and spot > 0:
+                min_spot = min(pos.get("min_spot") or spot, spot)
+                max_spot = max(pos.get("max_spot") or spot, spot)
+            else:
+                min_spot = pos.get("min_spot")
+                max_spot = pos.get("max_spot")
 
             # Track option price MFE/MAE
             max_opt = max(pos.get("max_option_price") or estimated_price, estimated_price)
@@ -535,7 +564,9 @@ async def update_positions() -> None:
                 except Exception:
                     pass
 
-            # Update position state
+            # Update position state — preserve current_spot when we have no
+            # fresh spot (don't overwrite last-known with 0).
+            saved_spot = spot if (spot and spot > 0) else pos.get("current_spot")
             c.execute(
                 """UPDATE paper_positions SET
                     current_spot = ?, current_price = ?, unrealized_pnl = ?,
@@ -543,7 +574,7 @@ async def update_positions() -> None:
                     max_option_price = ?, min_option_price = ?,
                     mfe_pct = ?, mae_pct = ?, partial_reachable = ?
                 WHERE id = ?""",
-                (spot, round(estimated_price, 4), unrealized, min_spot, max_spot,
+                (saved_spot, round(estimated_price, 4), unrealized, min_spot, max_spot,
                  max_opt, min_opt, mfe_pct, mae_pct, partial_reachable, pos["id"]),
             )
 
@@ -557,19 +588,27 @@ async def update_positions() -> None:
                 pass
             dte_today = (exp_date - datetime.date.today()).days if exp_date else 99
 
+            # Spot-based rules (target/stop) require a valid spot. If we fell
+            # through here with spot=0 (after-hours, stale data, dropped ticker),
+            # SKIP target/stop checks to avoid false triggers (e.g. `spot <= stop`
+            # evaluating True when spot=0 would auto-close every bull position).
+            # The time-based rules (0DTE EOD, WORTHLESS, LOSS_CAP, FLOOR, EXPIRED)
+            # below do NOT require spot and will still fire.
+            spot_valid = spot and spot > 0
+
             # 1. Target hit (spot)
-            if target and is_bull and spot >= target:
+            if spot_valid and target and is_bull and spot >= target:
                 close_position(pos["id"], exit_price=estimated_price, reason="TARGET_HIT",
                                exit_bid=cur_bid, exit_ask=cur_ask)
-            elif target and not is_bull and spot <= target:
+            elif spot_valid and target and not is_bull and spot <= target:
                 close_position(pos["id"], exit_price=estimated_price, reason="TARGET_HIT",
                                exit_bid=cur_bid, exit_ask=cur_ask)
             # 2. Stop hit (spot)
-            elif stop and is_bull and spot <= stop:
+            elif spot_valid and stop and is_bull and spot <= stop:
                 reason = "STOP_HIT" if not stop_moved else "STOP_BE"
                 close_position(pos["id"], exit_price=estimated_price, reason=reason,
                                exit_bid=cur_bid, exit_ask=cur_ask)
-            elif stop and not is_bull and spot >= stop:
+            elif spot_valid and stop and not is_bull and spot >= stop:
                 reason = "STOP_HIT" if not stop_moved else "STOP_BE"
                 close_position(pos["id"], exit_price=estimated_price, reason=reason,
                                exit_bid=cur_bid, exit_ask=cur_ask)
