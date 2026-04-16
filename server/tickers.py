@@ -54,6 +54,8 @@ TIER_3 = [
     "ASTS", "RKLB",
     # AI / Momentum
     "NBIS", "OKLO", "IREN",
+    # Quantum (added 2026-04-16 — sector rotation play, IONQ is most liquid)
+    "IONQ", "RGTI",
     # EVs & clean energy
     "FSLR", "ENPH", "SEDG", "RUN", "PLUG", "CHPT", "BLNK",
     # Biotech / pharma

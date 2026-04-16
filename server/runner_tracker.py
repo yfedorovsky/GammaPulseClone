@@ -33,6 +33,9 @@ RECLAIM_EXTRA_TICKERS: set[str] = {
     "ASTS",   # AST SpaceMobile
     # Nuclear / energy (Mir 2026 theme)
     "OKLO",   # small modular reactors
+    # Quantum (added 2026-04-16 — sector rip: ARQQ +9%, QBTS +5%, IONQ +3.7%)
+    "IONQ",   # IonQ — most liquid quantum name
+    "RGTI",   # Rigetti Computing
 }
 
 # ── Schema ────────────────────────────────────────────────────────────

@@ -1446,7 +1446,11 @@ async def scan_setups() -> list[dict[str, Any]]:
     import datetime
 
     now = datetime.datetime.now()
-    if now.weekday() >= 5 or now.hour < 9 or now.hour > 16:
+    if now.weekday() >= 5:
+        return []
+    # Market hours only: 9:30 AM - 4:15 PM (pre-market spot is stale)
+    mins = now.hour * 60 + now.minute
+    if mins < 570 or mins > 975:
         return []
     # Skip Mondays (backtest: worse performance)
     is_monday = now.weekday() == 0
