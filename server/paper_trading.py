@@ -135,6 +135,7 @@ def init_paper_db() -> None:
             ("partial_taken", "INTEGER"),     # 1 if +25% partial exit was executed
             ("partial_pnl", "REAL"),          # PnL from the partial exit (half contracts)
             ("stop_moved_to_be", "INTEGER"),  # 1 if stop was moved to breakeven after partial
+            ("opt_loss_floor", "REAL"),       # per-position hard option-price floor (user set)
         ]:
             try:
                 c.execute(f"ALTER TABLE paper_positions ADD COLUMN {col} {typ}")
@@ -590,6 +591,13 @@ async def update_positions() -> None:
             elif (not partial_taken and entry_price > 0 and estimated_price > 0
                   and estimated_price < entry_price * 0.20):
                 close_position(pos["id"], exit_price=estimated_price, reason="OPT_LOSS_CAP",
+                               exit_bid=cur_bid, exit_ask=cur_ask)
+            # 5b. Per-position manual hard cap (stored in opt_loss_floor column)
+            #     When user sets a specific floor for a position ("hold with 90% cap"),
+            #     close when option price drops below it regardless of other rules.
+            elif (pos.get("opt_loss_floor") and estimated_price > 0
+                  and estimated_price < pos["opt_loss_floor"]):
+                close_position(pos["id"], exit_price=estimated_price, reason="OPT_FLOOR",
                                exit_bid=cur_bid, exit_ask=cur_ask)
             # 6. Past expiration → force close at $0.01
             elif exp_date and datetime.date.today() > exp_date:
