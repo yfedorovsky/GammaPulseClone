@@ -573,24 +573,37 @@ async def update_positions() -> None:
                 reason = "STOP_HIT" if not stop_moved else "STOP_BE"
                 close_position(pos["id"], exit_price=estimated_price, reason=reason,
                                exit_bid=cur_bid, exit_ask=cur_ask)
-            # 3. 0DTE EOD sweep — close at 3:55 PM on expiration day regardless
-            #    of whether spot hit the stop. Options with <5min left are
-            #    effectively frozen at their current value.
-            elif dte_today == 0 and now_dt.hour >= 15 and now_dt.minute >= 55:
+            # 3. 0DTE EOD sweep — close expired/expiring-today contracts any time
+            #    between 3:55 PM and midnight. Options with <5min left before close
+            #    and any time AFTER close are effectively frozen/expired.
+            #    Previous bug: `hour >= 15 AND minute >= 55` only fired 3:55-3:59 PM.
+            #    After 4:00 PM, minute resets to 0-54 causing the rule to silently skip.
+            elif dte_today == 0 and ((now_dt.hour == 15 and now_dt.minute >= 55) or now_dt.hour >= 16):
                 close_price = cur_bid if cur_bid and cur_bid > 0 else 0.01
                 close_position(pos["id"], exit_price=close_price, reason="0DTE_EOD",
                                exit_bid=cur_bid or 0, exit_ask=cur_ask or 0)
-            # 4. Worthless option (bid ≤ $0.02, DTE ≤ 1) — no recovery possible
-            elif dte_today <= 1 and cur_bid is not None and cur_bid <= 0.02:
+            # 4. Worthless option — any of:
+            #    a) bid ≤ $0.02 (explicit zero bid) AND DTE ≤ 1
+            #    b) estimated_price ≤ $0.02 AND DTE ≤ 1 (bid lookup failed, but delta
+            #       fallback says option is worthless)
+            #    Previous bug: required `cur_bid is not None` so failed bid-lookups
+            #    let worthless positions sit open.
+            elif dte_today <= 1 and (
+                (cur_bid is not None and cur_bid <= 0.02)
+                or estimated_price <= 0.02
+            ):
                 close_position(pos["id"], exit_price=0.01, reason="WORTHLESS",
                                exit_bid=0, exit_ask=cur_ask or 0.01)
             # 5. Hard option loss cap — if option down 80%+ from entry, cut the bleeder.
             #    Prevents pre-earnings or IV-crush positions from death-spiraling to $0
             #    while waiting for spot-based stop that may never trigger.
             #    Skip if partial was taken (position is on house money via breakeven stop).
-            elif (not partial_taken and entry_price > 0 and estimated_price > 0
+            #    Previous bug: `estimated_price > 0` (strict) meant a $0 option never
+            #    triggered this rule. Now closes at $0.01 minimum.
+            elif (not partial_taken and entry_price > 0
                   and estimated_price < entry_price * 0.20):
-                close_position(pos["id"], exit_price=estimated_price, reason="OPT_LOSS_CAP",
+                close_at = max(estimated_price, 0.01)
+                close_position(pos["id"], exit_price=close_at, reason="OPT_LOSS_CAP",
                                exit_bid=cur_bid, exit_ask=cur_ask)
             # 5b. Per-position manual hard cap (stored in opt_loss_floor column)
             #     When user sets a specific floor for a position ("hold with 90% cap"),
