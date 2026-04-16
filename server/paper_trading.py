@@ -546,13 +546,24 @@ async def update_positions() -> None:
                  max_opt, min_opt, mfe_pct, mae_pct, partial_reachable, pos["id"]),
             )
 
-            # Check exit conditions
+            # ── Check exit conditions (priority order) ────────────────
+            import datetime
+            now_dt = datetime.datetime.now()
+            exp_date = None
+            try:
+                exp_date = datetime.date.fromisoformat(pos["expiration"])
+            except (ValueError, TypeError):
+                pass
+            dte_today = (exp_date - datetime.date.today()).days if exp_date else 99
+
+            # 1. Target hit (spot)
             if target and is_bull and spot >= target:
                 close_position(pos["id"], exit_price=estimated_price, reason="TARGET_HIT",
                                exit_bid=cur_bid, exit_ask=cur_ask)
             elif target and not is_bull and spot <= target:
                 close_position(pos["id"], exit_price=estimated_price, reason="TARGET_HIT",
                                exit_bid=cur_bid, exit_ask=cur_ask)
+            # 2. Stop hit (spot)
             elif stop and is_bull and spot <= stop:
                 reason = "STOP_HIT" if not stop_moved else "STOP_BE"
                 close_position(pos["id"], exit_price=estimated_price, reason=reason,
@@ -561,16 +572,29 @@ async def update_positions() -> None:
                 reason = "STOP_HIT" if not stop_moved else "STOP_BE"
                 close_position(pos["id"], exit_price=estimated_price, reason=reason,
                                exit_bid=cur_bid, exit_ask=cur_ask)
-            else:
-                # Check expiration
-                import datetime
-                try:
-                    exp = datetime.date.fromisoformat(pos["expiration"])
-                    if datetime.date.today() > exp:
-                        close_position(pos["id"], exit_price=0.01, reason="EXPIRED",
-                                       exit_bid=0, exit_ask=0)
-                except ValueError:
-                    pass
+            # 3. 0DTE EOD sweep — close at 3:55 PM on expiration day regardless
+            #    of whether spot hit the stop. Options with <5min left are
+            #    effectively frozen at their current value.
+            elif dte_today == 0 and now_dt.hour >= 15 and now_dt.minute >= 55:
+                close_price = cur_bid if cur_bid and cur_bid > 0 else 0.01
+                close_position(pos["id"], exit_price=close_price, reason="0DTE_EOD",
+                               exit_bid=cur_bid or 0, exit_ask=cur_ask or 0)
+            # 4. Worthless option (bid ≤ $0.02, DTE ≤ 1) — no recovery possible
+            elif dte_today <= 1 and cur_bid is not None and cur_bid <= 0.02:
+                close_position(pos["id"], exit_price=0.01, reason="WORTHLESS",
+                               exit_bid=0, exit_ask=cur_ask or 0.01)
+            # 5. Hard option loss cap — if option down 80%+ from entry, cut the bleeder.
+            #    Prevents pre-earnings or IV-crush positions from death-spiraling to $0
+            #    while waiting for spot-based stop that may never trigger.
+            #    Skip if partial was taken (position is on house money via breakeven stop).
+            elif (not partial_taken and entry_price > 0 and estimated_price > 0
+                  and estimated_price < entry_price * 0.20):
+                close_position(pos["id"], exit_price=estimated_price, reason="OPT_LOSS_CAP",
+                               exit_bid=cur_bid, exit_ask=cur_ask)
+            # 6. Past expiration → force close at $0.01
+            elif exp_date and datetime.date.today() > exp_date:
+                close_position(pos["id"], exit_price=0.01, reason="EXPIRED",
+                               exit_bid=0, exit_ask=0)
 
         # Daily equity snapshot (once per day at 4:15 PM)
         import datetime
