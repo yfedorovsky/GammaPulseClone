@@ -561,6 +561,19 @@ async def breadth_data():
     return await get_breadth_context()
 
 
+@app.get("/api/vix-regime")
+async def vix_regime():
+    """Today's VIX intraday regime classification.
+
+    Backtest-validated:
+      VIX_BULL_COMPRESS (VIX<20, -3%+ intraday) = 80% SPY WR
+      VIX_ELEVATED_COMP (VIX 20-25, declining)   = 87% SPY WR
+      VIX_LOW_RISING / VIX_SPIKE = avoid longs
+    """
+    from .breadth import get_vix_intraday_regime
+    return await get_vix_intraday_regime()
+
+
 @app.get("/api/rts")
 async def rts_rankings(direction: str = "BULL", limit: int = 50):
     """Relative Trend Strength rankings for vehicle selection."""

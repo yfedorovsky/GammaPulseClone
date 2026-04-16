@@ -420,13 +420,134 @@ async def get_breadth_context() -> dict[str, Any]:
     nymo = await get_nymo()
     namo = await get_namo()
     vix_ts = await get_vix_term_structure()
+    vix_regime = await get_vix_intraday_regime()
 
     return {
         "nymo": nymo,
         "namo": namo,
         "vix_term_structure": vix_ts,
+        "vix_intraday_regime": vix_regime,
         "breadth_score": _score_breadth(nymo, namo, vix_ts),
     }
+
+
+# ── VIX Intraday Regime Detector ──────────────────────────────────────
+# Backtest (scripts/backtest_vix_regime.py, 365d, 251 days):
+#   VIX_BULL_COMPRESS:  80.3% SPY OC win rate (VIX open<20, closes -3%+)
+#   VIX_ELEVATED_COMP:  87.5% WR (VIX 20-25 declining)
+#   VIX_LOW_RISING:     13.2% WR — avoid longs
+#   VIX_SPIKE:          20.0% WR — fade immediately
+# Baseline win rate across all days: 43.2%
+
+_VIX_REGIME_CACHE: tuple[float, dict[str, Any]] = (0, {})
+_VIX_REGIME_CACHE_TTL = 120  # 2 min — matches worker cycle
+_VIX_DAILY_OPEN_CACHE: dict[str, float] = {}  # date-str -> VIX open
+
+
+async def get_vix_intraday_regime() -> dict[str, Any]:
+    """Classify today's VIX regime using today's open vs current spot.
+
+    Returns:
+      {
+        regime: "VIX_BULL_COMPRESS" | "VIX_LOW_FLAT" | "VIX_LOW_RISING" |
+                "VIX_ELEVATED_COMP" | "VIX_ELEVATED_FLAT" | "VIX_HIGH" | "VIX_SPIKE",
+        vix_open: float,
+        vix_current: float,
+        change_pct: float,
+        bull_bias: bool,   # True if regime favors SPY longs
+        win_rate_expectation: float,  # historical backtest win rate
+        label: str,
+      }
+    """
+    global _VIX_REGIME_CACHE, _VIX_DAILY_OPEN_CACHE
+    now_ts = time.time()
+    cached_ts, cached = _VIX_REGIME_CACHE
+    if now_ts - cached_ts < _VIX_REGIME_CACHE_TTL and cached:
+        return cached
+
+    import datetime as _dt
+    today = _dt.date.today().isoformat()
+
+    try:
+        from .tradier import TradierClient
+        t = TradierClient()
+
+        # Get today's VIX open (daily bar) — cache for the day
+        if today not in _VIX_DAILY_OPEN_CACHE:
+            try:
+                bars = await t.history("VIX", interval="daily", start=today, end=today)
+                if bars:
+                    _VIX_DAILY_OPEN_CACHE[today] = bars[0].get("open", 0)
+            except Exception:
+                pass
+
+        # Get current VIX spot
+        quotes = await t.quotes(["VIX"])
+        await t.close()
+        vix_current = quotes.get("VIX", 0)
+    except Exception:
+        _VIX_REGIME_CACHE = (now_ts, {"regime": "UNKNOWN", "error": "quote_fetch_failed"})
+        return _VIX_REGIME_CACHE[1]
+
+    vix_open = _VIX_DAILY_OPEN_CACHE.get(today, 0)
+    if not vix_open or not vix_current:
+        result = {"regime": "UNKNOWN", "vix_open": vix_open, "vix_current": vix_current}
+        _VIX_REGIME_CACHE = (now_ts, result)
+        return result
+
+    change_pct = (vix_current - vix_open) / vix_open * 100
+
+    # Classification (matches scripts/backtest_vix_regime.py)
+    if vix_open < 20:
+        if change_pct <= -3:
+            regime = "VIX_BULL_COMPRESS"
+            bull_bias = True
+            wr = 80.3
+            label = "VIX bull compress — 80% SPY bull day"
+        elif change_pct >= 3:
+            regime = "VIX_LOW_RISING"
+            bull_bias = False
+            wr = 13.2
+            label = "VIX rising from low — avoid longs"
+        else:
+            regime = "VIX_LOW_FLAT"
+            bull_bias = False  # neutral, 46% WR
+            wr = 46.2
+            label = "VIX flat — neutral tape"
+    elif vix_open < 25:
+        if change_pct <= -3:
+            regime = "VIX_ELEVATED_COMP"
+            bull_bias = True
+            wr = 87.5
+            label = "VIX normalizing from stress — strongest bull signal"
+        else:
+            regime = "VIX_ELEVATED_FLAT"
+            bull_bias = False
+            wr = 29.2
+            label = "VIX stuck elevated — choppy/bearish"
+    else:
+        if change_pct >= 3:
+            regime = "VIX_SPIKE"
+            bull_bias = False
+            wr = 20.0
+            label = "VIX spiking — risk-off, fade longs"
+        else:
+            regime = "VIX_HIGH"
+            bull_bias = False
+            wr = 57.9
+            label = "VIX high — wide ranges, selective longs"
+
+    result = {
+        "regime": regime,
+        "vix_open": round(vix_open, 2),
+        "vix_current": round(vix_current, 2),
+        "change_pct": round(change_pct, 2),
+        "bull_bias": bull_bias,
+        "win_rate_expectation": wr,
+        "label": label,
+    }
+    _VIX_REGIME_CACHE = (now_ts, result)
+    return result
 
 
 def _score_breadth(nymo: dict[str, Any], namo: dict[str, Any], vix_ts: dict[str, Any] | None = None) -> dict[str, Any]:
