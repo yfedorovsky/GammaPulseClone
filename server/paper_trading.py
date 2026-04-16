@@ -501,6 +501,12 @@ async def update_positions() -> None:
                 )
                 partial_taken = 1
                 stop_moved = 1
+                # Update in-memory pos dict so downstream checks use new values
+                pos["contracts"] = remaining
+                pos["partial_taken"] = 1
+                pos["stop_price"] = entry_price
+                pos["stop_moved_to_be"] = 1
+                pos["partial_pnl"] = partial_pnl
 
                 # Log the partial exit event
                 c.execute(
@@ -508,6 +514,10 @@ async def update_positions() -> None:
                     (pos["id"], int(time.time()), "PARTIAL_EXIT", spot, cur_bid,
                      f"+25% PARTIAL: sold {half}x @${cur_bid:.2f} = ${partial_exit_value:.2f} (PnL: ${partial_pnl:+.2f}), stop → BE ${entry_price:.2f}"),
                 )
+                # CRITICAL: commit immediately so the partial state is durable
+                # even if a later position in the loop raises and rolls back
+                # the rest of the transaction. Prevents duplicate partials firing.
+                c.commit()
                 print(f"[PAPER] {ticker} +25% partial: sold {half}x @${cur_bid:.2f}, PnL ${partial_pnl:+.2f}, stop→BE")
 
                 # Send Telegram notification
