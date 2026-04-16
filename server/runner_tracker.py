@@ -380,11 +380,169 @@ def _compute_runner_score(runner: dict) -> float:
     return round(score, 1)
 
 
+# ── Contract selection for runner alerts ──────────────────────────────
+
+
+def _pick_call_by_delta(contracts: list[dict], target_delta: float) -> dict | None:
+    """Pick the call whose absolute delta is closest to target_delta.
+
+    Filters out zero-bid/zero-OI contracts. Returns {strike, bid, ask, mid,
+    spread_pct, oi, delta} or None if nothing tradeable.
+    """
+    best = None
+    best_diff = 999.0
+    for c in contracts:
+        if (c.get("option_type") or "").lower() != "call":
+            continue
+        bid = c.get("bid") or 0
+        ask = c.get("ask") or 0
+        if bid <= 0 or ask <= 0:
+            continue
+        oi = c.get("open_interest") or 0
+        if oi < 50:  # skip illiquid
+            continue
+        greeks = c.get("greeks") or {}
+        delta = abs(greeks.get("delta") or 0)
+        if delta <= 0:
+            continue
+        diff = abs(delta - target_delta)
+        if diff < best_diff:
+            best_diff = diff
+            mid = (bid + ask) / 2
+            spread_pct = ((ask - bid) / mid * 100) if mid > 0 else 999
+            best = {
+                "strike": c["strike"],
+                "bid": round(bid, 2),
+                "ask": round(ask, 2),
+                "mid": round(mid, 2),
+                "spread_pct": round(spread_pct, 1),
+                "oi": oi,
+                "delta": round(delta, 2),
+            }
+    return best
+
+
+def _build_contract_ladder(state: dict, shape: str) -> list[dict]:
+    """Build a 2-3 tier contract ladder for a runner alert.
+
+    MEASURED shape (multi-day stair-step, MSFT-style):
+      - AGGRESSIVE: 5-7 DTE, delta ~0.40 (OTM, max leverage if Day 2/3 expands)
+      - CORE:       7-14 DTE, delta ~0.50 (ATM, balance)
+      - SAFE:       21-30 DTE, delta ~0.65 (ITM, theta buffer)
+
+    SQUEEZE shape (single-day detonation, TSLA-style):
+      - POWER:      0-1 DTE, delta ~0.50 (ATM — fast harvest)
+      - CORE:       2-5 DTE, delta ~0.50 (ATM — next day buffer)
+      Note: no 7+ DTE for squeezes — IV crush risk is high
+    """
+    today = datetime.date.today()
+    raw = state.get("_raw_contracts") or {}
+    spot = state.get("actual_spot") or state.get("_spot") or 0
+    if not spot or not raw:
+        return []
+
+    # Bucket contracts by DTE
+    by_dte: dict[int, list[dict]] = {}
+    for exp_str, contracts in raw.items():
+        try:
+            exp_date = datetime.date.fromisoformat(exp_str)
+            dte = (exp_date - today).days
+        except ValueError:
+            continue
+        if dte < 0 or dte > 45:
+            continue
+        by_dte[dte] = contracts
+
+    def _pick_range(dte_lo: int, dte_hi: int, target_delta: float) -> tuple[int, dict] | None:
+        candidates_dte = sorted(d for d in by_dte if dte_lo <= d <= dte_hi)
+        best_pick = None
+        best_dte = None
+        for d in candidates_dte:
+            pick = _pick_call_by_delta(by_dte[d], target_delta)
+            if pick is None:
+                continue
+            # Prefer middle of range
+            target_mid = (dte_lo + dte_hi) / 2
+            if best_pick is None or abs(d - target_mid) < abs((best_dte or 99) - target_mid):
+                best_pick = pick
+                best_dte = d
+        if best_pick is None or best_dte is None:
+            return None
+        best_pick["dte"] = best_dte
+        best_pick["exp"] = (today + datetime.timedelta(days=best_dte)).isoformat()
+        return best_dte, best_pick
+
+    ladder: list[dict] = []
+
+    if shape == "SQUEEZE":
+        # POWER tier: 0-1 DTE ATM — fast harvest intraday
+        pick = _pick_range(0, 1, 0.50)
+        if pick:
+            _, c = pick
+            ladder.append({"tier": "POWER", "note": "fast harvest, 0-1 DTE", **c})
+        # CORE tier: 2-5 DTE ATM — overnight buffer
+        pick = _pick_range(2, 5, 0.50)
+        if pick:
+            _, c = pick
+            ladder.append({"tier": "CORE", "note": "overnight, 2-5 DTE", **c})
+    else:
+        # MEASURED (default)
+        # AGGRESSIVE: 5-7 DTE delta ~0.40 — upside leverage if Day 2/3 runs
+        pick = _pick_range(5, 7, 0.40)
+        if pick:
+            _, c = pick
+            ladder.append({"tier": "AGGRESSIVE", "note": "leverage Day 2/3", **c})
+        # CORE: 7-14 DTE delta ~0.50 — balanced
+        pick = _pick_range(7, 14, 0.50)
+        if pick:
+            _, c = pick
+            ladder.append({"tier": "CORE", "note": "balanced", **c})
+        # SAFE: 21-30 DTE delta ~0.65 — theta buffer
+        pick = _pick_range(21, 35, 0.65)
+        if pick:
+            _, c = pick
+            ladder.append({"tier": "SAFE", "note": "theta buffer, ITM", **c})
+
+    return ladder
+
+
+def _format_contract_ladder(ladder: list[dict], ticker: str) -> str:
+    """Format a contract ladder for Telegram display."""
+    if not ladder:
+        return ""
+    lines = ["", "📋 Contract ideas:"]
+    for c in ladder:
+        tier = c["tier"]
+        strike = c["strike"]
+        dte = c["dte"]
+        delta = c["delta"]
+        mid = c["mid"]
+        spread = c["spread_pct"]
+        oi = c["oi"]
+        note = c.get("note", "")
+        lines.append(
+            f"  {tier}: ${ticker} ${strike}C {dte}DTE "
+            f"@${mid:.2f} (Δ{delta:.2f}, sp={spread:.0f}%, OI={oi}) "
+            f"— {note}"
+        )
+    return "\n".join(lines)
+
+
 # ── Telegram alerts ───────────────────────────────────────────────────
 
 
-async def _alert_transition(ticker: str, new_state: str, runner: dict) -> None:
-    """Send Telegram on state transitions. force=True (rare, high-value event)."""
+async def _alert_transition(
+    ticker: str,
+    new_state: str,
+    runner: dict,
+    state: dict | None = None,
+) -> None:
+    """Send Telegram on state transitions. force=True (rare, high-value event).
+
+    state: the live cache state for this ticker, used to build the contract
+    ladder. Optional for backwards compat — if None, alerts fire without
+    contract suggestions.
+    """
     try:
         from .telegram import send
     except ImportError:
@@ -411,20 +569,44 @@ async def _alert_transition(ticker: str, new_state: str, runner: dict) -> None:
             )
         else:
             shape_line = f"Shape: MEASURED (multi-day stair-step)\n"
+
+        # Build contract ladder (shape-specific)
+        ladder_block = ""
+        if state:
+            try:
+                ladder = _build_contract_ladder(state, shape)
+                ladder_block = _format_contract_ladder(ladder, ticker)
+            except Exception as e:
+                print(f"[runner_tracker] Contract ladder error for {ticker}: {e}")
+
         text = (
             f"🏃 RUNNER DAY 1 {path_tag}: ${ticker}\n"
             f"Gain: +{gain:.1f}% | RVOL: {rvol:.1f}x\n"
             f"{meta_line}"
             f"{shape_line}"
             f"Runner Score: {score:.0f}/20"
+            f"{ladder_block}"
         )
     elif new_state == "DAY2_CONFIRM":
         gap = runner.get("d2_gap_pct") or 0
+        # Offer contract ideas for adds on VWAP pullback
+        shape = runner.get("runner_shape", "MEASURED")
+        ladder_block = ""
+        if state:
+            try:
+                ladder = _build_contract_ladder(state, shape)
+                if ladder:
+                    ladder_block = _format_contract_ladder(ladder, ticker).replace(
+                        "📋 Contract ideas:", "📋 Add on pullback:"
+                    )
+            except Exception:
+                pass
         text = (
             f"🏃🏃 RUNNER DAY 2: ${ticker}\n"
             f"Total: +{gain:.1f}% | Gap: +{gap:.1f}%\n"
             f"Runner Score: {score:.0f}/20\n"
             f"Mir rule: take 1/3 profit at open, watch VWAP pullback for add"
+            f"{ladder_block}"
         )
     elif new_state == "DAY3_EXPLOSION":
         text = (
@@ -673,7 +855,7 @@ async def update_runners() -> None:
         runner["runner_score"] = _compute_runner_score(runner)
         _runners[ticker] = runner
         _persist(runner)
-        await _alert_transition(ticker, "DAY1_BREAKOUT", runner)
+        await _alert_transition(ticker, "DAY1_BREAKOUT", runner, state=state)
         print(f"[runner_tracker] DAY1_BREAKOUT [SWING/{shape}]: {ticker} +{pct_change:.1f}% rvol={rvol:.1f}x score={runner['runner_score']:.0f}/20")
 
     # ── Reclaim path: catch V-bottom mega-cap reclaims that the swing
@@ -700,7 +882,7 @@ async def update_runners() -> None:
             reclaim_runner["runner_score"] = _compute_runner_score(reclaim_runner)
             _runners[ticker] = reclaim_runner
             _persist(reclaim_runner)
-            await _alert_transition(ticker, "DAY1_BREAKOUT", reclaim_runner)
+            await _alert_transition(ticker, "DAY1_BREAKOUT", reclaim_runner, state=state)
             shape = reclaim_runner.get("runner_shape", "MEASURED")
             print(f"[runner_tracker] DAY1_BREAKOUT [RECLAIM/{shape}]: {ticker} "
                   f"+{reclaim_runner['d1_gain_pct']:.1f}% "
@@ -829,7 +1011,8 @@ async def _finalize_day_transitions(snapshot: dict[str, dict]) -> None:
         runner = _runners.get(ticker)
         if runner:
             _persist(runner)
-            await _alert_transition(ticker, new_state, runner)
+            state_data = snapshot.get(ticker, {})
+            await _alert_transition(ticker, new_state, runner, state=state_data)
             print(f"[runner_tracker] {new_state}: {ticker} total={runner.get('total_gain_pct', 0):+.1f}% score={runner.get('runner_score', 0):.0f}/20")
 
 
