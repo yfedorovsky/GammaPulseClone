@@ -20,6 +20,7 @@ const MtfTab = lazy(() => import('./tabs/MtfTab.jsx'));
 const EarningsTab = lazy(() => import('./tabs/EarningsTab.jsx'));
 const NewsTab = lazy(() => import('./tabs/NewsTab.jsx'));
 const PortfolioTab = lazy(() => import('./tabs/PortfolioTab.jsx'));
+const SwingsTab = lazy(() => import('./tabs/SwingsTab.jsx'));
 const GuideTab = lazy(() => import('./tabs/GuideTab.jsx'));
 
 export default function App() {
@@ -136,6 +137,7 @@ export default function App() {
           {tab === 'HEATMAPS' && <HeatmapsTab />}
           {tab === 'OVERLAY' && <OverlayTab />}
           {tab === 'SCANNER' && <ScannerTab />}
+          {tab === 'SWINGS' && <SwingsTab />}
           {tab === 'FLOW' && <FlowTab />}
           {tab === 'SIGNALS' && <SignalsTab />}
           {tab === 'PORTFOLIO' && <PortfolioTab />}

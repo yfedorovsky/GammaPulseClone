@@ -1,0 +1,258 @@
+My blunt take: this is not a coin flip, but it is also not ready to trust live with 0DTE size yet. It looks like a narrow intraday execution framework built around real structural levels and decent time-window filtering, but the unproven parts are exactly the parts that matter most for 0DTE: fill realism, stale levels, and per-alert-type expectancy. Your own doc is honest about that, which is good.
+
+Bottom line
+
+Viable as a paper-traded / tiny-size “degen sleeve”? Yes.
+Ready to assume real edge on a $20K account? Not yet.
+
+The strongest things you have are:
+
+PM / Power Hour restriction, with AM explicitly disabled from backtest evidence.
+State-transition firing instead of proximity spam.
+Multiple safety filters: macro skip, cooldown, max daily alerts, GEX magnitude threshold.
+Honest admission that 15-minute volume, 2-minute GEX refresh, and manual execution are real weaknesses.
+
+The weakest things are:
+
+no per-alert-type backtest
+0DTE-only implementation even though your own Mir research prefers 1DTE
+2-minute stale GEX risk in the exact market where 2 minutes matters most
+laggy 15-minute confirmation
+manual click latency on instruments that move fast enough to invalidate the setup before you’re filled.
+Review of the alert types
+
+The core set is directionally right, but there is redundancy.
+
+Keep as primary:
+
+BUY_DIP
+BREAKOUT
+RETEST
+FLOOR_BREAK
+EMA_PULLBACK
+TREND_CONTINUATION
+
+These are the most structurally understandable and tradable.
+
+Demote / merge:
+
+ZGL_CROSS_UP
+ZGL_CROSS_DOWN
+
+These are more regime/context events than direct scalp entries. I would use them as:
+
+bias state changes
+not standalone alerts
+
+Be careful with:
+
+SELL_POP
+
+This is likely the most fragile alert in a strong tape. Selling pop into a trend day is how 0DTE traders donate money. I would only allow it when:
+
+trend mode is off
+EMA structure has broken
+and maybe VIX / breadth backdrop is not supportive.
+Exit logic
+
+Your current exit logic is close, but I would tighten it for 0DTE.
+
+Right now:
+
++30–60% target
+stop on level break
+scratch if not up 20% by 3 PM
+
+My changes:
+
+For 0DTE
+partial at +20% to +25%
+move stop to breakeven on the remainder
+second target at next GEX level or +40–50%
+hard time-stop remains
+
+Why: your own broader work showed many losers were once profitable. That pattern is exactly where 0DTE needs aggressive partialing.
+
+So yes:
+implement the +25% partial take.
+For 0DTE it matters more, not less.
+
+For trend-day continuation
+
+Let runners go a bit more only if:
+
+price still holds 15m 8 EMA / VWAP
+and next structural target is clear
+
+Otherwise 0DTE theta will eat indecision fast.
+
+Max 2 alerts per day
+
+This is fine, maybe even generous.
+
+For a $20K account and a fun-money sleeve, I’d rather see:
+
+max 1–2 actual trades per day
+not just 2 alerts generated
+
+So:
+
+max 2 alerts generated is okay
+max 1–2 trades executed is better
+
+Do not loosen this until you have:
+
+per-alert-type expectancy
+live slippage data
+at least 30–50 paper trades
+Macro-day skip
+
+This is the right idea, but I’d make it time-windowed, not whole-day binary.
+
+Your doc says if FOMC/CPI/PPI/NFP is present, zero scalp alerts all day.
+That is probably too blunt.
+
+Better:
+
+block pre-event
+block event window
+block 30–60 min after
+allow later only if regime stabilizes
+
+Example:
+
+FOMC at 2 PM → maybe no alerts from 1:30 to 3:00, but not necessarily all day
+Position sizing
+
+Your current sizing:
+
+0.5–1% account risk per trade
+$100–200 on a $20K account
+
+For 0DTE manual execution, I would start lower:
+
+0.25%–0.5% risk per trade
+1 contract only at first
+max daily realized loss cap hardcoded
+
+Because the real risk is not just stop distance. It is:
+
+fill slippage
+hesitation
+false breakouts
+one bad click on a fast-moving contract
+15-minute volume confirmation
+
+Not fatal, but not good enough to pretend it is a real confirmation signal.
+
+Your own notes are right:
+
+it lags
+move may be over by the time the bar closes
+
+So I would keep it exactly where you moved it:
+
+informational tag
+not veto
+
+But I would add something faster:
+
+5-minute relative volume
+or 1-minute burst check
+used as lightweight participation color, not hard gate
+2-minute GEX refresh
+
+For 0DTE, this is acceptable only because you are trading state transitions, not trying to market-make microstructure.
+
+But it is still the biggest structural weakness in the setup. On fast moves, 2 minutes can absolutely matter.
+
+So my rule would be:
+
+use 2-minute GEX only for major structural levels
+not for hyper-fine intrabar precision
+
+And if price has already moved materially away from the level by the time you get the alert, skip it.
+
+1DTE vs 0DTE
+
+This is the highest-impact improvement.
+
+Your own Mir findings say:
+
+15m chart primary
+8 EMA pullback primary trigger
+1DTE preferred over 0DTE for buffer
+
+I agree.
+
+My recommendation:
+
+keep 0DTE only for:
+Power Hour
+extremely clean setups
+SPY/QQQ only
+make 1DTE the default suggestion
+especially for 1:30–3:00 PM entries
+especially for EMA pullback / trend continuation
+
+That one change probably improves survivability more than almost anything else.
+
+VIX filter
+
+Yes, add one.
+
+Simple version:
+
+VIX > 25 → no 0DTE, 1DTE only
+VIX > 30 → no scalp trades
+optionally VIX 20–25 → size cut in half
+
+Because your doc is right: high VIX means wider spreads, faster reversals, and worse manual fills.
+
+What I would trust today
+Paper now
+BUY_DIP
+RETEST
+EMA_PULLBACK
+TREND_CONTINUATION
+Power Hour only
+SPY only first, then QQQ
+Research only
+SELL_POP
+ZGL_CROSS_UP
+ZGL_CROSS_DOWN
+AM session logic
+any expansion to single names
+The single highest-impact improvement
+
+Implement 1DTE as the default contract suggestion and paper-test it side by side with 0DTE.
+
+Not because 0DTE can’t work, but because:
+
+your timing logic is 15-minute based
+your execution is manual
+your GEX refresh is 2-minute
+your confirmation is somewhat laggy
+and your own Mir history prefers 1DTE buffer.
+
+That mismatch is too obvious to ignore.
+
+My final verdict
+
+This is not sophisticated infrastructure around a pure coin flip.
+There is a coherent idea here:
+
+trade only in the best intraday windows,
+only on structural transitions,
+only with a small number of alerts,
+only on SPY/QQQ.
+
+But it is still too execution-sensitive and under-validated for confident live 0DTE deployment.
+
+So my recommendation is:
+
+Paper trade aggressively.
+Implement 1DTE comparison now.
+Use +25% partials.
+Add a VIX regime filter.
+Do not put real money behind 0DTE until you have per-alert-type stats and live bid/ask behavior logged for at least 30–50 paper trades.

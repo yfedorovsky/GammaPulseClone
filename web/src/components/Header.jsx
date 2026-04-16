@@ -2,11 +2,12 @@ import React, { useState } from 'react';
 import { useStore } from '../store.js';
 import AlertPanel, { useAlertCount } from './AlertPanel.jsx';
 
-const TABS = ['HEATMAPS', 'OVERLAY', 'SCANNER', 'FLOW', 'SIGNALS', 'PORTFOLIO', 'SECTORS', 'HISTORY', 'MTF', 'EARNINGS', 'NEWS', 'GUIDE'];
+const TABS = ['HEATMAPS', 'OVERLAY', 'SCANNER', 'SWINGS', 'FLOW', 'SIGNALS', 'PORTFOLIO', 'SECTORS', 'HISTORY', 'MTF', 'EARNINGS', 'NEWS', 'GUIDE'];
 const ICONS = {
   HEATMAPS: '🔥',
   OVERLAY: '📈',
   SCANNER: '🔎',
+  SWINGS: '🎯',
   FLOW: '🌊',
   SIGNALS: '⚡',
   PORTFOLIO: '💰',

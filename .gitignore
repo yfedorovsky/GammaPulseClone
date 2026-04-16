@@ -4,6 +4,8 @@ __pycache__/
 *.pyc
 .env
 snapshots.db
+snapshots.db-shm
+snapshots.db-wal
 dist/
 *.db-journal
 .claude/
