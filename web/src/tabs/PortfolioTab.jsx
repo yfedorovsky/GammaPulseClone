@@ -86,7 +86,7 @@ export default function PortfolioTab() {
   }, [equity, acct]);
 
   const pnlColor = (v) => (v > 0 ? '#10dc9a' : v < 0 ? '#ff5656' : '#8a93a8');
-  const fmtPnl = (v) => `${v >= 0 ? '+' : ''}$${Math.abs(v || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+  const fmtPnl = (v) => `${v >= 0 ? '+' : '-'}$${Math.abs(v || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
   const fmtPct = (v) => `${v >= 0 ? '+' : ''}${(v || 0).toFixed(1)}%`;
 
   return (

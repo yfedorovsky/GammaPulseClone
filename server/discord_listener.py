@@ -451,6 +451,61 @@ class MirDiscordClient:
         await cache.set_mir_signal(ticker, mir_signal)
         print(f"[DISCORD]   -> Stored: {ticker} {conviction} ({agreement})")
 
+        # Auto-open paper position for Mir ENTRY/ADD (frozen spec v1.0)
+        sig_type = parsed.get("signal_type", "")
+        if sig_type in ("ENTRY", "ADD") and conviction in ("HIGH", "MEDIUM") and contract_info:
+            try:
+                from .paper_trading import get_account_status, open_position
+                from .signals import _insert_signal
+
+                acct = get_account_status()
+                if acct.get("open_positions", 0) >= 5:
+                    print(f"[DISCORD]   -> Paper trade skipped: max 5 positions reached")
+                else:
+                    # Build signal dict for DB insertion (matches SOE signal format)
+                    spot = gex_context.get("spot") or 0
+                    soe_sig = {
+                        "ticker": ticker,
+                        "direction": "▲",
+                        "signal_type": f"MIR_DISCORD_{agreement}",
+                        "grade": "A" if conviction == "HIGH" else "B+",
+                        "score": 0,  # not scored by SOE — pure Mir signal
+                        "max_score": 6,
+                        "strike": contract_info["strike"],
+                        "expiration": contract_info["expiration"],
+                        "option_type": contract_info["option_type"].upper(),
+                        "dte": contract_info.get("dte", 0),
+                        "target": spot * 1.03 if spot else 0,  # +3% spot as proxy
+                        "target_label": "Mir target",
+                        "stop": spot * 0.97 if spot else 0,
+                        "stop_label": "Mir stop",
+                        "rr_ratio": 2.0,
+                        "spot": spot,
+                        "king": gex_context.get("king"),
+                        "floor_level": gex_context.get("floor"),
+                        "ceiling_level": gex_context.get("ceiling"),
+                        "zgl": None,
+                        "regime": gex_context.get("regime"),
+                        "iv": gex_context.get("iv"),
+                        "delta": contract_info.get("delta"),
+                        "gamma": contract_info.get("gamma"),
+                        "bid": contract_info.get("bid"),
+                        "ask": contract_info.get("ask"),
+                        "mid_price": contract_info.get("mid"),
+                        "reasoning": f"Mir Discord {agreement}: {parsed.get('raw_content', '')[:200]}",
+                        "status": "PENDING",
+                    }
+                    signal_id = _insert_signal(soe_sig)
+                    if signal_id:
+                        result = open_position(signal_id)
+                        if result.get("error"):
+                            print(f"[DISCORD]   -> Paper open failed: {result['error']}")
+                        else:
+                            print(f"[DISCORD]   -> Paper auto-opened: {ticker} "
+                                  f"x{result.get('contracts', '?')} @ ask ${contract_info.get('ask', '?')}")
+            except Exception as e:
+                print(f"[DISCORD]   -> Paper trade error: {e}")
+
         # Telegram alert with full enrichment (contract, Greeks, GEX, RTS)
         if conviction in ("HIGH", "MEDIUM"):
             try:

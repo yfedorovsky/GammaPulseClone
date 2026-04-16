@@ -484,6 +484,49 @@ def _compute_signal_score(
     if macro_reasons:
         reasons.append(f"Macro context ({min(macro_score,1.0):.1f}/1): {'; '.join(macro_reasons)}")
 
+    # ── Trend Quality Gate (RTS penalty/bonus) ────────────────────
+    # GEX structure alone doesn't know if price is trending into a level
+    # (breakdown) or bouncing off it (support). RTS catches this.
+    # GS 4/15 lesson: "SUPPORT BOUNCE" A-grade on a stock crashing from
+    # $927 to $900. RTS would have flagged the downtrend.
+    #
+    # Not a 6th factor — it adjusts the total score:
+    #   RTS < 20: -0.5 (actively weak, fighting the trend)
+    #   RTS 20-40: -0.25 (below average)
+    #   RTS 40-60: no change (neutral)
+    #   RTS >= 70: +0.25 (leader, trend alignment bonus)
+    #
+    # Skip for indexes (SPY/QQQ/IWM don't have meaningful RS vs themselves)
+    rts_data = state.get("_rts")
+    trend_day_data = state.get("_trend_day") or {}
+    is_trend_day = trend_day_data.get("trend_mode", "NORMAL") in ("TREND_DAY", "EXTREME_TREND")
+
+    if rts_data and isinstance(rts_data, dict) and not is_index:
+        rts_score_val = rts_data.get("score", 50)
+
+        if is_trend_day:
+            # Trend day override: stock is moving NOW regardless of 20-day history.
+            # MSFT 4/15 lesson: RTS 15 but +5% gap day = A++++ setup.
+            # Don't penalize, only reward leaders.
+            if rts_score_val >= 70:
+                score += 0.25
+                reasons.append(f"RTS {rts_score_val} LEADER + TREND DAY (+0.25)")
+            else:
+                reasons.append(f"RTS {rts_score_val} (trend day — penalty waived)")
+        else:
+            # Normal day: penalize weak trends, reward leaders
+            if rts_score_val < 20:
+                score -= 0.5
+                reasons.append(f"RTS {rts_score_val} WEAK — trend penalty (-0.5)")
+            elif rts_score_val < 40:
+                score -= 0.25
+                reasons.append(f"RTS {rts_score_val} below avg — trend penalty (-0.25)")
+            elif rts_score_val >= 70:
+                score += 0.25
+                reasons.append(f"RTS {rts_score_val} LEADER — trend bonus (+0.25)")
+            else:
+                reasons.append(f"RTS {rts_score_val} neutral")
+
     return score, reasons
 
 
@@ -521,7 +564,10 @@ def _select_contract(
         delta_hi = 0.75
     else:
         spread_limit = 0.10
-        oi_limit = 500
+        # OI gate: 500 for 0DTE (needs exit liquidity NOW), 100 for 7+ DTE
+        # (OI builds as contracts approach expiration — mid-week 7-14 DTE
+        # typically has 50-300 OI on SPY/QQQ which is fine for 1-2 contract trades)
+        oi_limit = 100
         delta_lo = 0.25
         delta_hi = 0.60
     spot = state.get("actual_spot") or state.get("_spot") or 0
@@ -789,10 +835,9 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
     now = datetime.datetime.now()
     if now.weekday() >= 5:
         return []
-    # Allow pre-market signal scanning from 7 AM (chains available before open)
-    if now.hour < 7:
-        return []
-    if now.hour > 16 or (now.hour == 16 and now.minute > 15):
+    # Market hours only: 9:30 AM - 4:15 PM (pre-market signals are noise)
+    mins = now.hour * 60 + now.minute
+    if mins < 570 or mins > 975:  # before 9:30 or after 4:15
         return []
 
     # Earnings blackout: skip tickers with earnings within 7 days
@@ -886,6 +931,8 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
         if dedup_key in _seen_signals:
             continue
 
+        _is_debug = False  # Set True to trace mega-cap signal pipeline
+
         # Inject breadth context into state for scoring
         # Mir-originated trend-day signals: zero out breadth penalty entirely.
         # On gap-and-go days, NYMO overbought is expected and should not block.
@@ -898,6 +945,9 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
         score, reasons = _compute_signal_score(state, direction, confluence, iv_universe)
         grade = _score_to_grade(score)
         signal_type = _determine_signal_type(state, direction)
+
+        if _is_debug:
+            print(f"[SOE_DBG] {ticker} dir={direction} score={score:.1f} grade={grade} type={signal_type}")
 
         # Mir-originated signals use narrower contract selection
         if is_mir_originated:
@@ -960,6 +1010,13 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
                 a_blocked_by = "no_contract"
             elif contract.get("rr_ratio", 0) < 1.0:
                 a_blocked_by = "rr_ratio"
+
+        if _is_debug:
+            if contract:
+                print(f"[SOE_DBG] {ticker} contract: ${contract.get('strike')} {contract.get('expiration')} DTE={contract.get('dte')} R:R={contract.get('rr_ratio',0):.1f}")
+            else:
+                print(f"[SOE_DBG] {ticker} NO CONTRACT")
+            print(f"[SOE_DBG] {ticker} blocked={a_blocked_by}")
 
         # 0DTE freshness gate
         dte = contract.get("dte", 99) if contract else 99
@@ -1095,6 +1152,11 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
             "iv": state.get("iv"),
             "delta": contract.get("delta"),
             "gamma": contract.get("gamma"),
+            "bid": contract.get("bid"),
+            "ask": contract.get("ask"),
+            "mid_price": contract.get("mid_price"),
+            "spread_pct": contract.get("spread_pct"),
+            "contract_oi": contract.get("contract_oi"),
             "reasoning": "\n".join(f"✓ {r}" for r in reasons),
             "status": "PENDING",
             "greeks_source": state.get("_greeks_source", "tradier"),
@@ -1110,9 +1172,34 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
             pass
 
         # Insert into DB
-        _insert_signal(sig)
+        signal_id = _insert_signal(sig)
         _seen_signals.add(dedup_key)
         new_signals.append(sig)
+
+        # Auto-open paper position:
+        #   - MIR_MOMENTUM: always (frozen spec v1.0)
+        #   - GEX pathway A grade: auto-open (high conviction validated setups)
+        #   - GEX pathway B+ with 0DTE/1DTE SPY/QQQ: auto-open (scalp validation)
+        should_auto_trade = False
+        if is_mir_originated:
+            should_auto_trade = True
+        elif grade in ("A+", "A"):
+            should_auto_trade = True
+        elif grade == "B+" and ticker in ("SPY", "QQQ") and dte <= 1:
+            should_auto_trade = True
+
+        if should_auto_trade and signal_id:
+            try:
+                from .paper_trading import open_position
+                paper_result = open_position(signal_id)
+                if paper_result.get("error"):
+                    print(f"[SOE] Paper auto-open failed for {ticker}: {paper_result['error']}")
+                else:
+                    pathway = "MIR" if is_mir_originated else f"GEX {grade}"
+                    print(f"[SOE] Paper auto-opened ({pathway}): {ticker} x{paper_result.get('contracts', '?')} "
+                          f"@ ask ${contract.get('ask', '?')} (mid ${contract.get('mid_price', '?')})")
+            except Exception as e:
+                print(f"[SOE] Paper auto-open error: {e}")
 
         # Telegram push: A/A+ always, B+ only if solid (flow or volume quality)
         should_push = False
@@ -1141,15 +1228,17 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
     return new_signals
 
 
-def _insert_signal(sig: dict[str, Any]) -> None:
+def _insert_signal(sig: dict[str, Any]) -> int | None:
+    """Insert signal into DB. Returns the signal ID for paper trading."""
     with _conn() as c:
         c.execute(
             """INSERT INTO soe_signals
             (ts, ticker, direction, signal_type, grade, score, max_score,
              strike, expiration, option_type, target, target_label, stop, stop_label,
              rr_ratio, spot, king, floor_level, ceiling_level, zgl, regime, iv,
-             delta, gamma, reasoning, status)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             delta, gamma, reasoning, status,
+             entry_price, mid_price, bid, ask)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 int(time.time()),
                 sig["ticker"], sig["direction"], sig["signal_type"],
@@ -1160,8 +1249,14 @@ def _insert_signal(sig: dict[str, Any]) -> None:
                 sig["floor_level"], sig["ceiling_level"], sig["zgl"],
                 sig["regime"], sig["iv"], sig["delta"], sig["gamma"],
                 sig["reasoning"], sig["status"],
+                sig.get("ask"),  # entry_price = ask (Grok rule: fill at offer)
+                sig.get("mid_price"),
+                sig.get("bid"),
+                sig.get("ask"),
             ),
         )
+        row = c.execute("SELECT last_insert_rowid()").fetchone()
+        return row[0] if row else None
 
 
 def _insert_ab_decision(d: dict[str, Any]) -> None:
@@ -1456,8 +1551,8 @@ async def scan_setups() -> list[dict[str, Any]]:
                 if contract.get("bid") and contract.get("ask"):
                     contract_line += f" (bid ${contract['bid']:.2f} / ask ${contract['ask']:.2f})"
 
-            # Check for flow confirmation
-            flow_note = ""
+            # Check for flow confirmation — always show status
+            flow_note = "FLOW: none detected"
             try:
                 from .flow_alerts import get_recent_flow
                 recent = get_recent_flow(ticker, minutes=30)
@@ -1494,7 +1589,7 @@ async def scan_setups() -> list[dict[str, Any]]:
             floor_stop = f"Stop: Floor ${s['floor']}" if s['floor'] else ""
             rts_str = f"RTS: {s['rts_score']}" if s.get('rts_score') else ""
             contract_str = f"\n>> <b>{s['ticker']} {s['contract']}</b>" if s.get('contract') else ""
-            flow_str = f"\n{s['flow']}" if s.get('flow') else ""
+            flow_str = f"\n{s['flow']}"
             msg = (
                 f"SETUP FORMING: <b>{s['ticker']}</b>\n"
                 f"Score: {s['score']}/10"

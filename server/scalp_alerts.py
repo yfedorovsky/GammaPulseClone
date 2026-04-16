@@ -3,18 +3,23 @@
 Separate from SOE signal engine. Runs every 30 seconds and fires
 Telegram alerts when price interacts with GEX structural levels.
 
-No scoring, no grades. Just fast, actionable structure alerts with
-0DTE contract suggestions.
+4-LLM consensus (ChatGPT + Perplexity + Gemini + Grok, April 14 2026):
+  - 1DTE default for PM entries (1:30-3:00), 0DTE only Power Hour (3:00+)
+  - VIX filter: >30 skip all, 25-30 1DTE only, <25 normal
+  - +25% partial exit (tracked in paper_trading.py)
+  - 2 total daily cap across SPY+QQQ combined
+  - ZGL_CROSS demoted to context/bias tag (no daily cap charge)
+  - Macro skip time-windowed (not all-day)
 
 Trigger conditions:
-  - FLOOR BOUNCE: spot within 0.5% of floor (BUY CALLS)
-  - KING APPROACH: spot within 0.3% of king (TAKE PROFIT zone)
-  - FLOOR BREAK: spot drops below floor (BUY PUTS)
-  - ZGL CROSS UP: spot crosses above ZGL (regime improving)
-  - ZGL CROSS DOWN: spot crosses below ZGL (regime deteriorating)
-  - CEILING TEST: spot within 0.3% of ceiling (potential rejection)
-  - EMA_PULLBACK: 15-min price pulls back to 8 EMA and bounces (Mir's entry trigger)
-  - TREND_CONTINUATION: gap-and-go day, price above 8 EMA with momentum
+  - BUY_DIP: bounce off Floor (BUY CALLS)
+  - BREAKOUT: cross above King (BUY CALLS)
+  - RETEST: pullback to King from above (BUY CALLS)
+  - SELL_POP: rejection off Ceiling (BUY PUTS) — normal mode only
+  - FLOOR_BREAK: breakdown below Floor (BUY PUTS)
+  - ZGL_CROSS_UP/DOWN: regime context tag (no cap charge)
+  - EMA_PULLBACK: 15-min 8 EMA bounce (Mir's #1 trigger)
+  - TREND_CONTINUATION: gap-and-go day, above 8 EMA
 """
 from __future__ import annotations
 
@@ -23,6 +28,7 @@ import time
 from typing import Any
 
 from .cache import cache
+from .config import get_settings
 
 # Which tickers get scalp alerts
 SCALP_TICKERS = {"SPY", "QQQ"}
@@ -34,17 +40,31 @@ ALERT_COOLDOWN = 900  # 15 minutes per ticker per alert type
 # Track previous state for cross detection
 _prev_state: dict[str, dict[str, Any]] = {}
 
+# Daily alert cap: 2 TOTAL across SPY+QQQ combined (not per-ticker)
+# 4-LLM consensus: 2 per-ticker allowed 4 total which is too generous
+_daily_alert_count: dict[str, int] = {}  # "date" -> count (combined)
+MAX_DAILY_ALERTS = 2
+
+# ZGL_CROSS types are context/bias tags — they don't count toward the daily cap
+_CONTEXT_ONLY_ALERTS = {"ZGL_CROSS_UP", "ZGL_CROSS_DOWN"}
+
 # ── 15-min 8 EMA tracking ───────────────────────────────────────────
 # Mir's actual entry trigger from RAG: "pullback to the 8 EMA on 15-min"
 # Cached to avoid hammering Tradier — refresh every 5 minutes.
 
 _bar_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}  # ticker -> (ts, bars)
-_BAR_CACHE_TTL = 300  # 5 minutes
+_BAR_CACHE_TTL = 120  # 2 minutes (matches GEX refresh cycle)
 
 _ema8_state: dict[str, dict[str, Any]] = {}
 # {ticker: {prev_close, prev_ema, prev_relation ("ABOVE"/"BELOW"/"TOUCHING")}}
 
 _tradier_client = None  # lazy-init
+
+# VIX state — refreshed at the top of each scalp scan cycle
+# {level: float, structure: str, regime: "NORMAL"|"ELEVATED"|"SKIP"}
+_current_vix: dict[str, Any] = {}
+_VIX_CACHE_TS: float = 0
+_VIX_CACHE_TTL = 300  # 5 minutes
 
 
 def _compute_ema8(closes: list[float]) -> float:
@@ -72,7 +92,9 @@ async def _refresh_bars(ticker: str) -> list[dict[str, Any]] | None:
             from .tradier import TradierClient
             _tradier_client = TradierClient()
 
-        bars = await _tradier_client.history(ticker, interval="15min")
+        # 4-LLM consensus: 5-min bars nearly double returns vs 15-min (options.cafe study)
+        # SPY 4/15 lesson: 15-min smoothed away two obvious pullback entries visible on 5-min
+        bars = await _tradier_client.history(ticker, interval="5min")
         if bars:
             _bar_cache[ticker] = (time.time(), bars)
             return bars
@@ -164,7 +186,7 @@ async def _detect_ema_pullback(ticker: str, state: dict[str, Any]) -> dict[str, 
             "emoji": "📈",
             "headline": "8 EMA PULLBACK — Bounce confirmed",
             "detail": (
-                f"Spot ${spot:.2f} bounced off 15-min 8 EMA ${ema_val:.2f}\n"
+                f"Spot ${spot:.2f} bounced off 5-min 8 EMA ${ema_val:.2f}\n"
                 f"Mir's #1 entry trigger — pullback to trend support\n"
                 f"King magnet: ${king} ({king_dist:+.1f}%) | Regime: {regime}"
             ),
@@ -184,7 +206,7 @@ async def _detect_ema_pullback(ticker: str, state: dict[str, Any]) -> dict[str, 
             "emoji": "📉",
             "headline": "8 EMA REJECTION — Breaking below trend",
             "detail": (
-                f"Spot ${spot:.2f} broke below 15-min 8 EMA ${ema_val:.2f}\n"
+                f"Spot ${spot:.2f} broke below 5-min 8 EMA ${ema_val:.2f}\n"
                 f"Trend support lost — momentum reversal\n"
                 f"Floor: ${floor_val} | Regime: {regime}"
             ),
@@ -208,18 +230,56 @@ def _record_alert(ticker: str, alert_type: str) -> None:
     _last_alert[f"{ticker}:{alert_type}"] = time.time()
 
 
-def _suggest_contract(ticker: str, spot: float, direction: str, king: float = 0) -> str:
-    """Suggest a 0DTE contract based on direction."""
+def _get_dte_preference() -> tuple[int, str]:
+    """Determine 0DTE vs 1DTE based on time window.
+
+    4-LLM consensus:
+      - 1:30-3:00 PM: 1DTE only (theta is $0.80-1.20/hr on 0DTE)
+      - 3:00-4:00 PM: 0DTE allowed (Power Hour — gamma leverage peaks)
+
+    Returns (dte_days, label) where dte_days is 0 or 1.
+    """
     import datetime
-    today = datetime.date.today().isoformat()
+    now = datetime.datetime.now()
+    mins = now.hour * 60 + now.minute
+
+    if mins >= 900:  # 3:00 PM+ = Power Hour
+        return 0, "0DTE"
+    else:
+        return 1, "1DTE"
+
+
+def _suggest_contract(ticker: str, spot: float, direction: str, king: float = 0) -> str:
+    """Suggest a contract with 1DTE/0DTE based on time window + VIX."""
+    import datetime
+
+    dte_days, dte_label = _get_dte_preference()
+
+    # VIX override: 25-30 forces 1DTE regardless of window
+    vix_level = _current_vix.get("level", 0)
+    if vix_level >= 25:
+        dte_days = 1
+        dte_label = "1DTE"
+
+    if dte_days == 0:
+        exp_date = datetime.date.today()
+    else:
+        # 1DTE = next trading day
+        exp_date = datetime.date.today() + datetime.timedelta(days=1)
+        # Skip weekend
+        if exp_date.weekday() == 5:  # Saturday
+            exp_date += datetime.timedelta(days=2)
+        elif exp_date.weekday() == 6:  # Sunday
+            exp_date += datetime.timedelta(days=1)
+
+    exp_str = exp_date.isoformat()
 
     if direction == "CALLS":
-        # ATM or slightly OTM call
         strike = round(spot / 1) if spot < 50 else round(spot / 5) * 5
-        return f"{ticker} ${strike}C {today}"
+        return f"{ticker} ${strike}C {exp_str} ({dte_label})"
     else:
         strike = round(spot / 1) if spot < 50 else round(spot / 5) * 5
-        return f"{ticker} ${strike}P {today}"
+        return f"{ticker} ${strike}P {exp_str} ({dte_label})"
 
 
 async def _check_scalp_alerts() -> list[dict[str, Any]]:
@@ -234,6 +294,67 @@ async def _check_scalp_alerts() -> list[dict[str, Any]]:
         return []
     if now.hour > 16 or (now.hour == 16 and now.minute > 15):
         return []
+
+    # ── VIX regime filter (4-LLM consensus) ────────────────────────
+    # >30: skip ALL scalp alerts
+    # 25-30: 1DTE only (handled in _suggest_contract)
+    # <25: normal
+    global _VIX_CACHE_TS
+    if time.time() - _VIX_CACHE_TS > _VIX_CACHE_TTL:
+        try:
+            from .breadth import get_vix_term_structure
+            vix_ts = await get_vix_term_structure()
+            vix_level = vix_ts.get("vix", 0)
+            _current_vix.update({
+                "level": vix_level,
+                "structure": vix_ts.get("structure", ""),
+            })
+            _VIX_CACHE_TS = time.time()
+        except Exception:
+            pass  # Keep stale VIX if refresh fails
+
+    vix_level = _current_vix.get("level", 0)
+    if vix_level > 30:
+        return []  # 4-LLM consensus: VIX > 30 = skip all scalps
+
+    # ── Macro event time-window skip (upgraded from all-day ban) ──
+    # Block 90 min before through 60 min after high-impact events,
+    # not the entire day. FOMC at 2PM → block 12:30-3:00.
+    try:
+        import httpx
+        s = get_settings()
+        if s.finnhub_api_key:
+            today_str = now.strftime("%Y-%m-%d")
+            r = httpx.get(
+                "https://finnhub.io/api/v1/calendar/economic",
+                params={"token": s.finnhub_api_key, "from": today_str, "to": today_str},
+                timeout=5,
+            )
+            if r.status_code == 200:
+                events = r.json().get("economicCalendar", [])
+                major = [e for e in events if e.get("impact", "") == "high"]
+                for ev in major:
+                    ev_time = ev.get("time", "")
+                    if ev_time:
+                        # Parse HH:MM format from Finnhub
+                        try:
+                            parts = ev_time.split(":")
+                            ev_mins = int(parts[0]) * 60 + int(parts[1])
+                            block_start = ev_mins - 90
+                            block_end = ev_mins + 60
+                            if block_start <= mins <= block_end:
+                                return []  # Inside macro danger window
+                        except (ValueError, IndexError):
+                            pass
+                    else:
+                        # No time given — event affects whole day, skip entirely
+                        if major:
+                            return []
+    except Exception:
+        pass  # If check fails, continue with alerts
+
+    # Reset daily counter at midnight
+    today_key_prefix = now.strftime("%Y%m%d")
 
     # Time gates moved per-ticker to allow trend-day exceptions.
     # Normal mode: PM momentum + power hour only (1:30 PM+)
@@ -270,13 +391,25 @@ async def _check_scalp_alerts() -> list[dict[str, Any]]:
         prev = _prev_state.get(ticker, {})
         prev_spot = prev.get("spot", spot)
 
-        # Volume confirmation: skip transitions in dead tape
-        # (ChatGPT: "add lightweight second confirmation — VWAP, volume expansion")
+        # Volume confirmation: skip transitions without participation
         ed = state.get("exp_data", {}).get("MACRO (ALL 200D)", {})
-        # Use total GEX magnitude as a proxy for options activity
+        # Gate 1: GEX magnitude (options activity)
         gex_magnitude = abs(ed.get("pos_gex", 0)) + abs(ed.get("neg_gex", 0))
         if gex_magnitude < 1_000_000:  # Less than $1M total GEX = dead tape
             continue
+
+        # Gate 2: Price volume context on the 15-min bar
+        # Volume confirms but does NOT veto — gamma squeezes can start on normal volume
+        # (dealer hedging flows don't need retail volume expansion to kick off)
+        vol_confirmed = True  # default
+        cached_bars = _bar_cache.get(ticker)
+        if cached_bars and cached_bars[1] and len(cached_bars[1]) >= 10:
+            bars = cached_bars[1]
+            volumes = [b.get("volume", 0) for b in bars if b.get("volume")]
+            if len(volumes) >= 5:
+                avg_vol = sum(volumes[-20:]) / min(len(volumes), 20)
+                current_vol = volumes[-1] if volumes else 0
+                vol_confirmed = current_vol > avg_vol * 0.8
 
         # Only fire on STATE TRANSITIONS — not proximity persistence.
         # "Cream of the crop" = the moment price CROSSES a level or
@@ -362,7 +495,11 @@ async def _check_scalp_alerts() -> list[dict[str, Any]]:
                 _record_alert(ticker, "RETEST")
 
         # ── SELL THE POP: price hit ceiling and rejecting ──────────
-        if ceiling and ceiling > spot and prev_spot and prev_spot >= ceiling * 0.997 and spot < ceiling * 0.997:
+        # 4-LLM consensus: only fire when trend_mode == NORMAL
+        # "Selling pop into a trend day is how 0DTE traders donate money"
+        if (ceiling and ceiling > spot and prev_spot
+            and prev_spot >= ceiling * 0.997 and spot < ceiling * 0.997
+            and trend_mode == "NORMAL"):
             if _can_alert(ticker, "SELL_POP"):
                 contract = _suggest_contract(ticker, spot, "PUTS")
                 alerts.append({
@@ -460,10 +597,36 @@ async def _check_scalp_alerts() -> list[dict[str, Any]]:
             alerts.append(ema_alert)
             _record_alert(ticker, ema_alert["type"])
 
+        # Tag alerts with volume context + VIX/DTE metadata
+        for a in alerts:
+            if a.get("ticker") == ticker:
+                a["_vol_confirmed"] = vol_confirmed
+                a["_vix_level"] = vix_level
+                dte_days, dte_label = _get_dte_preference()
+                if vix_level >= 25:
+                    dte_label = "1DTE"
+                a["_dte_label"] = dte_label
+
         # Store state for next cycle
         _prev_state[ticker] = {"spot": spot, "king": king, "floor": floor_val, "zgl": zgl}
 
-    return alerts
+    # ── Combined daily cap: 2 total across SPY+QQQ ───────────────
+    # ZGL_CROSS context tags pass through without counting
+    daily_key = today_key_prefix
+    day_count = _daily_alert_count.get(daily_key, 0)
+    kept: list[dict[str, Any]] = []
+    for a in alerts:
+        if a["type"] in _CONTEXT_ONLY_ALERTS:
+            a["_context_only"] = True
+            kept.append(a)  # Context tags always pass, don't count
+        elif day_count >= MAX_DAILY_ALERTS:
+            print(f"[SCALP] Daily cap hit ({MAX_DAILY_ALERTS}), dropping {a['ticker']} {a['type']}")
+        else:
+            day_count += 1
+            kept.append(a)
+    _daily_alert_count[daily_key] = day_count
+
+    return kept
 
 
 def _get_window() -> tuple[str, str]:
@@ -511,8 +674,129 @@ def format_scalp_alert(alert: dict[str, Any]) -> str:
     elif window == "CHOP":
         lines.append(f"⚠️ Midday chop — Mir avoids this window")
 
-    lines.append(f"🔥 0DTE HIGH RISK | 1DTE preferred for buffer")
+    # Volume confirmation tag
+    if alert.get("_vol_confirmed") is False:
+        lines.append(f"⚠️ LOW VOLUME — no participation confirmation")
+    elif alert.get("_vol_confirmed") is True:
+        lines.append(f"✅ Volume confirmed")
+
+    # VIX context
+    vix_level = alert.get("_vix_level", 0)
+    if vix_level >= 25:
+        lines.append(f"⚠️ VIX {vix_level:.1f} — ELEVATED, 1DTE forced")
+    elif vix_level > 0:
+        lines.append(f"VIX: {vix_level:.1f}")
+
+    # DTE label (1DTE vs 0DTE)
+    dte_label = alert.get("_dte_label", "0DTE")
+    if dte_label == "0DTE":
+        lines.append(f"🔥 0DTE POWER HOUR | aggressive theta, tight stops")
+    else:
+        lines.append(f"📋 1DTE — theta buffer, let the trade develop")
+
+    # Context-only tag for ZGL alerts
+    if alert.get("_context_only"):
+        lines.append(f"ℹ️ CONTEXT ONLY — regime bias, not a trade trigger")
+
     return "\n".join(lines)
+
+
+async def _auto_paper_scalp(alert: dict[str, Any]) -> None:
+    """Auto-open a paper position for a scalp alert.
+
+    Inserts into soe_signals first (so paper_trading can reference it),
+    then opens the paper position at the ask (Grok rule).
+    Context-only alerts (ZGL_CROSS) are skipped.
+    """
+    if alert.get("_context_only"):
+        return
+
+    try:
+        import sqlite3
+        from .config import get_settings
+        s = get_settings()
+        conn = sqlite3.connect(s.snapshot_db)
+        conn.row_factory = sqlite3.Row
+
+        ticker = alert["ticker"]
+        direction = alert.get("direction", "CALLS")
+        spot = alert.get("spot", 0)
+        target = alert.get("target", 0)
+        stop = alert.get("stop", 0)
+        dte_days, dte_label = _get_dte_preference()
+        vix_level = _current_vix.get("level", 0)
+        if vix_level >= 25:
+            dte_days = 1
+
+        # Parse contract suggestion for strike/exp
+        contract_str = alert.get("contract", "")
+        # Format: "SPY $697C 2026-04-16 (1DTE)"
+        strike = 0
+        expiration = ""
+        option_type = "call" if direction == "CALLS" else "put"
+        import re
+        m = re.search(r'\$(\d+(?:\.\d+)?)[CP]?\s+(\d{4}-\d{2}-\d{2})', contract_str)
+        if m:
+            strike = float(m.group(1))
+            expiration = m.group(2)
+
+        # Get bid/ask from cached chain
+        bid, ask, mid, delta = 0, 0, 0, 0.5
+        state = await cache.get(ticker)
+
+        if state:
+            raw = state.get("_raw_contracts", {})
+            for exp_contracts in raw.values():
+                for c in exp_contracts:
+                    if (abs(c.get("strike", 0) - strike) < 0.01 and
+                        (c.get("option_type") or "").lower() == option_type and
+                        c.get("expiration_date") == expiration):
+                        bid = c.get("bid", 0) or 0
+                        ask = c.get("ask", 0) or 0
+                        mid = (bid + ask) / 2 if (bid + ask) > 0 else 0
+                        g = c.get("greeks") or {}
+                        delta = abs(g.get("delta", 0) or 0.5)
+                        break
+
+        if not ask or ask <= 0:
+            print(f"[SCALP] Skip paper trade for {ticker} — no ask price")
+            return
+
+        # Insert as signal so paper_trading can reference it
+        import time as _time
+        conn.execute(
+            """INSERT INTO soe_signals
+            (ts, ticker, direction, signal_type, grade, score, max_score,
+             strike, expiration, option_type, target, target_label, stop, stop_label,
+             rr_ratio, spot, king, reasoning, status,
+             entry_price, mid_price, bid, ask)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                int(_time.time()), ticker,
+                "BULL" if direction == "CALLS" else "BEAR",
+                f"SCALP_{alert['type']}", "SCALP", 0, 0,
+                strike, expiration, option_type,
+                target, alert.get("type", ""), stop, "level break",
+                round(abs(target - spot) / abs(spot - stop), 1) if abs(spot - stop) > 0 else 0,
+                spot, state.get("king", 0) if state else 0,
+                alert.get("headline", ""), "PENDING",
+                ask, mid, bid, ask,
+            ),
+        )
+        signal_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.commit()
+        conn.close()
+
+        # Open paper position
+        from .paper_trading import open_position
+        result = open_position(signal_id, contracts=1)  # Always 1 contract for scalps
+        if result.get("error"):
+            print(f"[SCALP] Paper open failed for {ticker}: {result['error']}")
+        else:
+            print(f"[SCALP] Paper auto-opened: {ticker} {alert['type']} x1 @ ask ${ask:.2f} ({dte_label})")
+
+    except Exception as e:
+        print(f"[SCALP] Paper trade error for {alert.get('ticker', '?')}: {e}")
 
 
 async def run_scalp_scanner(stop_event: asyncio.Event) -> None:
@@ -526,8 +810,10 @@ async def run_scalp_scanner(stop_event: asyncio.Event) -> None:
                 from .telegram import send
                 for a in alerts:
                     msg = format_scalp_alert(a)
-                    await send(msg, ticker=a["ticker"], priority=True)
+                    await send(msg, ticker=a["ticker"], force=True)
                     print(f"[SCALP] {a['ticker']} {a['type']}: {a['headline']}")
+                    # Auto-open paper position for real trade alerts
+                    await _auto_paper_scalp(a)
         except Exception as e:
             print(f"[SCALP] error: {e}")
 
