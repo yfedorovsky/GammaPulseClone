@@ -574,6 +574,21 @@ async def vix_regime():
     return await get_vix_intraday_regime()
 
 
+@app.get("/api/oil-regime")
+async def oil_regime():
+    """Today's oil regime with SPY+XLE co-movement disambiguation.
+
+    4-LLM consensus architecture (Apr 16 2026):
+      OIL_SPIKE_RISKOFF (USO +4%+ AND SPY red AND XLE bid) = telegram alert
+      OIL_UP_MILD (USO +2-4%) = soft caution, runner score -1
+      OIL_CRASH_RELIEF (USO -4%+ AND SPY green) = deflationary tailwind, +1
+      OIL_DEMAND_RELIEF (USO +4%+ AND SPY green AND XLE green) = Liberation Day
+        pattern, no action (would be false-positive risk-off)
+    """
+    from .breadth import get_oil_intraday_regime
+    return await get_oil_intraday_regime()
+
+
 @app.get("/api/rts")
 async def rts_rankings(direction: str = "BULL", limit: int = 50):
     """Relative Trend Strength rankings for vehicle selection."""

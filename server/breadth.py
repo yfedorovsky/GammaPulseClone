@@ -421,12 +421,14 @@ async def get_breadth_context() -> dict[str, Any]:
     namo = await get_namo()
     vix_ts = await get_vix_term_structure()
     vix_regime = await get_vix_intraday_regime()
+    oil_regime = await get_oil_intraday_regime()
 
     return {
         "nymo": nymo,
         "namo": namo,
         "vix_term_structure": vix_ts,
         "vix_intraday_regime": vix_regime,
+        "oil_intraday_regime": oil_regime,
         "breadth_score": _score_breadth(nymo, namo, vix_ts),
     }
 
@@ -547,6 +549,193 @@ async def get_vix_intraday_regime() -> dict[str, Any]:
         "label": label,
     }
     _VIX_REGIME_CACHE = (now_ts, result)
+    return result
+
+
+# ── Oil Intraday Regime Detector ──────────────────────────────────────
+# 4-LLM consensus (ChatGPT + Grok + Perplexity + Gemini, Apr 16 2026):
+# Backtest (scripts/backtest_oil_regime.py, 730d, 502 days):
+#   OIL_UP_MILD (USO +2-4%): 42.3% WR, 26 obs — DEPLOYABLE as soft gate
+#   OIL_SPIKE (USO +4%+):    0% WR (n=2-3), telegram alert only
+#   OIL_CRASH (USO -4%+):   100% WR (n=3-4), deflationary relief
+#   Baseline: 52.9% WR
+#
+# Kilian-Park (2009 AER): supply shocks → equity negative,
+#   demand shocks → equity positive. Raw USO threshold conflates both.
+#
+# Disambiguation via SPY + XLE co-movement (validated by all 4 reviewers):
+#   USO↑ + SPY↓ + XLE↑  = OIL_SPIKE_RISKOFF (supply shock) ← target
+#   USO↑ + SPY↑ + XLE↑  = OIL_DEMAND_RELIEF (Liberation Day pattern)
+#   USO↑ + SPY↓ + XLE↓  = STAGFLATION_FEAR (cost-push inflation)
+#   USO↓ + SPY↑ + XLE↓  = OIL_CRASH_RELIEF (deflationary tailwind)
+
+_OIL_REGIME_CACHE: tuple[float, dict[str, Any]] = (0, {})
+_OIL_REGIME_CACHE_TTL = 120  # 2 min
+_OIL_DAILY_OPEN_CACHE: dict[str, dict[str, float]] = {}  # date -> {USO, SPY, XLE, BNO}
+
+
+async def get_oil_intraday_regime() -> dict[str, Any]:
+    """Classify today's oil regime with SPY + XLE + BNO co-movement filter.
+
+    Returns:
+      {
+        regime: "OIL_SPIKE_RISKOFF" | "OIL_DEMAND_RELIEF" | "OIL_UP_MILD" |
+                "OIL_CALM" | "OIL_DOWN_MILD" | "OIL_CRASH_RELIEF" |
+                "STAGFLATION_FEAR" | "UNKNOWN",
+        uso_open, uso_current, uso_change_pct,
+        spy_change_pct, xle_change_pct, bno_change_pct,
+        bull_bias: bool,           # True if regime favors SPY longs
+        risk_off: bool,             # True if high-confidence risk-off
+        runner_score_modifier: int, # score adjustment for runner tracker
+        win_rate_expectation: float,
+        label: str,
+      }
+    """
+    global _OIL_REGIME_CACHE, _OIL_DAILY_OPEN_CACHE
+    now_ts = time.time()
+    cached_ts, cached = _OIL_REGIME_CACHE
+    if now_ts - cached_ts < _OIL_REGIME_CACHE_TTL and cached:
+        return cached
+
+    import datetime as _dt
+    today = _dt.date.today().isoformat()
+
+    try:
+        from .tradier import TradierClient
+        t = TradierClient()
+
+        # Get today's opens (daily bars) — cache for the day
+        if today not in _OIL_DAILY_OPEN_CACHE:
+            opens: dict[str, float] = {}
+            for sym in ("USO", "SPY", "XLE", "BNO"):
+                try:
+                    bars = await t.history(sym, interval="daily", start=today, end=today)
+                    if bars:
+                        opens[sym] = bars[0].get("open", 0) or 0
+                except Exception:
+                    pass
+            if opens:
+                _OIL_DAILY_OPEN_CACHE[today] = opens
+
+        # Get current spots
+        quotes = await t.quotes(["USO", "SPY", "XLE", "BNO"])
+        await t.close()
+    except Exception:
+        _OIL_REGIME_CACHE = (now_ts, {"regime": "UNKNOWN", "error": "quote_fetch_failed"})
+        return _OIL_REGIME_CACHE[1]
+
+    opens = _OIL_DAILY_OPEN_CACHE.get(today, {})
+    uso_open = opens.get("USO", 0)
+    spy_open = opens.get("SPY", 0)
+    xle_open = opens.get("XLE", 0)
+    bno_open = opens.get("BNO", 0)
+    uso_current = quotes.get("USO", 0)
+    spy_current = quotes.get("SPY", 0)
+    xle_current = quotes.get("XLE", 0)
+    bno_current = quotes.get("BNO", 0)
+
+    if not uso_open or not uso_current:
+        result = {
+            "regime": "UNKNOWN",
+            "uso_open": uso_open, "uso_current": uso_current,
+            "error": "missing USO data",
+        }
+        _OIL_REGIME_CACHE = (now_ts, result)
+        return result
+
+    def pct(o, c):
+        return (c - o) / o * 100 if o else 0
+
+    uso_pct = pct(uso_open, uso_current)
+    spy_pct = pct(spy_open, spy_current)
+    xle_pct = pct(xle_open, xle_current)
+    bno_pct = pct(bno_open, bno_current)
+
+    # 4-pattern classification — requires SPY + XLE co-movement for risk-off
+    if uso_pct >= 4.0:
+        if spy_pct < 0 and xle_pct >= 0:
+            # Classic supply shock: oil up, equities down, energy sector bid
+            regime = "OIL_SPIKE_RISKOFF"
+            bull_bias = False
+            risk_off = True
+            mod = -2  # runner tracker score penalty
+            wr = 0.0  # n=2-3, statistically meaningless but directional
+            label = "Oil spike + SPY red → geopolitical risk-off"
+        elif spy_pct > 0 and xle_pct > 0:
+            # Aggregate demand / relief rally — Liberation Day pattern
+            regime = "OIL_DEMAND_RELIEF"
+            bull_bias = True
+            risk_off = False
+            mod = 0  # don't penalize longs on demand-repricing days
+            wr = 100.0  # Apr 9 2025 single obs, ignore for stats
+            label = "Oil spike + SPY green → demand repricing, NOT risk-off"
+        elif spy_pct < 0 and xle_pct < 0:
+            regime = "STAGFLATION_FEAR"
+            bull_bias = False
+            risk_off = True
+            mod = -1
+            wr = 30.0  # no clean backtest; conservative estimate
+            label = "Oil spike + everything red → cost-push stagflation fear"
+        else:
+            regime = "OIL_SPIKE"
+            bull_bias = False
+            risk_off = False
+            mod = 0  # ambiguous, don't act
+            wr = 33.3
+            label = "Oil spike, mixed equity signal — ambiguous"
+    elif uso_pct >= 2.0:
+        regime = "OIL_UP_MILD"
+        bull_bias = False
+        risk_off = False
+        mod = -1  # soft caution — n=26 sample, directionally suggestive
+        wr = 42.3
+        label = "Oil elevated → caution on longs"
+    elif uso_pct <= -4.0:
+        if spy_pct > 0 and xle_pct <= 0:
+            # Supply glut / deflationary tailwind
+            regime = "OIL_CRASH_RELIEF"
+            bull_bias = True
+            risk_off = False
+            mod = 1  # bullish tailwind
+            wr = 100.0  # n=3-4, small sample
+            label = "Oil crash + SPY green → deflationary relief rally"
+        else:
+            regime = "OIL_CRASH"
+            bull_bias = False
+            risk_off = False
+            mod = 0
+            wr = 50.0
+            label = "Oil crash — demand destruction signal, mixed equity"
+    elif uso_pct <= -2.0:
+        regime = "OIL_DOWN_MILD"
+        bull_bias = True  # slightly
+        risk_off = False
+        mod = 0  # no action, just logging
+        wr = 56.5
+        label = "Oil mildly down — slight tailwind"
+    else:
+        regime = "OIL_CALM"
+        bull_bias = False
+        risk_off = False
+        mod = 0
+        wr = 52.9
+        label = "Oil calm — baseline"
+
+    result = {
+        "regime": regime,
+        "uso_open": round(uso_open, 2),
+        "uso_current": round(uso_current, 2),
+        "uso_change_pct": round(uso_pct, 2),
+        "spy_change_pct": round(spy_pct, 2),
+        "xle_change_pct": round(xle_pct, 2),
+        "bno_change_pct": round(bno_pct, 2),
+        "bull_bias": bull_bias,
+        "risk_off": risk_off,
+        "runner_score_modifier": mod,
+        "win_rate_expectation": wr,
+        "label": label,
+    }
+    _OIL_REGIME_CACHE = (now_ts, result)
     return result
 
 

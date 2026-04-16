@@ -21,6 +21,7 @@ export const api = {
   scanner: () => json('GET', '/api/scanner'),
   swingScanner: (mode = 'standard') => json('GET', `/api/swing-scanner?mode=${mode}`),
   vixRegime: () => json('GET', '/api/vix-regime'),
+  oilRegime: () => json('GET', '/api/oil-regime'),
   subscribe: (tickers) => json('POST', '/api/stream/subscribe', { tickers }),
   logSignal: (payload) => json('POST', '/api/signals/log', payload),
   history: (ticker, limit = 500) =>

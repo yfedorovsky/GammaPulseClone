@@ -29,6 +29,19 @@ const VIX_REGIMES = {
   VIX_SPIKE:          { color: '#ff5656', label: 'VIX SPIKE', wr: 20 },
 };
 
+// Oil regime badge palette — 4-LLM consensus (Apr 16 2026)
+const OIL_REGIMES = {
+  OIL_SPIKE_RISKOFF:  { color: '#ff5656', label: 'OIL RISK-OFF' },
+  STAGFLATION_FEAR:   { color: '#ff5656', label: 'STAGFLATION' },
+  OIL_UP_MILD:        { color: '#ff9800', label: 'OIL ELEVATED' },
+  OIL_SPIKE:          { color: '#ff9800', label: 'OIL SPIKE' },
+  OIL_DEMAND_RELIEF:  { color: '#10dc9a', label: 'DEMAND RELIEF' },
+  OIL_CRASH_RELIEF:   { color: '#10dc9a', label: 'CRASH RELIEF' },
+  OIL_DOWN_MILD:      { color: '#8a93a8', label: 'OIL DOWN' },
+  OIL_CRASH:          { color: '#8a93a8', label: 'OIL CRASH' },
+  OIL_CALM:           null,  // no badge — don't clutter UI on normal days
+};
+
 const REFRESH_MS = 30_000;
 
 function TagBadge({ tag }) {
@@ -67,6 +80,7 @@ function SectorRankBar({ ranks }) {
 export default function SwingsTab() {
   const [data, setData] = useState(null);
   const [vixRegime, setVixRegime] = useState(null);
+  const [oilRegime, setOilRegime] = useState(null);
   const [mode, setMode] = useState('standard');
   const [loading, setLoading] = useState(true);
   const [sortCol, setSortCol] = useState('swing_score');
@@ -74,12 +88,14 @@ export default function SwingsTab() {
 
   const load = useCallback(async () => {
     try {
-      const [d, v] = await Promise.all([
+      const [d, v, o] = await Promise.all([
         api.swingScanner(mode),
         api.vixRegime().catch(() => null),
+        api.oilRegime().catch(() => null),
       ]);
       setData(d);
       if (v) setVixRegime(v);
+      if (o) setOilRegime(o);
     } catch (e) {
       console.error('[SwingsTab] load error:', e);
     } finally {
@@ -155,6 +171,27 @@ export default function SwingsTab() {
             >
               {r.label} · VIX {vixRegime.vix_current?.toFixed(1)}{' '}
               ({vixRegime.change_pct >= 0 ? '+' : ''}{vixRegime.change_pct?.toFixed(1)}%) · {r.wr}% WR
+            </span>
+          );
+        })()}
+
+        {/* Oil regime badge (hidden on OIL_CALM to reduce clutter) */}
+        {oilRegime && oilRegime.regime && OIL_REGIMES[oilRegime.regime] && (() => {
+          const r = OIL_REGIMES[oilRegime.regime];
+          return (
+            <span
+              title={oilRegime.label || ''}
+              style={{
+                fontSize: 10, fontWeight: 800, padding: '4px 10px', borderRadius: 4,
+                background: `${r.color}22`, color: r.color, border: `1px solid ${r.color}55`,
+                fontFamily: 'var(--mono)', whiteSpace: 'nowrap', marginLeft: 8,
+              }}
+            >
+              🛢 {r.label} · USO {oilRegime.uso_change_pct >= 0 ? '+' : ''}
+              {oilRegime.uso_change_pct?.toFixed(1)}%
+              {oilRegime.runner_score_modifier !== 0 && (
+                <> · {oilRegime.runner_score_modifier > 0 ? '+' : ''}{oilRegime.runner_score_modifier}</>
+              )}
             </span>
           );
         })()}

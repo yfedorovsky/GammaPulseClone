@@ -110,6 +110,7 @@ def init_runner_db() -> None:
             ("runner_shape", "ALTER TABLE runner_tracker ADD COLUMN runner_shape TEXT"),
             ("adr_at_entry", "ALTER TABLE runner_tracker ADD COLUMN adr_at_entry REAL"),
             ("vix_regime_at_entry", "ALTER TABLE runner_tracker ADD COLUMN vix_regime_at_entry TEXT"),
+            ("oil_regime_at_entry", "ALTER TABLE runner_tracker ADD COLUMN oil_regime_at_entry TEXT"),
         ]:
             try:
                 c.execute(ddl)
@@ -404,6 +405,23 @@ def _compute_runner_score(runner: dict) -> float:
         score -= 3
     # else UNKNOWN / None — no adjustment
 
+    # 12. Oil regime modifier (conservative per 4-LLM consensus Apr 16)
+    # OIL_UP_MILD (n=26, 42.3% WR vs 52.9% baseline) = soft defensive -1
+    # OIL_SPIKE_RISKOFF (USO+4% + SPY red + XLE bid) = -2 (telegram-alert-grade)
+    # OIL_CRASH_RELIEF (deflationary tailwind) = +1 bonus
+    # OIL_DEMAND_RELIEF (Liberation Day pattern) = no penalty — oil spike is risk-on here
+    # Stored as runner.get("oil_regime_at_entry") — injected by update_runners()
+    oil_regime = runner.get("oil_regime_at_entry")
+    if oil_regime == "OIL_SPIKE_RISKOFF":
+        score -= 2
+    elif oil_regime == "OIL_UP_MILD":
+        score -= 1
+    elif oil_regime == "STAGFLATION_FEAR":
+        score -= 1
+    elif oil_regime == "OIL_CRASH_RELIEF":
+        score += 1
+    # else OIL_CALM / OIL_DEMAND_RELIEF / UNKNOWN — no adjustment
+
     # Cap score at [0, 20]
     score = max(0.0, min(20.0, score))
     return round(score, 1)
@@ -557,6 +575,73 @@ def _format_contract_ladder(ladder: list[dict], ticker: str) -> str:
     return "\n".join(lines)
 
 
+# ── Oil regime transition alerts ──────────────────────────────────────
+# Fires a Telegram alert ONCE when the oil regime transitions into a
+# risk-off or relief-worthy state. State is tracked per-day — re-fires
+# if the same regime triggers on a different calendar day.
+
+_LAST_OIL_REGIME_ALERT: dict[str, str] = {}  # date -> last alerted regime
+
+
+async def _alert_oil_regime_transition(oil_data: dict | None) -> None:
+    """Telegram alert on oil regime transitions — OIL_SPIKE_RISKOFF /
+    STAGFLATION_FEAR / OIL_CRASH_RELIEF. No spam: only alerts on new
+    regime entry per calendar day."""
+    if not oil_data:
+        return
+    regime = oil_data.get("regime")
+    if regime not in ("OIL_SPIKE_RISKOFF", "STAGFLATION_FEAR", "OIL_CRASH_RELIEF"):
+        return
+
+    today = _today()
+    last = _LAST_OIL_REGIME_ALERT.get(today)
+    if last == regime:
+        return  # already alerted for this regime today
+
+    _LAST_OIL_REGIME_ALERT[today] = regime
+    try:
+        from .telegram import send
+    except ImportError:
+        return
+
+    uso_pct = oil_data.get("uso_change_pct", 0)
+    spy_pct = oil_data.get("spy_change_pct", 0)
+    xle_pct = oil_data.get("xle_change_pct", 0)
+    bno_pct = oil_data.get("bno_change_pct", 0)
+    label = oil_data.get("label", "")
+
+    if regime == "OIL_SPIKE_RISKOFF":
+        emoji = "🛢️🔴"
+        header = f"OIL RISK-OFF ALERT"
+        guidance = (
+            "Mir rule: pause new long entries, consider harvesting runners.\n"
+            "Supply-shock pattern (USO+ SPY- XLE+ = geopolitical risk-off)."
+        )
+    elif regime == "STAGFLATION_FEAR":
+        emoji = "⚠️"
+        header = "STAGFLATION FEAR"
+        guidance = (
+            "Oil up, broad tape down, energy NOT leading = cost-push fears.\n"
+            "Mir rule: no new longs, mean-reversion is suicide."
+        )
+    else:  # OIL_CRASH_RELIEF
+        emoji = "🟢"
+        header = "OIL CRASH RELIEF"
+        guidance = (
+            "Oil down, SPY up, XLE down = deflationary tailwind (supply glut).\n"
+            "Mir rule: bullish setups get a boost, runner score +1."
+        )
+
+    text = (
+        f"{emoji} {header}\n"
+        f"{label}\n\n"
+        f"USO: {uso_pct:+.2f}% | SPY: {spy_pct:+.2f}% | XLE: {xle_pct:+.2f}% | BNO: {bno_pct:+.2f}%\n"
+        f"{guidance}"
+    )
+    await send(text, ticker="OIL", force=True)
+    print(f"[runner_tracker] OIL_REGIME_ALERT: {regime} (USO {uso_pct:+.1f}%, SPY {spy_pct:+.1f}%)")
+
+
 # ── Telegram alerts ───────────────────────────────────────────────────
 
 
@@ -683,7 +768,7 @@ def _persist(runner: dict) -> None:
         if row:
             c.execute("""UPDATE runner_tracker SET
                 state=?, swing_score=?, rts_score=?, ivp=?, dist_to_high=?,
-                runner_shape=?, adr_at_entry=?, vix_regime_at_entry=?,
+                runner_shape=?, adr_at_entry=?, vix_regime_at_entry=?, oil_regime_at_entry=?,
                 d1_date=?, d1_open=?, d1_high=?, d1_low=?, d1_close=?,
                 d1_volume=?, d1_rvol=?, d1_gain_pct=?,
                 d2_date=?, d2_open=?, d2_high=?, d2_low=?, d2_close=?,
@@ -696,7 +781,7 @@ def _persist(runner: dict) -> None:
                 runner.get("state"), runner.get("swing_score"), runner.get("rts_score"),
                 runner.get("ivp"), runner.get("dist_to_high"),
                 runner.get("runner_shape"), runner.get("adr_at_entry"),
-                runner.get("vix_regime_at_entry"),
+                runner.get("vix_regime_at_entry"), runner.get("oil_regime_at_entry"),
                 runner.get("d1_date"), runner.get("d1_open"), runner.get("d1_high"),
                 runner.get("d1_low"), runner.get("d1_close"),
                 runner.get("d1_volume"), runner.get("d1_rvol"), runner.get("d1_gain_pct"),
@@ -714,16 +799,16 @@ def _persist(runner: dict) -> None:
         else:
             c.execute("""INSERT INTO runner_tracker
                 (ticker, state, entry_ts, entry_date, entry_path,
-                 runner_shape, adr_at_entry, vix_regime_at_entry,
+                 runner_shape, adr_at_entry, vix_regime_at_entry, oil_regime_at_entry,
                  swing_score, rts_score, ivp, dist_to_high,
                  d1_date, d1_open, d1_high, d1_low, d1_close,
                  d1_volume, d1_rvol, d1_gain_pct,
                  total_gain_pct, consecutive_2pct_days, runner_score)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
                 runner["ticker"], runner["state"], runner["entry_ts"], runner["entry_date"],
                 runner.get("entry_path", "SWING"),
                 runner.get("runner_shape"), runner.get("adr_at_entry"),
-                runner.get("vix_regime_at_entry"),
+                runner.get("vix_regime_at_entry"), runner.get("oil_regime_at_entry"),
                 runner.get("swing_score"), runner.get("rts_score"),
                 runner.get("ivp"), runner.get("dist_to_high"),
                 runner.get("d1_date"), runner.get("d1_open"), runner.get("d1_high"),
@@ -780,6 +865,22 @@ async def update_runners() -> None:
         vix_regime_label = vix_regime.get("regime")
     except Exception:
         pass
+
+    # Fetch oil regime once per cycle (4-LLM consensus Apr 16 2026)
+    # OIL_UP_MILD (n=26, 42.3% WR): -1 runner score
+    # OIL_SPIKE_RISKOFF (USO+4% + SPY red + XLE bid): -2 runner score
+    # OIL_CRASH_RELIEF: +1 bonus
+    oil_regime_label = None
+    oil_regime_data = None
+    try:
+        from .breadth import get_oil_intraday_regime
+        oil_regime_data = await get_oil_intraday_regime()
+        oil_regime_label = oil_regime_data.get("regime")
+    except Exception:
+        pass
+
+    # Check for state transition → telegram alert on OIL_SPIKE_RISKOFF
+    await _alert_oil_regime_transition(oil_regime_data)
 
     # ── Day finalization (runs once at first cycle of new trading day) ─
     if date_changed:
@@ -893,13 +994,15 @@ async def update_runners() -> None:
             "consecutive_2pct_days": 1,
             "_current_date": today,
             "vix_regime_at_entry": vix_regime_label,
+            "oil_regime_at_entry": oil_regime_label,
         }
         runner["runner_score"] = _compute_runner_score(runner)
         _runners[ticker] = runner
         _persist(runner)
         await _alert_transition(ticker, "DAY1_BREAKOUT", runner, state=state)
         regime_tag = f" vix={vix_regime_label}" if vix_regime_label else ""
-        print(f"[runner_tracker] DAY1_BREAKOUT [SWING/{shape}]: {ticker} +{pct_change:.1f}% rvol={rvol:.1f}x score={runner['runner_score']:.0f}/20{regime_tag}")
+        oil_tag = f" oil={oil_regime_label}" if oil_regime_label and oil_regime_label != "OIL_CALM" else ""
+        print(f"[runner_tracker] DAY1_BREAKOUT [SWING/{shape}]: {ticker} +{pct_change:.1f}% rvol={rvol:.1f}x score={runner['runner_score']:.0f}/20{regime_tag}{oil_tag}")
 
     # ── Reclaim path: catch V-bottom mega-cap reclaims that the swing
     # scanner's uptrend-continuation gates filter out (e.g., MSFT Apr 13). ──
@@ -923,6 +1026,7 @@ async def update_runners() -> None:
         reclaim_runner = _check_reclaim_entry(ticker, state, today)
         if reclaim_runner:
             reclaim_runner["vix_regime_at_entry"] = vix_regime_label
+            reclaim_runner["oil_regime_at_entry"] = oil_regime_label
             reclaim_runner["runner_score"] = _compute_runner_score(reclaim_runner)
             _runners[ticker] = reclaim_runner
             _persist(reclaim_runner)
