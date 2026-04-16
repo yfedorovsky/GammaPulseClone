@@ -31,11 +31,14 @@ RECLAIM_EXTRA_TICKERS: set[str] = {
     # Space / National Security (Mir 2026 themes)
     "RKLB",   # Rocket Lab
     "ASTS",   # AST SpaceMobile
-    # Nuclear / energy (Mir 2026 theme)
-    "OKLO",   # small modular reactors
-    # Quantum (added 2026-04-16 — sector rip: ARQQ +9%, QBTS +5%, IONQ +3.7%)
-    "IONQ",   # IonQ — most liquid quantum name
-    "RGTI",   # Rigetti Computing
+    # Nuclear / energy (Mir 2026 theme — White House space nuclear directive Apr 14)
+    "OKLO",   # small modular reactors + CTO transition Apr 2026
+    "SMR",    # NuScale — most liquid SMR pure-play
+    "NNE",    # Nano Nuclear Energy
+    "UUUU",   # Energy Fuels (uranium, AI-data-center power tailwind)
+    # Quantum (added 2026-04-16 — NVDA Ising model sector rotation catalyst)
+    "IONQ",   # IonQ — most liquid quantum name, 256-qubit roadmap
+    "RGTI",   # Rigetti Computing — 108-qubit Cepheus-1 Q1 2026
 }
 
 # ── Schema ────────────────────────────────────────────────────────────
