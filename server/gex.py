@@ -323,6 +323,108 @@ def _compute_signal(
     return "RESISTANCE", False
 
 
+def _build_callout(
+    spot: float, king: float, king_is_positive: bool,
+    floor: float | None, ceiling: float | None,
+    neg_king: float | None = None,
+) -> str:
+    """Build actionable trader-facing callout text (OG GammaPulse-inspired).
+
+    Returns a descriptive string that combines:
+      - Spot's position relative to nearest key level
+      - Distance as a percentage
+      - Short action hint
+
+    Examples (matching OG's 4/15 "Actionable Callouts" spec):
+      "Pinned at king $697 · sell premium"
+      "0.5% above floor $685 · bounce zone"
+      "Below floor $685 · breakdown"
+      "0.8% below ceiling $410 · resistance"
+      "Above ceiling $410 · breakout"
+      "0.4% above king $697 · magnet pull"
+      "Near -king $700 · whipsaw risk"  (new — v3)
+
+    Fires when spot is within 2% of a key level. Outside that range,
+    returns a default "in range" message keyed off the king position.
+    """
+    if not spot or spot <= 0:
+        return ""
+
+    # Candidate levels: (strike, label, kind) — nearest meaningful level wins
+    candidates: list[tuple[float, str, str]] = []
+    if king > 0:
+        candidates.append((king, "king", "king"))
+    if floor and floor > 0:
+        candidates.append((floor, "floor", "floor"))
+    if ceiling and ceiling > 0:
+        candidates.append((ceiling, "ceiling", "ceiling"))
+    if neg_king and neg_king > 0:
+        candidates.append((neg_king, "-king", "neg_king"))
+
+    if not candidates:
+        return ""
+
+    # Find nearest level by distance
+    nearest_level, nearest_label, nearest_kind = min(
+        candidates, key=lambda c: abs(c[0] - spot)
+    )
+    dist_abs = spot - nearest_level
+    dist_pct = abs(dist_abs) / spot * 100
+
+    # Only use level-specific callouts within 2% — otherwise fall through
+    # to a nearest-level distance callout that's always populated.
+    if dist_pct > 2.0:
+        direction = "above" if dist_abs > 0 else "below"
+        # Describe distance to nearest meaningful level. No action hint since
+        # we're not near anything actionable — just context.
+        if dist_pct < 5.0:
+            return f"{dist_pct:.1f}% {direction} {nearest_label} ${nearest_level:g}"
+        # Far from everything — give spot-vs-king context for orientation.
+        if king > 0:
+            k_dist_pct = abs(spot - king) / spot * 100
+            k_dir = "above" if spot > king else "below"
+            return f"{k_dist_pct:.0f}% {k_dir} king ${king:g} · out of range"
+        return ""
+
+    # Pinned zone — under 0.3%
+    if dist_pct < 0.3:
+        if nearest_kind == "king":
+            if king_is_positive:
+                return f"Pinned at king ${king:g} · sell premium"
+            return f"At -king ${king:g} · whipsaw risk"
+        if nearest_kind == "neg_king":
+            return f"At -king ${nearest_level:g} · whipsaw risk"
+        if nearest_kind == "floor":
+            return f"Testing floor ${nearest_level:g} · bounce or break"
+        if nearest_kind == "ceiling":
+            return f"Testing ceiling ${nearest_level:g} · breakout or rejection"
+
+    # Above/below label
+    direction = "above" if dist_abs > 0 else "below"
+
+    if nearest_kind == "king":
+        if king_is_positive:
+            pull = "magnet pull"
+        else:
+            pull = "whipsaw zone"
+        return f"{dist_pct:.1f}% {direction} king ${king:g} · {pull}"
+
+    if nearest_kind == "neg_king":
+        return f"{dist_pct:.1f}% {direction} -king ${nearest_level:g} · whipsaw risk"
+
+    if nearest_kind == "floor":
+        if direction == "above":
+            return f"{dist_pct:.1f}% above floor ${nearest_level:g} · bounce zone"
+        return f"{dist_pct:.1f}% below floor ${nearest_level:g} · breakdown"
+
+    if nearest_kind == "ceiling":
+        if direction == "below":
+            return f"{dist_pct:.1f}% below ceiling ${nearest_level:g} · resistance"
+        return f"{dist_pct:.1f}% above ceiling ${nearest_level:g} · breakout"
+
+    return ""
+
+
 def _dominant_greeks_source(per_strike: dict) -> str:
     """Return 'massive' if majority of strikes used Massive Greeks, else 'tradier'."""
     massive = sum(1 for b in per_strike.values() if b.get("_massive_count", 0) > 0)
@@ -447,6 +549,22 @@ def compute_exp_data(
     king_val = per_strike[king_strike]["net_gex"]
     king_is_positive = king_val >= 0
 
+    # -King = strongest NEGATIVE GEX strike (whipsaw/rejection risk zone).
+    # OG GammaPulse convention (4/16 update): separate concept from +King.
+    # Only populate if king itself is POSITIVE (otherwise king IS the neg-king).
+    # Require the strike to be meaningfully negative — at least 15% of king's
+    # magnitude — otherwise a tiny noise strike would flag as neg_king.
+    neg_king_strike: float | None = None
+    if king_is_positive:
+        neg_candidates = [
+            (s, b["net_gex"]) for s, b in per_strike.items()
+            if b["net_gex"] < 0
+        ]
+        if neg_candidates:
+            most_negative = min(neg_candidates, key=lambda x: x[1])
+            if abs(most_negative[1]) >= 0.15 * abs(king_val):
+                neg_king_strike = most_negative[0]
+
     # Floor = strongest +GEX BELOW spot (excluding king).
     # Ceiling = HIGHEST strike above spot with significant +GEX.
     #
@@ -555,6 +673,12 @@ def compute_exp_data(
         node_type = _classify_strike(
             s, b["net_gex"], spot, king_strike, floor_strike, ceiling_strike, gatekeeper_set
         )
+        # Override: if this strike is the negative king, mark it as such.
+        # Takes precedence over "normal" or "gatekeeper" but not over structural
+        # floor/ceiling/king labels.
+        if (neg_king_strike is not None and s == neg_king_strike
+                and node_type not in ("king", "floor", "ceiling")):
+            node_type = "neg_king"
         is_air = ratio < 0.02 and node_type == "normal"
         if is_air:
             air_pockets.append(s)
@@ -578,9 +702,19 @@ def compute_exp_data(
             }
         )
 
+    # Actionable callout text (OG GammaPulse 4/15 feature) — combines
+    # level proximity + direction + trader action hint in one string.
+    callout = _build_callout(
+        spot=spot, king=king_strike,
+        king_is_positive=king_is_positive,
+        floor=floor_strike, ceiling=ceiling_strike,
+        neg_king=neg_king_strike,
+    )
+
     return {
         "strikes": strikes_out,
         "king": king_strike,
+        "neg_king": neg_king_strike or 0,  # 0 when no significant neg-king
         "zgl": zgl,
         "iv": iv_avg,
         "net_delta": total_delta,
@@ -591,6 +725,7 @@ def compute_exp_data(
         "pos_gex": total_pos,
         "neg_gex": total_neg,
         "air_pockets": air_pockets,
+        "callout": callout,  # v3: actionable trader-facing signal text
         "_king_is_positive": king_is_positive,
         "_sign_model": "assumed_dealer",
         "_oi_model": "volume_adjusted",  # see _estimate_effective_oi in gex.py

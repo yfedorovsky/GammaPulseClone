@@ -110,18 +110,17 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
     return { dollars: em, pct: (em / spot) * 100 };
   }, [spot, iv]);
 
-  // Dynamic prose strip
-  const stripText = useMemo(
-    () =>
-      signalExplanation({
-        signal,
-        spot,
-        king,
-        kingIsPositive,
-        regime,
-      }),
-    [signal, spot, king, kingIsPositive, regime],
-  );
+  // Dynamic prose strip — prefer backend's actionable callout when present
+  // (OG-inspired format: "0.5% below king $70 · magnet pull"). Fall back to
+  // legacy signalExplanation() if backend didn't populate callout (older
+  // cached data or unusual strike set).
+  const backendCallout = exp_data?.callout;
+  const stripText = useMemo(() => {
+    if (backendCallout) return backendCallout;
+    return signalExplanation({
+      signal, spot, king, kingIsPositive, regime,
+    });
+  }, [backendCallout, signal, spot, king, kingIsPositive, regime]);
   const stripCls = signalStripClass(signal);
 
   // For spot row placement
@@ -323,6 +322,12 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
                         >⭐</span>
                       )}
                       {isKing && <span className={`king-badge${isKing ? ' king-pulse' : ''}`}> ★ KING</span>}
+                      {s.node_type === 'neg_king' && (
+                        <span
+                          title="-King: largest NEGATIVE GEX · whipsaw/rejection risk zone"
+                          style={{ color: '#ff69b4', fontWeight: 800 }}
+                        > ★ −KING</span>
+                      )}
                       {s.node_type === 'gatekeeper' && <span style={{ color: '#a24dff' }}> ◆</span>}
                       {s.node_type === 'floor' && <span style={{ color: '#10dc9a' }}> ▬ FLOOR</span>}
                       {s.node_type === 'ceiling' && <span style={{ color: '#ff5656' }}> ▬ CEIL</span>}
@@ -427,6 +432,9 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
                           </span>
                         )}
                         {s.node_type === 'king' && ' ★ KING'}
+                        {s.node_type === 'neg_king' && (
+                          <span style={{ color: '#ff69b4' }}> ★ −KING</span>
+                        )}
                         {s.node_type === 'gatekeeper' && ' ◆'}
                         {s.node_type === 'floor' && ' ▬ FLOOR'}
                         {s.node_type === 'ceiling' && ' ▬ CEIL'}
