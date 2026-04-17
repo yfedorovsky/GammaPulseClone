@@ -1180,6 +1180,15 @@ async def price_watch_reset_route(watch_id: str):
     return {"ok": ok, "watch_id": watch_id}
 
 
+@app.post("/api/price-watch/reset-all")
+async def price_watch_reset_all_route():
+    """Clear fired-tier state for ALL watches today. Safer re-arm after
+    false-alert storms (stale-cache fire on restart)."""
+    from .price_watch import reset_all_watches_today
+    n = reset_all_watches_today()
+    return {"ok": True, "cleared": n}
+
+
 @app.get("/api/oi-delta/stats")
 async def oi_delta_stats_route():
     """Diagnostic: how many OI snapshots have accumulated?

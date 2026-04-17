@@ -72,9 +72,16 @@ async def check_watches(snapshot: dict[str, dict[str, Any]]) -> None:
 
     Fires Telegram alerts on tier transitions. Safe to call every cycle —
     dedup state is handled internally.
+
+    Freshness guard: skips any watch where the ticker's quote or chain
+    data is older than STALE_QUOTE_SECONDS (default 180s / 3 min). This
+    prevents the "fire-on-restart-cached-overnight-data" failure mode
+    we hit on first market-open cycle this morning.
     """
+    import time as _time
     today = _today_iso()
     _prune_old_state()
+    now_ts = _time.time()
 
     for watch in _WATCHES:
         if not _watch_active_today(watch, today):
@@ -87,6 +94,10 @@ async def check_watches(snapshot: dict[str, dict[str, Any]]) -> None:
         if not state:
             continue
 
+        # Freshness gate — skip if state's timestamps are stale
+        if not _state_is_fresh(state, now_ts):
+            continue
+
         bid = _find_contract_bid(
             state,
             watch["expiration"],
@@ -97,6 +108,48 @@ async def check_watches(snapshot: dict[str, dict[str, Any]]) -> None:
             continue
 
         await _evaluate_tiers(watch, bid, state.get("actual_spot") or state.get("_spot"))
+
+
+# Stale-quote cutoff — chain data older than this is considered stale.
+# Tradier full chain refresh per ticker happens every ~2-4 min depending on
+# tier, so 180s gives the worker a full cycle plus buffer before we give up.
+STALE_QUOTE_SECONDS = 180
+
+
+def _state_is_fresh(state: dict, now_ts: float) -> bool:
+    """Return False if the ticker's quote/chain data is too old to use.
+
+    Why this matters: after a server restart or during the first scan
+    cycle on market open, `snapshot` can contain yesterday's cached
+    chain data with stale bids. Watches that fire off that data send
+    false alerts — classic race between "cycle hasn't repopulated yet"
+    and "watches are checking bids right now".
+
+    We check three timestamps on the state dict, all populated by worker:
+      - _quote_ts  (last spot quote fetch from Tradier)
+      - _greeks_ts (last Greeks pull — Massive or Tradier)
+      - timestamp  (last full state build — ISO string, fallback parse)
+
+    If none exist, we default to STALE (safer than firing on unknown age).
+    """
+    q_ts = state.get("_quote_ts") or 0
+    g_ts = state.get("_greeks_ts") or 0
+    newest = max(q_ts, g_ts)
+    if newest == 0:
+        # Fall back to ISO timestamp if numeric ones absent
+        iso = state.get("timestamp")
+        if iso:
+            try:
+                import datetime as _dt
+                newest = _dt.datetime.fromisoformat(iso).timestamp()
+            except (ValueError, TypeError):
+                pass
+
+    if newest == 0:
+        return False  # no timestamp available — treat as stale
+
+    age = now_ts - newest
+    return age < STALE_QUOTE_SECONDS
 
 
 def _watch_active_today(watch: dict, today_iso: str) -> bool:
@@ -277,6 +330,22 @@ def reset_watch(watch_id: str) -> bool:
         _fired_tiers[key].clear()
         return True
     return False
+
+
+def reset_all_watches_today() -> int:
+    """Clear fired-tier state for ALL watches today. Returns count cleared.
+
+    Useful after false-alert-storm from stale-cache restart race —
+    lets every watch re-evaluate cleanly with fresh data.
+    """
+    today = _today_iso()
+    cleared = 0
+    for watch in _WATCHES:
+        key = (watch["id"], today)
+        if key in _fired_tiers and _fired_tiers[key]:
+            _fired_tiers[key].clear()
+            cleared += 1
+    return cleared
 
 
 # ── Active watches ────────────────────────────────────────────────────
