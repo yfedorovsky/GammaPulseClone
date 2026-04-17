@@ -76,20 +76,28 @@ export default function HeatmapsTab() {
    * Matrix-wide "Heatseeker" King — the single largest-magnitude strike across
    * every visible FOCUS-mode expiration. Inspired by Skylit's ⭐ callout.
    * Returns { exp, strike, net_gex } or null if nothing to compare.
-   * Applies only in FOCUS mode and only when multiple expirations are shown
-   * (otherwise the per-expiration King already IS the matrix king).
+   *
+   * IMPORTANT: MACRO (ALL 200D) is excluded from the comparison. MACRO is an
+   * aggregated sum of all expirations, so its "largest cell" is almost always
+   * the mathematical winner — which is meaningless. The whole point of the
+   * Matrix King marker is to show WHICH SPECIFIC EXPIRATION hosts the
+   * dominant dealer positioning. Skylit's example correctly marks a specific
+   * weekly/monthly, never the aggregated view.
    */
   const matrixKing = useMemo(() => {
     if (!focus) return null;
     const data = chains[focusTicker];
     if (!data?.exp_data) return null;
-    const visibleExps = Array.from({ length: focusPanelCount }).map(
+
+    const allVisibleExps = Array.from({ length: focusPanelCount }).map(
       (_, i) => focusExps[Math.min(i, focusExps.length - 1)] || 'MACRO (ALL 200D)'
     );
-    if (visibleExps.length < 2) return null;
+    // Exclude the aggregated MACRO view from the comparison
+    const comparableExps = allVisibleExps.filter(e => !String(e).startsWith('MACRO'));
+    if (comparableExps.length < 2) return null;
 
     let best = null;
-    for (const exp of visibleExps) {
+    for (const exp of comparableExps) {
       const ed = data.exp_data[exp];
       if (!ed || !Array.isArray(ed.strikes)) continue;
       // Scan all strikes in this expiration for the largest |net_gex|
