@@ -1,0 +1,67 @@
+{
+  "_meta": {
+    "description": "Observed Skylit GEX values for reverse-engineering their formula + sign convention",
+    "source": "User screenshots of app.skylit.ai with timestamp",
+    "format": "Add objects with ticker, spot_at_time, exp, strike, skylit_gex_dollars, timestamp_et",
+    "notes": [
+      "spot_at_time is Skylit's displayed spot price (differs from our close)",
+      "skylit_gex_dollars uses Skylit's sign convention (negative = dealer short convention)",
+      "Units: dollars (convert K to thousands yourself when entering)",
+      "Same-timestamp batches matter — don't mix screenshots hours apart"
+    ]
+  },
+  "samples": [
+    {
+      "_batch": "AAOI_2026-04-16_15:16_ET",
+      "ticker": "AAOI",
+      "spot_at_time": 153.74,
+      "timestamp_et": "2026-04-16T15:16:00",
+      "cells": [
+        {"exp": "2026-04-17", "strike": 165, "skylit_gex": 1011600, "note": "bright green"},
+        {"exp": "2026-04-17", "strike": 160, "skylit_gex": 1883200, "note": "bright green, -2% badge"},
+        {"exp": "2026-04-17", "strike": 155, "skylit_gex": -319900, "note": "bright red, -2% badge"},
+        {"exp": "2026-04-17", "strike": 170, "skylit_gex": 640600, "note": "+1% badge"},
+        {"exp": "2026-04-17", "strike": 150, "skylit_gex": 1556600, "note": "-1% badge"},
+        {"exp": "2026-04-17", "strike": 167.5, "skylit_gex": 473900},
+        {"exp": "2026-04-17", "strike": 162.5, "skylit_gex": 385700},
+        {"exp": "2026-04-17", "strike": 175, "skylit_gex": 245000},
+        {"exp": "2026-04-17", "strike": 149, "skylit_gex": 122700},
+
+        {"exp": "2026-04-24", "strike": 210, "skylit_gex": 2656700, "note": "KING, bright yellow-green"},
+        {"exp": "2026-04-24", "strike": 200, "skylit_gex": -376000, "note": "purple, +1% badge"},
+        {"exp": "2026-04-24", "strike": 195, "skylit_gex": -16200, "note": "+3% badge"},
+        {"exp": "2026-04-24", "strike": 190, "skylit_gex": -159200},
+        {"exp": "2026-04-24", "strike": 180, "skylit_gex": -557000, "note": "+1% badge"},
+        {"exp": "2026-04-24", "strike": 175, "skylit_gex": -90500, "note": "+2% badge"},
+        {"exp": "2026-04-24", "strike": 170, "skylit_gex": -276900},
+        {"exp": "2026-04-24", "strike": 165, "skylit_gex": 71300},
+        {"exp": "2026-04-24", "strike": 160, "skylit_gex": 115300},
+        {"exp": "2026-04-24", "strike": 155, "skylit_gex": -106100, "note": "-3% badge"},
+        {"exp": "2026-04-24", "strike": 150, "skylit_gex": -300, "note": "-33% badge"},
+        {"exp": "2026-04-24", "strike": 212.5, "skylit_gex": 12400},
+        {"exp": "2026-04-24", "strike": 215, "skylit_gex": 9600},
+        {"exp": "2026-04-24", "strike": 225, "skylit_gex": 3600},
+        {"exp": "2026-04-24", "strike": 230, "skylit_gex": 2000},
+        {"exp": "2026-04-24", "strike": 220, "skylit_gex": -37900},
+        {"exp": "2026-04-24", "strike": 207.5, "skylit_gex": 14800},
+
+        {"exp": "2026-05-01", "strike": 200, "skylit_gex": -5394600, "note": "KING, dark purple"},
+        {"exp": "2026-05-01", "strike": 210, "skylit_gex": -6000, "rough": true},
+        {"exp": "2026-05-01", "strike": 205, "skylit_gex": -122200},
+        {"exp": "2026-05-01", "strike": 190, "skylit_gex": 0},
+        {"exp": "2026-05-01", "strike": 195, "skylit_gex": 49500},
+        {"exp": "2026-05-01", "strike": 185, "skylit_gex": 16700},
+        {"exp": "2026-05-01", "strike": 180, "skylit_gex": 18300},
+        {"exp": "2026-05-01", "strike": 175, "skylit_gex": 202400},
+        {"exp": "2026-05-01", "strike": 170, "skylit_gex": -67600},
+        {"exp": "2026-05-01", "strike": 165, "skylit_gex": 17700},
+        {"exp": "2026-05-01", "strike": 160, "skylit_gex": 17500},
+        {"exp": "2026-05-01", "strike": 155, "skylit_gex": 22500},
+        {"exp": "2026-05-01", "strike": 150, "skylit_gex": -56600},
+        {"exp": "2026-05-01", "strike": 215, "skylit_gex": 30800},
+        {"exp": "2026-05-01", "strike": 220, "skylit_gex": 16500},
+        {"exp": "2026-05-01", "strike": 225, "skylit_gex": -20300}
+      ]
+    }
+  ]
+}
