@@ -143,30 +143,51 @@ def _find_contract_bid(
 
 
 async def _evaluate_tiers(watch: dict, bid: float, spot: float | None) -> None:
-    """For a given watch + current bid, fire any newly-triggered tiers."""
+    """For a given watch + current bid, fire any newly-triggered tiers.
+
+    Watch-level `direction` field controls comparison:
+      "below" (default): BUY-side — fires when bid <= threshold.
+                         Tiers ordered highest → lowest (warning → deep discount).
+                         Sweeps down through tiers as bid falls.
+      "above": SELL-side / TRIM — fires when bid >= threshold.
+                         Tiers ordered lowest → highest (first trim → big trim).
+                         Sweeps up through tiers as bid rises.
+    """
     today = _today_iso()
     fired_key = (watch["id"], today)
     fired = _fired_tiers.setdefault(fired_key, set())
 
-    # Tiers ordered highest threshold first (least urgent to most urgent).
-    # Walk from most urgent (lowest threshold) to least so we fire the
-    # strongest label first if multiple are simultaneously triggered on
-    # the same cycle.
-    tiers_sorted = sorted(watch["tiers"], key=lambda t: t["threshold"])
+    direction = watch.get("direction", "below")
 
+    if direction == "above":
+        # SELL/TRIM watch — fire in ascending threshold order as bid rises
+        tiers_sorted = sorted(watch["tiers"], key=lambda t: -t["threshold"])
+        for tier in tiers_sorted:
+            label = tier["label"]
+            threshold = tier["threshold"]
+            if bid >= threshold and label not in fired:
+                fired.add(label)
+                await _fire_alert(watch, tier, bid, spot)
+                # Mark smaller thresholds as fired too — prevents spam when
+                # bid jumps past multiple tiers at once (e.g. a gap up).
+                for lower in watch["tiers"]:
+                    if lower["threshold"] < threshold:
+                        fired.add(lower["label"])
+                return
+        return
+
+    # BUY-side (default) — fire in descending threshold order as bid falls
+    tiers_sorted = sorted(watch["tiers"], key=lambda t: t["threshold"])
     for tier in tiers_sorted:
         label = tier["label"]
         threshold = tier["threshold"]
         if bid <= threshold and label not in fired:
             fired.add(label)
             await _fire_alert(watch, tier, bid, spot)
-            # Once we fire the deepest triggered tier, mark shallower ones
-            # as fired too (so we don't spam "warning then entry then
-            # discount" as bid sweeps down through all three).
             for shallower in watch["tiers"]:
                 if shallower["threshold"] > threshold:
                     fired.add(shallower["label"])
-            return  # stop at the deepest triggered tier this cycle
+            return
 
 
 async def _fire_alert(watch: dict, tier: dict, bid: float, spot: float | None) -> None:
@@ -183,6 +204,8 @@ async def _fire_alert(watch: dict, tier: dict, bid: float, spot: float | None) -
     exp = watch["expiration"]
     note = watch.get("note", "")
     tier_note = tier.get("note", "")
+    direction = watch.get("direction", "below")
+    is_trim = direction == "above"
 
     # Compute spot distance if available
     spot_line = ""
@@ -191,10 +214,21 @@ async def _fire_alert(watch: dict, tier: dict, bid: float, spot: float | None) -
         pct = abs(dist) / spot * 100
         spot_line = f"\nSpot ${spot:.2f} ({dist:+.2f} = {pct:.2f}% away from strike)"
 
+    # Position P&L — only relevant for TRIM watches with entry_price set
+    pnl_line = ""
+    entry_price = watch.get("entry_price")
+    if is_trim and entry_price and entry_price > 0:
+        pnl_dollars = (bid - entry_price) * 100
+        pnl_pct = (bid - entry_price) / entry_price * 100
+        pnl_line = f"\nUnrealized: <b>${pnl_dollars:+.0f}/contract ({pnl_pct:+.1f}%)</b> from entry ${entry_price:.2f}"
+
+    header_label = f"TRIM — {label}" if is_trim else f"PRICE WATCH — {label}"
+
     msg = (
-        f"{emoji} <b>PRICE WATCH — {label}</b>\n"
+        f"{emoji} <b>{header_label}</b>\n"
         f"<b>{ticker} ${strike} {opt_type} {exp}</b>\n"
         f"Current bid: <b>${bid:.2f}</b>"
+        f"{pnl_line}"
         f"{spot_line}"
     )
     if note:
@@ -314,5 +348,37 @@ _WATCHES: list[dict[str, Any]] = [
             },
         ],
         "note": "AAOI 7DTE 200C lotto. Stock ran +7.85% yesterday + premarket +2.28% today on photonics/AI infra theme. Deep OTM (24%+), high IV (141%). Negative EV above $1.75 entry — strict discipline required.",
+    },
+    {
+        "id": "mir_msft_430c_0424_TRIM",
+        "ticker": "MSFT",
+        "expiration": "2026-04-24",
+        "strike": 430.0,
+        "option_type": "call",
+        "direction": "above",  # SELL-side watch — fires when bid rises past thresholds
+        "entry_price": 2.22,   # Mir's entry price, used for P&L display in alerts
+        "active_from": "2026-04-17",
+        "active_until": "2026-04-23",
+        "tiers": [
+            {
+                "label": "TRIM_NOW",
+                "threshold": 3.30,
+                "emoji": "💰",
+                "note": "Mir said 'take profits or at least trim'. You're at +50% — first-third harvest zone.",
+            },
+            {
+                "label": "2X_GAIN",
+                "threshold": 4.44,
+                "emoji": "💰💰",
+                "note": "100% gain — take another third off. Runner rules: move stop to breakeven on remainder.",
+            },
+            {
+                "label": "3X_GAIN",
+                "threshold": 6.66,
+                "emoji": "💰💰💰",
+                "note": "200% gain — aggressive harvest. Typically only 20-30% of contracts remain here. House money only.",
+            },
+        ],
+        "note": "MSFT $430C 4/24 — Mir's sized-up position from earlier week, now running. Entry $2.22. Note from Mir today: 'don't forget to take profits or at least trim'. CTA buying expected in MSFT/GOOGL adds upside fuel but don't get greedy — discipline harvest.",
     },
 ]
