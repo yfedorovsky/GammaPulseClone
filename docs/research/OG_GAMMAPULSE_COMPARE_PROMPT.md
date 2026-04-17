@@ -47,7 +47,7 @@ volume; shown side by side below.
 | $90 | $230K | $262K | $219K | **1.05x** | 1.20x | OTM call |
 | $85 | $194K | $233K | $216K | **0.90x** | 1.08x | OTM call |
 | $80 | $892K | $1,461K | $832K | **1.07x** | 1.75x | Gatekeeper |
-| **$75** | **+$1,312K** | **+$3,792K** | **−$896K** | **−1.46x** | **−4.23x** | **CEIL — sign flip** |
+| $75 | +$1,312K | +$3,792K | +$896K | 1.46x | 4.23x | CEIL — positive in both systems (correction Apr 17) |
 | $70 | $2,963K | $6,104K | $3,400K | **0.87x** | 1.80x | KING |
 | $67 | $933K | $1,340K | $2,000K | **0.47x** | 0.67x | FLOOR — we're HALF |
 | $65 | $1,217K | $1,322K | $2,000K | **0.61x** | 0.66x | Below spot — we're LOW |
@@ -63,8 +63,11 @@ variant inflates 1.1-1.75x.
 OG's values. OG is **~2x higher** in this zone. Our activity weighting
 doesn't help — still ~0.65x.
 
-**CEIL strike ($75):** Both systems have ~$900K-1.3M magnitude, but **sign
-is flipped**. Our system: +$1,312K. OG: −$896K.
+**CEIL strike ($75):** Both systems show ~$900K-1.3M magnitude, **same sign
+(positive)**. Initial analysis incorrectly interpreted orange-cell color as
+negative value. Per OG's own legend (published 4/16): "🟠 Ceiling —
+strongest **+GEX** above spot · dealers sell rips." Ceiling is a positive
+GEX concept in their system. Our 1.46x higher is just activity-weighting.
 
 ---
 
