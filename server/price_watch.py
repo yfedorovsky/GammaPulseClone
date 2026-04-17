@@ -77,7 +77,7 @@ async def check_watches(snapshot: dict[str, dict[str, Any]]) -> None:
     _prune_old_state()
 
     for watch in _WATCHES:
-        if watch.get("active_date") != today:
+        if not _watch_active_today(watch, today):
             continue
         if not _expiration_still_valid(watch):
             continue
@@ -97,6 +97,25 @@ async def check_watches(snapshot: dict[str, dict[str, Any]]) -> None:
             continue
 
         await _evaluate_tiers(watch, bid, state.get("actual_spot") or state.get("_spot"))
+
+
+def _watch_active_today(watch: dict, today_iso: str) -> bool:
+    """Check if a watch is active today.
+
+    Two modes:
+      - Single-day: `active_date` == today (original behavior)
+      - Multi-day: `active_from` (optional, default = today-or-earlier)
+                   AND `active_until` (required for multi-day)
+
+    A watch must use ONE of these two modes. If neither is set, not active.
+    """
+    if "active_date" in watch:
+        return watch["active_date"] == today_iso
+    active_until = watch.get("active_until")
+    if not active_until:
+        return False
+    active_from = watch.get("active_from", "0000-01-01")
+    return active_from <= today_iso <= active_until
 
 
 def _expiration_still_valid(watch: dict) -> bool:
@@ -194,7 +213,7 @@ async def _fire_alert(watch: dict, tier: dict, bid: float, spot: float | None) -
 
 def stats() -> dict:
     today = _today_iso()
-    active = [w for w in _WATCHES if w.get("active_date") == today]
+    active = [w for w in _WATCHES if _watch_active_today(w, today)]
     return {
         "total_watches": len(_WATCHES),
         "active_today": len(active),
@@ -206,6 +225,8 @@ def stats() -> dict:
                 "strike": w["strike"],
                 "option_type": w["option_type"],
                 "expiration": w["expiration"],
+                "active_date": w.get("active_date"),
+                "active_until": w.get("active_until"),
                 "tiers": [{"label": t["label"], "threshold": t["threshold"]} for t in w["tiers"]],
                 "fired_tiers": sorted(_fired_tiers.get((w["id"], today), set())),
             }
@@ -259,5 +280,39 @@ _WATCHES: list[dict[str, Any]] = [
             },
         ],
         "note": "Mir 0DTE setup: $AMAT 395C. He said \"incredible lotto but won't pay more than $1.50-$2\". Needs AMAT pullback to ~$390 King for option to drop.",
+    },
+    {
+        "id": "aaoi_200c_0424_lotto",
+        "ticker": "AAOI",
+        "expiration": "2026-04-24",
+        "strike": 200.0,
+        "option_type": "call",
+        # Multi-day watch: fires every trading day until expiry-minus-1.
+        # 7DTE lotto on photonics/AI infra runner; needs pullback to ~$155-158
+        # to hit discipline price. Gap-up premarket killed today's entry, but
+        # Monday/Tuesday pullback could set up entry.
+        "active_from": "2026-04-17",
+        "active_until": "2026-04-23",
+        "tiers": [
+            {
+                "label": "APPROACHING",
+                "threshold": 2.00,
+                "emoji": "👀",
+                "note": "Getting near discipline price — pullback likely, watch",
+            },
+            {
+                "label": "ENTRY",
+                "threshold": 1.75,
+                "emoji": "🎯",
+                "note": "Buy zone — 7 DTE lotto, 24%+ OTM. 14-17 delta. IV insanely high (141%).",
+            },
+            {
+                "label": "DEEP_DISCOUNT",
+                "threshold": 1.50,
+                "emoji": "🔥",
+                "note": "DEEP — AAOI probably pulled back to $155 area. If theme intact, size up carefully",
+            },
+        ],
+        "note": "AAOI 7DTE 200C lotto. Stock ran +7.85% yesterday + premarket +2.28% today on photonics/AI infra theme. Deep OTM (24%+), high IV (141%). Negative EV above $1.75 entry — strict discipline required.",
     },
 ]
