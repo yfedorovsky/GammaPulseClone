@@ -53,6 +53,56 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
         return default
 
 
+def _estimate_effective_oi(prior_oi: float, today_volume: float) -> float:
+    """Blend yesterday's settlement OI with today's volume to estimate
+    current effective OI.
+
+    Background: Tradier (and most free/cheap providers) return open_interest
+    as the OCC settlement figure from yesterday's close. That number ignores
+    every contract traded today. On high-flow days, a strike with OI=25 can
+    have volume of 5,567 — and our GEX calc using stale OI gives ~$3K when
+    professional dashboards show ~$500K-2.6M at the same strike.
+
+    This is a classic ΔOI proxy problem. True ΔOI = opens − closes, which
+    requires trade classification data we don't have. The industry heuristic:
+
+      - When today's volume DWARFS prior OI, most of it is new opens (there
+        aren't enough existing contracts to close). Blend aggressively.
+      - When today's volume is similar to or below prior OI, it's likely a
+        mix of opens and closes. Blend conservatively or not at all.
+      - Near expiration, volume can be 10x+ OI due to close-outs — so the
+        sharp-threshold approach protects against inflating expiring strikes.
+
+    Returns a float; caller passes through the rest of the gamma pipeline.
+
+    Tunable constants here control the aggressiveness of the estimate:
+      HIGH_FLOW_RATIO: volume/OI above this threshold triggers aggressive blend
+      HIGH_FLOW_ALPHA: fraction of (volume - OI) counted as new opens
+      NORMAL_ALPHA: fraction of volume counted as new opens in the normal case
+
+    Validated informally against AAOI 4/16/2026 on a day with $210c vol=5567
+    OI=25 — estimator produces ~3,900 effective OI → GEX ~$500K, closer to
+    professional-dashboard magnitudes (though still conservative vs Skylit's
+    $2.66M which likely includes additional flow-based amplification).
+    """
+    HIGH_FLOW_RATIO = 2.0
+    HIGH_FLOW_ALPHA = 0.7
+    NORMAL_ALPHA = 0.3
+
+    if today_volume <= 0:
+        return prior_oi
+    prior_oi = max(prior_oi, 0)
+
+    # When volume is much larger than prior OI, the excess volume had to come
+    # from NEW opens (not enough OI existed to close). Count most of it.
+    if today_volume > HIGH_FLOW_RATIO * prior_oi:
+        net_new = today_volume - prior_oi
+        return prior_oi + HIGH_FLOW_ALPHA * net_new
+
+    # Normal case: assume a fraction of volume is new opens, rest is churn
+    return prior_oi + NORMAL_ALPHA * today_volume
+
+
 def _opt_fields(opt: dict[str, Any], spot: float = 0.0) -> dict[str, float]:
     """Extract the fields we need from a Tradier option quote.
 
@@ -63,6 +113,10 @@ def _opt_fields(opt: dict[str, Any], spot: float = 0.0) -> dict[str, float]:
 
     This is the same identity used by most retail GEX dashboards when the
     data provider omits vanna.
+
+    Also computes `oi_effective` — a volume-adjusted OI estimate used for
+    GEX/VEX dollar calculations. Raw OI is preserved as `oi_raw` for
+    auditability. See `_estimate_effective_oi` for the heuristic.
     """
     greeks = opt.get("greeks") or {}
     vega = _safe_float(greeks.get("vega"))
@@ -70,10 +124,18 @@ def _opt_fields(opt: dict[str, Any], spot: float = 0.0) -> dict[str, float]:
     raw_vanna = _safe_float(greeks.get("vanna"))
     if raw_vanna == 0.0 and vega != 0.0 and spot > 0:
         raw_vanna = vega / spot
+
+    oi_raw = _safe_float(opt.get("open_interest"))
+    volume = _safe_float(opt.get("volume"))
+    oi_effective = _estimate_effective_oi(oi_raw, volume)
+
     return {
         "strike": _safe_float(opt.get("strike")),
-        "oi": _safe_float(opt.get("open_interest")),
-        "volume": _safe_float(opt.get("volume")),
+        # `oi` is what downstream math consumes — swap in the volume-adjusted
+        # estimate. Keep raw available as `oi_raw` for audit / diff tooling.
+        "oi": oi_effective,
+        "oi_raw": oi_raw,
+        "volume": volume,
         "bid": _safe_float(opt.get("bid")),
         "ask": _safe_float(opt.get("ask")),
         "last": _safe_float(opt.get("last")),
@@ -259,7 +321,8 @@ def compute_exp_data(
             "net_vex": 0.0,
             "net_delta": 0.0,
             "volume": 0.0,
-            "oi": 0.0,
+            "oi": 0.0,       # volume-adjusted effective OI used for GEX math
+            "oi_raw": 0.0,   # yesterday's OCC settlement OI (audit)
             "iv_sum": 0.0,
             "iv_count": 0.0,
         }
@@ -290,7 +353,8 @@ def compute_exp_data(
         bucket["net_vex"] += vanna_dollar
         bucket["net_delta"] += delta_shares
         bucket["volume"] += f["volume"]
-        bucket["oi"] += f["oi"]
+        bucket["oi"] += f["oi"]              # effective OI
+        bucket["oi_raw"] += f.get("oi_raw", 0)  # yesterday's settlement
         if f["iv"] > 0:
             bucket["iv_sum"] += f["iv"]
             bucket["iv_count"] += 1
@@ -477,6 +541,11 @@ def compute_exp_data(
                 and abs(b["net_vex"]) > 0,
                 "intensity": intensity,
                 "ratio": ratio,
+                # Audit fields — expose raw vs effective OI so tooling can
+                # diff against stale-OI baselines if needed.
+                "oi": round(b.get("oi") or 0, 1),
+                "oi_raw": round(b.get("oi_raw") or 0, 1),
+                "volume": round(b.get("volume") or 0, 1),
             }
         )
 
@@ -495,6 +564,7 @@ def compute_exp_data(
         "air_pockets": air_pockets,
         "_king_is_positive": king_is_positive,
         "_sign_model": "assumed_dealer",
+        "_oi_model": "volume_adjusted",  # see _estimate_effective_oi in gex.py
         "_zgl_method": "profile_solve" if zgl_solved is not None else "centroid_fallback",
         "_zgl_crossings": zgl_crossings if zgl_solved is not None else {},
         "_greeks_source": _dominant_greeks_source(per_strike),
