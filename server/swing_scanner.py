@@ -439,4 +439,14 @@ async def compute_swing_watchlist(mode: str = "standard") -> tuple[list[dict], d
     }
 
     _swing_cache = (time.time(), results, meta)
+
+    # Fire Telegram alerts on new Top-10 entrants (one per ticker per day).
+    # Self-gated to market hours 9:45 AM - 4:00 PM ET. Isolated try/except
+    # so alert failures can't break the scanner.
+    try:
+        from .swing_alerts import maybe_alert_new_entrants
+        await maybe_alert_new_entrants(results, meta)
+    except Exception as _swing_alert_err:
+        print(f"[swing_scanner] alert hook failed: {_swing_alert_err}")
+
     return results, meta

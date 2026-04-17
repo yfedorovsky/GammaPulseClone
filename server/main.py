@@ -1140,6 +1140,22 @@ async def runners_route(status: str = "active"):
     return {"runners": get_active_runners()}
 
 
+@app.get("/api/swing-alerts/stats")
+async def swing_alerts_stats_route():
+    """Diagnostic for new-watchlist-entry alerts. Shows which tickers have
+    fired today + market-hours gate status."""
+    from .swing_alerts import stats
+    return stats()
+
+
+@app.post("/api/swing-alerts/reset")
+async def swing_alerts_reset_route():
+    """Clear today's fired tickers so alerts can re-trigger."""
+    from .swing_alerts import reset_today
+    count = reset_today()
+    return {"ok": True, "cleared": count}
+
+
 @app.get("/api/price-watch/stats")
 async def price_watch_stats_route():
     """Active price watches for manual-trade Telegram alerts (e.g. Mir setups).

@@ -640,6 +640,16 @@ async def run_worker(stop_event: asyncio.Event) -> None:
                     await check_watches(snap)
                 except Exception as pw_err:
                     print(f"[worker] price_watch check failed: {pw_err}")
+                # Swing scanner — refresh every 2 cycles (~4 min) so new
+                # watchlist entrants fire Telegram alerts even when frontend
+                # isn't polling. Internal hook fires alerts during market
+                # hours only. Isolated try/except so failures can't kill cycle.
+                if cycle % 2 == 0:
+                    try:
+                        from .swing_scanner import compute_swing_watchlist
+                        await compute_swing_watchlist(mode="standard")
+                    except Exception as sa_err:
+                        print(f"[worker] swing_scanner refresh failed: {sa_err}")
             except Exception as e:  # noqa: BLE001
                 await cache.set_status(f"Cycle error: {e!r}")
             try:
