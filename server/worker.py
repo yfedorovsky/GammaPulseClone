@@ -633,6 +633,13 @@ async def run_worker(stop_event: asyncio.Event) -> None:
                 await _scan_cycle(tradier, cycle, massive)
                 # EOD snapshot hook — self-gates to once/day at 4:15 PM
                 await _maybe_snapshot_eod_oi()
+                # Price-watch alerts (Mir setups, etc.) — self-gates dedup
+                try:
+                    from .price_watch import check_watches
+                    snap = await cache.snapshot()
+                    await check_watches(snap)
+                except Exception as pw_err:
+                    print(f"[worker] price_watch check failed: {pw_err}")
             except Exception as e:  # noqa: BLE001
                 await cache.set_status(f"Cycle error: {e!r}")
             try:

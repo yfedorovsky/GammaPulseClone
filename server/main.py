@@ -1140,6 +1140,30 @@ async def runners_route(status: str = "active"):
     return {"runners": get_active_runners()}
 
 
+@app.get("/api/price-watch/stats")
+async def price_watch_stats_route():
+    """Active price watches for manual-trade Telegram alerts (e.g. Mir setups).
+
+    Each watch monitors a specific contract's bid and fires tiered Telegram
+    alerts when the bid crosses into buy thresholds. Lets you walk away from
+    the screen without missing a Mir discipline-price entry.
+
+    Edit server/price_watch.py:_WATCHES to add more watches.
+    """
+    from .price_watch import stats
+    return stats()
+
+
+@app.post("/api/price-watch/reset/{watch_id}")
+async def price_watch_reset_route(watch_id: str):
+    """Clear fired-tier state for a watch so alerts can re-trigger today.
+    Use when you want to test or restart monitoring for a given watch.
+    """
+    from .price_watch import reset_watch
+    ok = reset_watch(watch_id)
+    return {"ok": ok, "watch_id": watch_id}
+
+
 @app.get("/api/oi-delta/stats")
 async def oi_delta_stats_route():
     """Diagnostic: how many OI snapshots have accumulated?
