@@ -1136,6 +1136,37 @@ async def runners_route(status: str = "active"):
     return {"runners": get_active_runners()}
 
 
+@app.get("/api/proto-runners")
+async def proto_runners_route(limit: int = 50):
+    """PROTO_RUNNER observation log (v3 — AMD case study, Apr 16 2026).
+
+    Stealth-grind pre-state detection: 2+ consecutive higher closes at top
+    of range on below-average volume. Observation mode only — not wired to
+    alerts, paper trades, or runner scoring. Purpose: collect forward-sample
+    evidence before deciding whether to promote to a full runner state.
+
+    Outcome values: PENDING | PROMOTED | FADED | EXPIRED
+    """
+    from .runner_tracker import get_proto_runners
+    rows = get_proto_runners(limit=limit)
+    # Summary stats
+    pending = sum(1 for r in rows if r.get("outcome") == "PENDING")
+    promoted = sum(1 for r in rows if r.get("outcome") == "PROMOTED")
+    faded = sum(1 for r in rows if r.get("outcome") == "FADED")
+    total_resolved = promoted + faded
+    hit_rate = round(promoted / total_resolved * 100, 1) if total_resolved > 0 else None
+    return {
+        "rows": rows,
+        "summary": {
+            "total": len(rows),
+            "pending": pending,
+            "promoted": promoted,
+            "faded": faded,
+            "hit_rate_pct": hit_rate,
+        },
+    }
+
+
 def _debug_atm_contracts(raw: dict, spot: float) -> dict:
     """Show ATM call+put for each expiration with quality gate results."""
     import datetime

@@ -79,10 +79,54 @@ CREATE INDEX IF NOT EXISTS idx_rt_ticker_state ON runner_tracker(ticker, state);
 CREATE INDEX IF NOT EXISTS idx_rt_state ON runner_tracker(state);
 """
 
+# PROTO_RUNNER observation log (v3 — AMD case study motivated, Apr 16 2026).
+# Pre-state detection for stealth-grind patterns the v2 gate stack deliberately
+# ignores (low-RVOL multi-day higher-closes — e.g. AMD Apr 13-15). Pure logging
+# table — no alerts, no paper trades, no runner entry, no score modifier.
+# Exists to collect forward-sample evidence before deciding whether to promote
+# to a real DAY1 path with full behavior (Path C).
+PROTO_RUNNER_SCHEMA = """
+CREATE TABLE IF NOT EXISTS proto_runner_log (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker              TEXT NOT NULL,
+    detection_date      TEXT NOT NULL,       -- the EOD date that confirmed the signature
+    detection_ts        INTEGER NOT NULL,
+    window_days         INTEGER NOT NULL,    -- 2 or 3 consecutive qualifying sessions
+    -- Signature data (JSON arrays, one entry per qualifying day, oldest first)
+    dates_json          TEXT,
+    close_pcts_json     TEXT,                -- each day's close position in day range (0..1)
+    rvols_json          TEXT,                -- each day's RVOL
+    gains_json          TEXT,                -- each day's gain %
+    total_gain_pct      REAL,                -- sum of daily gains across the window
+    ema21_dist_pct      REAL,                -- distance above EMA21 on detection day
+    sma20_slope_pct     REAL,                -- SMA20 5-day slope %
+    in_tier1            INTEGER DEFAULT 0,   -- ticker in TIER_1 (vs RECLAIM_EXTRA)
+    -- Follow-through outcome
+    outcome             TEXT DEFAULT 'PENDING',  -- PENDING | PROMOTED | FADED | EXPIRED
+    promoted_runner_id  INTEGER,             -- FK to runner_tracker.id on promotion
+    promoted_date       TEXT,
+    outcome_date        TEXT,
+    outcome_gain_pct    REAL,                -- gain from detection close to outcome day close
+    UNIQUE(ticker, detection_date)
+);
+CREATE INDEX IF NOT EXISTS idx_prl_ticker ON proto_runner_log(ticker);
+CREATE INDEX IF NOT EXISTS idx_prl_outcome ON proto_runner_log(outcome);
+CREATE INDEX IF NOT EXISTS idx_prl_date ON proto_runner_log(detection_date);
+"""
+
+# PROTO_RUNNER detection parameters (AMD Apr 13-15 as reference pattern)
+PROTO_MIN_WINDOW = 2          # minimum consecutive qualifying sessions
+PROTO_MAX_WINDOW = 3          # don't look further back
+PROTO_CLOSE_PCT_MIN = 0.70    # each day closes in top 30% of its range
+PROTO_RVOL_MAX = 1.0          # below-average volume (defining feature)
+PROTO_MIN_DAILY_GAIN = 0.30   # each day has to be genuinely higher, not flat
+PROTO_LOOKBACK = 8            # daily bars to fetch for detection window + EMA21 + SMA20
+
 # ── In-memory state ───────────────────────────────────────────────────
 
 _runners: dict[str, dict[str, Any]] = {}  # ticker -> live runner state
 _last_date: str = ""
+_proto_last_scan_date: str = ""  # so EOD scan fires once per day
 
 # ── DB helpers (same pattern as paper_trading.py) ─────────────────────
 
@@ -100,9 +144,10 @@ def _conn():
 
 
 def init_runner_db() -> None:
-    """Create table + reload active runners from prior session."""
+    """Create tables + reload active runners from prior session."""
     with _conn() as c:
         c.executescript(RUNNER_SCHEMA)
+        c.executescript(PROTO_RUNNER_SCHEMA)
         # Migration: add entry_path for installs predating the reclaim feature.
         # Pattern from paper_trading.py — safe if column already exists.
         for col, ddl in [
@@ -201,6 +246,313 @@ def _has_recent_done(ticker: str) -> bool:
     days = _cooldown_days(row["done_reason"] or "")
     return row["done_ts"] > int(time.time()) - days * 86400
 
+
+# ── PROTO_RUNNER detection (v3 observation mode) ──────────────────────
+
+def _detect_proto_signature(bars: list[dict], lookback_idx: int = -1) -> dict | None:
+    """Check if bars[:lookback_idx+1] ends with a PROTO_RUNNER signature.
+
+    Signature (AMD Apr 13-15 reference):
+      - 2 or 3 consecutive sessions ending at lookback_idx
+      - Each session's close > prior session's close by ≥ PROTO_MIN_DAILY_GAIN%
+      - Each session's close in top (1 - PROTO_CLOSE_PCT_MIN) of day's range
+      - Each session's RVOL ≤ PROTO_RVOL_MAX
+      - Close on detection day > EMA21 (computed from closes before the window)
+      - SMA20 rising over the detection window
+
+    Returns a dict with signature data if matched, else None.
+    `bars` is chronological daily OHLCV (oldest first). lookback_idx points to
+    the candidate detection day (defaults to last bar).
+    """
+    if len(bars) < 22:  # need enough history for EMA21 + 3-day window
+        return None
+
+    if lookback_idx < 0:
+        lookback_idx = len(bars) - 1
+    if lookback_idx < 21:
+        return None
+
+    # Average volume — exclude the detection window itself to avoid self-reference
+    window_lookback_start = max(0, lookback_idx - PROTO_MAX_WINDOW)
+    prior_bars = bars[max(0, window_lookback_start - 20):window_lookback_start]
+    if len(prior_bars) < 10:
+        return None
+    avg_vol = sum(b["volume"] for b in prior_bars) / len(prior_bars)
+    if avg_vol <= 0:
+        return None
+
+    # Try largest window first (3 days) then fall back to 2
+    for window in range(PROTO_MAX_WINDOW, PROTO_MIN_WINDOW - 1, -1):
+        start = lookback_idx - window + 1
+        if start < 1:
+            continue
+        window_bars = bars[start:lookback_idx + 1]
+        prior_close = bars[start - 1]["close"]
+
+        dates = []
+        close_pcts = []
+        rvols = []
+        gains = []
+        ok = True
+        last_close = prior_close
+
+        for b in window_bars:
+            day_range = b["high"] - b["low"]
+            if day_range <= 0:
+                ok = False
+                break
+            cp = (b["close"] - b["low"]) / day_range
+            rv = b["volume"] / avg_vol
+            gain_pct = (b["close"] - last_close) / last_close * 100 if last_close else 0
+
+            if cp < PROTO_CLOSE_PCT_MIN:
+                ok = False
+                break
+            if rv > PROTO_RVOL_MAX:
+                ok = False
+                break
+            if gain_pct < PROTO_MIN_DAILY_GAIN:
+                ok = False
+                break
+            if b["close"] <= last_close:
+                ok = False
+                break
+
+            dates.append(b["time"])
+            close_pcts.append(round(cp, 3))
+            rvols.append(round(rv, 2))
+            gains.append(round(gain_pct, 2))
+            last_close = b["close"]
+
+        if not ok:
+            continue
+
+        # EMA21 trend filter — detection close must be above EMA21
+        pre_window_closes = [b["close"] for b in bars[:start]]
+        if len(pre_window_closes) < 21:
+            continue
+        ema21 = _ema(pre_window_closes, 21)
+        detection_close = bars[lookback_idx]["close"]
+        if detection_close <= ema21:
+            continue
+        ema21_dist_pct = (detection_close - ema21) / ema21 * 100
+
+        # SMA20 rising filter — compare SMA20 as of 5 sessions ago vs today
+        if lookback_idx < 25:
+            continue
+        sma_now = sum(b["close"] for b in bars[lookback_idx - 19:lookback_idx + 1]) / 20
+        sma_back = sum(b["close"] for b in bars[lookback_idx - 24:lookback_idx - 4]) / 20
+        if sma_back <= 0:
+            continue
+        sma_slope_pct = (sma_now - sma_back) / sma_back * 100
+        if sma_slope_pct <= 0:
+            continue
+
+        return {
+            "window_days": window,
+            "dates": dates,
+            "close_pcts": close_pcts,
+            "rvols": rvols,
+            "gains": gains,
+            "total_gain_pct": round(sum(gains), 2),
+            "ema21_dist_pct": round(ema21_dist_pct, 2),
+            "sma20_slope_pct": round(sma_slope_pct, 2),
+            "detection_date": dates[-1],
+            "detection_close": detection_close,
+        }
+
+    return None
+
+
+def _log_proto_detection(ticker: str, sig: dict, in_tier1: bool) -> int | None:
+    """Insert a new proto_runner_log row. Returns the rowid, or None if
+    the (ticker, detection_date) already exists (dedupe)."""
+    import json
+    try:
+        with _conn() as c:
+            cur = c.execute(
+                """INSERT OR IGNORE INTO proto_runner_log
+                   (ticker, detection_date, detection_ts, window_days,
+                    dates_json, close_pcts_json, rvols_json, gains_json,
+                    total_gain_pct, ema21_dist_pct, sma20_slope_pct,
+                    in_tier1, outcome)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'PENDING')""",
+                (
+                    ticker, sig["detection_date"], int(time.time()), sig["window_days"],
+                    json.dumps(sig["dates"]), json.dumps(sig["close_pcts"]),
+                    json.dumps(sig["rvols"]), json.dumps(sig["gains"]),
+                    sig["total_gain_pct"], sig["ema21_dist_pct"], sig["sma20_slope_pct"],
+                    1 if in_tier1 else 0,
+                ),
+            )
+            return cur.lastrowid if cur.rowcount > 0 else None
+    except Exception as e:
+        print(f"[proto_runner] log error for {ticker}: {e}")
+        return None
+
+
+async def scan_proto_runners() -> dict:
+    """End-of-day scan — fetch daily bars for TIER_1 + RECLAIM_EXTRA tickers
+    and log any that end the session with a PROTO_RUNNER signature.
+
+    Also updates outcome tracking for prior PENDING rows:
+      - Mark 'FADED' if 5+ trading days elapsed with no promotion
+      - Compute outcome_gain_pct for all rows whose follow-through window closed
+
+    Returns summary dict: {detected: N, faded: N, by_ticker: [{...}]}
+    """
+    from .tradier import TradierClient
+    try:
+        from .tickers import TIER_1
+    except ImportError:
+        TIER_1 = []
+
+    tier1_set = set(TIER_1)
+    universe = tier1_set | RECLAIM_EXTRA_TICKERS
+
+    today_iso = _today()
+    # Pull enough history for EMA21 (21) + window lookback (3) + avg-vol (20)
+    # plus some buffer = ~50 trading days. Calendar ~70 days.
+    import datetime as _dt
+    end = _dt.date.today()
+    start = (end - _dt.timedelta(days=100)).isoformat()
+    end_iso = end.isoformat()
+
+    tc = TradierClient()
+    detections: list[dict] = []
+    errors = 0
+    try:
+        for ticker in universe:
+            try:
+                bars = await tc.history(ticker, interval="daily", start=start, end=end_iso)
+            except Exception:
+                errors += 1
+                continue
+            if not bars or len(bars) < 30:
+                continue
+            # Need the detection window to end TODAY — skip if last bar isn't today
+            if bars[-1]["time"] != today_iso:
+                continue
+
+            # Earnings blackout
+            try:
+                from .signals import _earnings_blackout_cache
+                _, bo_set = _earnings_blackout_cache
+                if ticker in bo_set:
+                    continue
+            except Exception:
+                pass
+
+            # Don't log if already an active v2 runner
+            if ticker in _runners:
+                continue
+            if _has_recent_done(ticker):
+                continue
+
+            sig = _detect_proto_signature(bars)
+            if not sig:
+                continue
+
+            row_id = _log_proto_detection(ticker, sig, in_tier1=(ticker in tier1_set))
+            if row_id:
+                detections.append({"ticker": ticker, **sig})
+                print(f"[proto_runner] DETECTED [{ticker}] {sig['window_days']}d grind +{sig['total_gain_pct']:.2f}% RVOL {'/'.join(f'{r:.2f}' for r in sig['rvols'])}")
+    finally:
+        await tc.close()
+
+    # Outcome tracking — advance PENDING rows
+    faded = _advance_proto_outcomes()
+
+    return {
+        "detections": detections,
+        "detected_count": len(detections),
+        "faded_count": faded,
+        "errors": errors,
+    }
+
+
+def _advance_proto_outcomes() -> int:
+    """Age out old PENDING proto_runner_log rows.
+
+    A PROTO_RUNNER has 5 trading sessions to 'become' a DAY1_BREAKOUT via
+    the normal SWING/RECLAIM paths. If not promoted within that window, the
+    row is marked FADED. (Promotion is handled separately, at the moment
+    the DAY1_BREAKOUT fires — see _mark_proto_promoted.)
+
+    Returns the number of rows newly marked FADED.
+    """
+    import datetime as _dt
+    cutoff = int(time.time()) - 7 * 86400  # calendar days — close enough for 5 trading
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, ticker, detection_date FROM proto_runner_log "
+            "WHERE outcome = 'PENDING' AND detection_ts < ?",
+            (cutoff,),
+        ).fetchall()
+        count = 0
+        for r in rows:
+            c.execute(
+                "UPDATE proto_runner_log SET outcome = 'FADED', outcome_date = ? "
+                "WHERE id = ?",
+                (_dt.date.today().isoformat(), r["id"]),
+            )
+            count += 1
+        return count
+
+
+def _mark_proto_promoted(ticker: str, runner_id: int, d1_close: float) -> None:
+    """Called from update_runners() whenever a new DAY1_BREAKOUT fires.
+    Marks ALL PENDING proto_runner_log rows for the ticker as PROMOTED.
+    """
+    try:
+        with _conn() as c:
+            # Compute outcome_gain_pct: from earliest pending detection close to d1_close
+            rows = c.execute(
+                "SELECT id, dates_json FROM proto_runner_log "
+                "WHERE ticker = ? AND outcome = 'PENDING'",
+                (ticker,),
+            ).fetchall()
+            for r in rows:
+                c.execute(
+                    """UPDATE proto_runner_log SET
+                        outcome = 'PROMOTED',
+                        promoted_runner_id = ?,
+                        promoted_date = ?,
+                        outcome_date = ?
+                    WHERE id = ?""",
+                    (runner_id, _today(), _today(), r["id"]),
+                )
+            if rows:
+                print(f"[proto_runner] PROMOTED [{ticker}]: {len(rows)} pending detection(s) -> runner #{runner_id}")
+    except Exception as e:
+        print(f"[proto_runner] promote error for {ticker}: {e}")
+
+
+def get_proto_runners(limit: int = 50) -> list[dict]:
+    """Fetch proto_runner_log entries for UI display.
+    Most recent first, PENDING first within date groups."""
+    import json
+    with _conn() as c:
+        rows = c.execute(
+            """SELECT * FROM proto_runner_log
+               ORDER BY detection_ts DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            for k in ("dates_json", "close_pcts_json", "rvols_json", "gains_json"):
+                if d.get(k):
+                    try:
+                        d[k.replace("_json", "")] = json.loads(d[k])
+                    except Exception:
+                        pass
+                d.pop(k, None)
+            result.append(d)
+        return result
+
+
+# ── V2 detection paths (unchanged) ────────────────────────────────────
 
 def _check_reclaim_entry(ticker: str, state: dict, today: str) -> dict | None:
     """Detect V-bottom reclaim: mega-cap / watchlist name closing above EMA21
@@ -583,6 +935,50 @@ def _format_contract_ladder(ladder: list[dict], ticker: str) -> str:
 _LAST_OIL_REGIME_ALERT: dict[str, str] = {}  # date -> last alerted regime
 
 
+async def _send_proto_eod_summary(scan_result: dict) -> None:
+    """v3: single end-of-day Telegram summary of PROTO_RUNNER detections.
+
+    Fires once at 4:10 PM ET, never per-detection. Observation mode — the
+    system is watching these but not acting on them. User sees the list so
+    they can form their own read on whether the pattern has edge.
+    """
+    detections = scan_result.get("detections") or []
+    if not detections:
+        return
+    try:
+        from .telegram import send
+    except ImportError:
+        return
+
+    lines = [f"📡 <b>PROTO_RUNNER EOD scan</b> — {len(detections)} detected"]
+    lines.append("")
+    lines.append("<i>Stealth grind pattern (consecutive higher closes at top of range")
+    lines.append("on below-average volume — may precede a volume-driven breakout).</i>")
+    lines.append("<i>Observation mode: no alerts, no trades. Forward-logging only.</i>")
+    lines.append("")
+
+    for d in detections[:10]:  # cap at 10 to avoid message bloat
+        ticker = d["ticker"]
+        window = d["window_days"]
+        total = d["total_gain_pct"]
+        cps = "/".join(f"{int(c*100)}%" for c in d["close_pcts"])
+        rvs = "/".join(f"{r:.2f}x" for r in d["rvols"])
+        gns = "/".join(f"{g:+.1f}%" for g in d["gains"])
+        lines.append(
+            f"• <b>{ticker}</b> — {window}d grind, total {total:+.2f}%"
+        )
+        lines.append(f"   gains {gns} · close_pct {cps} · RVOL {rvs}")
+
+    if len(detections) > 10:
+        lines.append(f"   …and {len(detections) - 10} more")
+
+    msg = "\n".join(lines)
+    try:
+        await send(msg, ticker="PROTO_RUNNER", force=True)
+    except Exception as e:
+        print(f"[proto_runner] telegram send failed: {e}")
+
+
 async def _alert_oil_regime_transition(oil_data: dict | None) -> None:
     """Telegram alert on oil regime transitions — OIL_SPIKE_RISKOFF /
     STAGFLATION_FEAR / OIL_CRASH_RELIEF. No spam: only alerts on new
@@ -758,8 +1154,8 @@ def _finalize_day(runner: dict, state: dict, day_prefix: str) -> None:
     runner[f"{day_prefix}_rvol"] = round(vol / max(avg, 1), 2)
 
 
-def _persist(runner: dict) -> None:
-    """Write runner state to SQLite."""
+def _persist(runner: dict) -> int | None:
+    """Write runner state to SQLite. Returns the row id of the upserted record."""
     with _conn() as c:
         row = c.execute(
             "SELECT id FROM runner_tracker WHERE ticker = ? AND state != 'DONE' LIMIT 1",
@@ -796,6 +1192,7 @@ def _persist(runner: dict) -> None:
                 runner.get("done_ts"), runner.get("done_reason"),
                 row["id"],
             ))
+            return row["id"]
         else:
             c.execute("""INSERT INTO runner_tracker
                 (ticker, state, entry_ts, entry_date, entry_path,
@@ -817,6 +1214,7 @@ def _persist(runner: dict) -> None:
                 runner.get("total_gain_pct"), runner.get("consecutive_2pct_days"),
                 runner.get("runner_score"),
             ))
+            return c.execute("SELECT last_insert_rowid()").fetchone()[0]
 
 
 async def _close_runner(ticker: str, reason: str) -> None:
@@ -998,7 +1396,10 @@ async def update_runners() -> None:
         }
         runner["runner_score"] = _compute_runner_score(runner)
         _runners[ticker] = runner
-        _persist(runner)
+        runner_id = _persist(runner)
+        # v3: if this ticker had a pending PROTO_RUNNER detection, mark it promoted
+        if runner_id:
+            _mark_proto_promoted(ticker, runner_id, runner.get("d1_close") or spot)
         await _alert_transition(ticker, "DAY1_BREAKOUT", runner, state=state)
         regime_tag = f" vix={vix_regime_label}" if vix_regime_label else ""
         oil_tag = f" oil={oil_regime_label}" if oil_regime_label and oil_regime_label != "OIL_CALM" else ""
@@ -1029,13 +1430,32 @@ async def update_runners() -> None:
             reclaim_runner["oil_regime_at_entry"] = oil_regime_label
             reclaim_runner["runner_score"] = _compute_runner_score(reclaim_runner)
             _runners[ticker] = reclaim_runner
-            _persist(reclaim_runner)
+            runner_id = _persist(reclaim_runner)
+            # v3: promote any pending PROTO_RUNNER detection for this ticker
+            if runner_id:
+                _mark_proto_promoted(ticker, runner_id, reclaim_runner.get("d1_close") or 0)
             await _alert_transition(ticker, "DAY1_BREAKOUT", reclaim_runner, state=state)
             shape = reclaim_runner.get("runner_shape", "MEASURED")
             print(f"[runner_tracker] DAY1_BREAKOUT [RECLAIM/{shape}]: {ticker} "
                   f"+{reclaim_runner['d1_gain_pct']:.1f}% "
                   f"rvol={reclaim_runner['d1_rvol']:.1f}x "
                   f"score={reclaim_runner['runner_score']:.0f}/20")
+
+    # ── v3 PROTO_RUNNER EOD scan — fires once per day after 4:10 PM ET ─
+    # Observation mode only: logs detections to proto_runner_log, no alerts,
+    # no paper trades, no scoring impact. See case study:
+    # docs/case_studies/AMD_RUNNER_CASE_STUDY.md
+    global _proto_last_scan_date
+    now_dt = datetime.datetime.now()
+    if (now_dt.hour >= 16 and now_dt.minute >= 10) and _proto_last_scan_date != today:
+        try:
+            result = await scan_proto_runners()
+            _proto_last_scan_date = today
+            # EOD Telegram summary — one message per day, never per-detection
+            if result["detected_count"] > 0:
+                await _send_proto_eod_summary(result)
+        except Exception as e:
+            print(f"[proto_runner] EOD scan failed: {e}")
 
     _last_date = today
 

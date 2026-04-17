@@ -81,6 +81,8 @@ export default function SwingsTab() {
   const [data, setData] = useState(null);
   const [vixRegime, setVixRegime] = useState(null);
   const [oilRegime, setOilRegime] = useState(null);
+  const [protoRunners, setProtoRunners] = useState(null);
+  const [protoOpen, setProtoOpen] = useState(false);
   const [mode, setMode] = useState('standard');
   const [loading, setLoading] = useState(true);
   const [sortCol, setSortCol] = useState('swing_score');
@@ -88,14 +90,16 @@ export default function SwingsTab() {
 
   const load = useCallback(async () => {
     try {
-      const [d, v, o] = await Promise.all([
+      const [d, v, o, p] = await Promise.all([
         api.swingScanner(mode),
         api.vixRegime().catch(() => null),
         api.oilRegime().catch(() => null),
+        api.protoRunners().catch(() => null),
       ]);
       setData(d);
       if (v) setVixRegime(v);
       if (o) setOilRegime(o);
+      if (p) setProtoRunners(p);
     } catch (e) {
       console.error('[SwingsTab] load error:', e);
     } finally {
@@ -210,6 +214,79 @@ export default function SwingsTab() {
 
       {/* Sector ranks */}
       <SectorRankBar ranks={data?.sector_ranks} />
+
+      {/* PROTO_RUNNER observation panel (v3 — AMD case study) */}
+      {protoRunners && (protoRunners.rows?.length > 0) && (() => {
+        const pending = (protoRunners.rows || []).filter(r => r.outcome === 'PENDING');
+        const s = protoRunners.summary || {};
+        if (pending.length === 0 && s.promoted === 0 && s.faded === 0) return null;
+        return (
+          <div style={{
+            marginBottom: 10, padding: '8px 12px',
+            background: 'var(--bg-card)',
+            border: '1px solid #6a5cff33',
+            borderRadius: 'var(--radius-sm)',
+            fontSize: 10, fontFamily: 'var(--mono)',
+          }}>
+            <div
+              style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}
+              onClick={() => setProtoOpen(!protoOpen)}
+            >
+              <span style={{ fontSize: 12 }}>📡</span>
+              <span style={{ fontWeight: 800, color: '#a89bff' }}>
+                PROTO_RUNNERS
+              </span>
+              <span style={{ color: '#a89bff' }}>
+                {pending.length} watching
+              </span>
+              {s.hit_rate_pct !== null && s.hit_rate_pct !== undefined && (
+                <span style={{ color: 'var(--text-3)' }}>
+                  · hit rate {s.hit_rate_pct}% ({s.promoted}/{s.promoted + s.faded})
+                </span>
+              )}
+              <span style={{ color: 'var(--text-3)', marginLeft: 'auto' }}>
+                {protoOpen ? '▲' : '▼'} stealth-grind observation (no alerts / no trades)
+              </span>
+            </div>
+            {protoOpen && (
+              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {(protoRunners.rows || []).slice(0, 20).map((r) => {
+                  const gains = r.gains || [];
+                  const cps = r.close_pcts || [];
+                  const rvs = r.rvols || [];
+                  const outcomeColor = {
+                    PENDING: '#a89bff', PROMOTED: '#10dc9a',
+                    FADED: '#ff6b6b', EXPIRED: 'var(--text-3)',
+                  }[r.outcome] || 'var(--text-3)';
+                  return (
+                    <div key={r.id} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <span style={{ fontWeight: 800, width: 55 }}>{r.ticker}</span>
+                      <span style={{ color: outcomeColor, width: 70 }}>{r.outcome}</span>
+                      <span style={{ color: 'var(--text-3)', width: 80 }}>{r.detection_date}</span>
+                      <span style={{ width: 50 }}>{r.window_days}d</span>
+                      <span style={{
+                        color: r.total_gain_pct >= 0 ? '#10dc9a' : '#ff6b6b',
+                        fontWeight: 700, width: 70,
+                      }}>
+                        {r.total_gain_pct >= 0 ? '+' : ''}{r.total_gain_pct?.toFixed(2)}%
+                      </span>
+                      <span style={{ color: 'var(--text-3)' }}>
+                        gains {gains.map(g => (g >= 0 ? '+' : '') + g.toFixed(1) + '%').join('/')}
+                      </span>
+                      <span style={{ color: 'var(--text-3)' }}>
+                        cp {cps.map(c => Math.round(c * 100) + '%').join('/')}
+                      </span>
+                      <span style={{ color: 'var(--text-3)' }}>
+                        RVOL {rvs.map(v => v.toFixed(2) + 'x').join('/')}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Gate failure summary */}
       {gateStats.failed && Object.keys(gateStats.failed).length > 0 && (

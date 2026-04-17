@@ -52,6 +52,7 @@ export const api = {
   breadth: () => json('GET', '/api/breadth'),
   rts: (direction = 'BULL', limit = 50) => json('GET', `/api/rts?direction=${direction}&limit=${limit}`),
   runners: (status = 'active') => json('GET', `/api/runners?status=${status}`),
+  protoRunners: (limit = 50) => json('GET', `/api/proto-runners?limit=${limit}`),
   get: (url) => json('GET', url),
 };
 
