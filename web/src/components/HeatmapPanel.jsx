@@ -1,12 +1,12 @@
 import React, { useMemo } from 'react';
 import { useStore } from '../store.js';
-import { fmtBig, fmtPrice, fmtStrike } from '../lib/format.js';
+import { fmtBig, fmtBigPrecise, fmtPrice, fmtStrike } from '../lib/format.js';
 import { rowBackground, rowClass, signalExplanation, signalStripClass } from '../lib/gex.js';
 import TooltipPopup, { useTooltip } from './Tooltip.jsx';
 
 const MACRO_KEY = 'MACRO (ALL 200D)';
 
-function HeatmapPanel({ ticker, panelIdx, expLabelOverride }) {
+function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
   const {
     chains,
     spotPrices,
@@ -243,6 +243,7 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride }) {
             {visibleStrikes.map((s, idx) => {
               const showSpotAbove = idx === spotIdx;
               const isKing = s.node_type === 'king';
+              const isMatrixKing = matrixKing && Math.abs(s.strike - matrixKing.strike) < 0.01;
               return (
                 <React.Fragment key={s.strike}>
                   {showSpotAbove && (
@@ -255,8 +256,13 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride }) {
                     </div>
                   )}
                   <div
-                    className={`row ${rowClass(s, spot)}${isKing ? ' king-row' : ''}${s.node_type === 'gatekeeper' ? ' gatekeeper-row' : ''}`}
-                    style={{ backgroundColor: rowBackground(s, spot) }}
+                    className={`row ${rowClass(s, spot)}${isKing ? ' king-row' : ''}${isMatrixKing ? ' matrix-king-row' : ''}${s.node_type === 'gatekeeper' ? ' gatekeeper-row' : ''}`}
+                    style={{
+                      backgroundColor: rowBackground(s, spot),
+                      ...(isMatrixKing ? {
+                        boxShadow: 'inset 0 0 0 2px #f4c430',
+                      } : {}),
+                    }}
                     onMouseEnter={(e) => showTip(s, e)}
                     onMouseLeave={hideTip}
                   >
@@ -270,13 +276,22 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride }) {
                       )}
                     </span>
                     <span className="gex">
-                      {fmtBig(s.net_gex)}
+                      {fmtBigPrecise(s.net_gex)}
+                      {isMatrixKing && (
+                        <span
+                          title="Matrix King — largest |GEX| across all visible expirations"
+                          style={{
+                            color: '#f4c430', fontWeight: 800, marginLeft: 6,
+                            textShadow: '0 0 8px rgba(244,196,48,0.8)',
+                          }}
+                        >⭐</span>
+                      )}
                       {isKing && <span className={`king-badge${isKing ? ' king-pulse' : ''}`}> ★ KING</span>}
                       {s.node_type === 'gatekeeper' && <span style={{ color: '#a24dff' }}> ◆</span>}
                       {s.node_type === 'floor' && <span style={{ color: '#10dc9a' }}> ▬ FLOOR</span>}
                       {s.node_type === 'ceiling' && <span style={{ color: '#ff5656' }}> ▬ CEIL</span>}
                     </span>
-                    <span className="vex">{fmtBig(s.net_vex)}</span>
+                    <span className="vex">{fmtBigPrecise(s.net_vex)}</span>
                   </div>
                 </React.Fragment>
               );
@@ -296,6 +311,7 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride }) {
             </div>
             {visibleStrikes.map((s, idx) => {
               const showSpotAbove = idx === spotIdx;
+              const isMatrixKing = matrixKing && Math.abs(s.strike - matrixKing.strike) < 0.01;
               const pct = maxIntensity
                 ? (Math.abs(s.net_gex || 0) / maxIntensity) * 100
                 : 0;
@@ -324,12 +340,22 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride }) {
                     </div>
                   )}
                   <div
-                    className={`profile-row${s.node_type === 'king' ? ' king-row' : ''}${s.node_type === 'gatekeeper' ? ' gatekeeper-row' : ''}`}
+                    className={`profile-row${s.node_type === 'king' ? ' king-row' : ''}${isMatrixKing ? ' matrix-king-row' : ''}${s.node_type === 'gatekeeper' ? ' gatekeeper-row' : ''}`}
+                    style={isMatrixKing ? { boxShadow: 'inset 0 0 0 2px #f4c430' } : undefined}
                     onMouseEnter={(e) => showTip(s, e)}
                     onMouseLeave={hideTip}
                   >
                     <span className="strike text-mono">
                       {fmtStrike(s.strike)}
+                      {isMatrixKing && (
+                        <span
+                          title="Matrix King — largest |GEX| across all visible expirations"
+                          style={{
+                            color: '#f4c430', fontWeight: 800, marginLeft: 4,
+                            textShadow: '0 0 8px rgba(244,196,48,0.8)',
+                          }}
+                        >⭐</span>
+                      )}
                       <span className={`profile-dot${s.node_type === 'king' ? ' king-pulse' : ''}`} style={{ background: dotColor }} />
                       {/* Per-strike VEX arrow */}
                       {vexArrow && <span className="vex-arrow" style={{ color: vexColor }}>{vexArrow}</span>}
@@ -349,7 +375,7 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride }) {
                         style={{ width: `${Math.max(1, pct)}%`, background: barColor }}
                       />
                       <span className="profile-val">
-                        {fmtBig(s.net_gex)}
+                        {fmtBigPrecise(s.net_gex)}
                         {s.node_type === 'king' && ' ★ KING'}
                         {s.node_type === 'gatekeeper' && ' ◆'}
                         {s.node_type === 'floor' && ' ▬ FLOOR'}

@@ -60,6 +60,37 @@ export default function HeatmapsTab() {
     return data?.exps || ['MACRO (ALL 200D)'];
   }, [chains, focusTicker]);
 
+  /**
+   * Matrix-wide "Heatseeker" King — the single largest-magnitude strike across
+   * every visible FOCUS-mode expiration. Inspired by Skylit's ⭐ callout.
+   * Returns { exp, strike, net_gex } or null if nothing to compare.
+   * Applies only in FOCUS mode and only when multiple expirations are shown
+   * (otherwise the per-expiration King already IS the matrix king).
+   */
+  const matrixKing = useMemo(() => {
+    if (!focus) return null;
+    const data = chains[focusTicker];
+    if (!data?.exp_data) return null;
+    const visibleExps = Array.from({ length: focusPanelCount }).map(
+      (_, i) => focusExps[Math.min(i, focusExps.length - 1)] || 'MACRO (ALL 200D)'
+    );
+    if (visibleExps.length < 2) return null;
+
+    let best = null;
+    for (const exp of visibleExps) {
+      const ed = data.exp_data[exp];
+      if (!ed || !Array.isArray(ed.strikes)) continue;
+      // Scan all strikes in this expiration for the largest |net_gex|
+      for (const s of ed.strikes) {
+        const mag = Math.abs(s.net_gex || 0);
+        if (best == null || mag > best.mag) {
+          best = { exp, strike: s.strike, net_gex: s.net_gex, mag };
+        }
+      }
+    }
+    return best;
+  }, [focus, chains, focusTicker, focusExps, focusPanelCount]);
+
   const streamLabel =
     streamMode === 'ws'
       ? '⚡ STREAMING'
@@ -83,12 +114,16 @@ export default function HeatmapsTab() {
         <div className={`panels cols-${focusPanelCount}`}>
           {Array.from({ length: focusPanelCount }).map((_, i) => {
             const exp = focusExps[Math.min(i, focusExps.length - 1)] || 'MACRO (ALL 200D)';
+            // Only pass matrixKing to the panel that actually owns the winning
+            // cell — other panels get null so they render normal King styling.
+            const myMatrixKing = matrixKing && matrixKing.exp === exp ? matrixKing : null;
             return (
               <HeatmapPanel
                 key={`focus-${focusTicker}-${i}`}
                 ticker={focusTicker}
                 panelIdx={i}
                 expLabelOverride={exp}
+                matrixKing={myMatrixKing}
               />
             );
           })}
