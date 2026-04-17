@@ -34,7 +34,11 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
     return expList.find((e) => e === today || e.startsWith(today));
   }, [zeroDte, expList]);
 
-  const currentExp = todayExp || expLabelOverride || exps[expKey] || MACRO_KEY;
+  // Precedence: 0DTE mode forces today's exp > user's dropdown choice >
+  // parent's default > MACRO fallback.
+  // User choice MUST beat expLabelOverride, otherwise the dropdown in FOCUS
+  // mode appears dead (store updates but this derived value ignores it).
+  const currentExp = todayExp || exps[expKey] || expLabelOverride || MACRO_KEY;
   const spot = spotPrices[ticker] ?? data?.spot;
   const prev = prevSpotPrices[ticker];
   const dir =

@@ -22,6 +22,7 @@ export default function HeatmapsTab() {
     streamMode,
     focusTickerOverride,
     setFocusTickerOverride,
+    exps,  // user's per-panel expiration picks (key: `${ticker}-${panelIdx}`)
   } = useStore();
 
   const wl = watchlists.find((w) => w.id === activeWL) || watchlists[0];
@@ -84,23 +85,33 @@ export default function HeatmapsTab() {
    * dominant dealer positioning. Skylit's example correctly marks a specific
    * weekly/monthly, never the aggregated view.
    */
+  /**
+   * Resolve what each panel is ACTUALLY displaying. User picks via the per-
+   * panel exp dropdown persist in store.exps keyed by `${ticker}-${panelIdx}`.
+   * If the user hasn't touched it, fall back to the default for that slot.
+   */
+  const visiblePanelExps = useMemo(() => {
+    if (!focus) return [];
+    return Array.from({ length: focusPanelCount }).map((_, i) => {
+      const userPick = exps[`${focusTicker}-${i}`];
+      const fallback = focusExps[Math.min(i, focusExps.length - 1)] || 'MACRO (ALL 200D)';
+      return userPick || fallback;
+    });
+  }, [focus, exps, focusTicker, focusExps, focusPanelCount]);
+
   const matrixKing = useMemo(() => {
     if (!focus) return null;
     const data = chains[focusTicker];
     if (!data?.exp_data) return null;
 
-    const allVisibleExps = Array.from({ length: focusPanelCount }).map(
-      (_, i) => focusExps[Math.min(i, focusExps.length - 1)] || 'MACRO (ALL 200D)'
-    );
-    // Exclude the aggregated MACRO view from the comparison
-    const comparableExps = allVisibleExps.filter(e => !String(e).startsWith('MACRO'));
+    // Exclude aggregated MACRO views from the comparison
+    const comparableExps = visiblePanelExps.filter(e => !String(e).startsWith('MACRO'));
     if (comparableExps.length < 2) return null;
 
     let best = null;
     for (const exp of comparableExps) {
       const ed = data.exp_data[exp];
       if (!ed || !Array.isArray(ed.strikes)) continue;
-      // Scan all strikes in this expiration for the largest |net_gex|
       for (const s of ed.strikes) {
         const mag = Math.abs(s.net_gex || 0);
         if (best == null || mag > best.mag) {
@@ -109,7 +120,7 @@ export default function HeatmapsTab() {
       }
     }
     return best;
-  }, [focus, chains, focusTicker, focusExps, focusPanelCount]);
+  }, [focus, chains, focusTicker, visiblePanelExps]);
 
   const streamLabel =
     streamMode === 'ws'
@@ -246,16 +257,19 @@ export default function HeatmapsTab() {
       {focus ? (
         <div className={`panels cols-${focusPanelCount}`}>
           {Array.from({ length: focusPanelCount }).map((_, i) => {
-            const exp = focusExps[Math.min(i, focusExps.length - 1)] || 'MACRO (ALL 200D)';
-            // Only pass matrixKing to the panel that actually owns the winning
-            // cell — other panels get null so they render normal King styling.
-            const myMatrixKing = matrixKing && matrixKing.exp === exp ? matrixKing : null;
+            // expLabelOverride is just the DEFAULT for this panel slot —
+            // HeatmapPanel's user-dropdown choice wins if set.
+            const defaultExp = focusExps[Math.min(i, focusExps.length - 1)] || 'MACRO (ALL 200D)';
+            // Use visiblePanelExps (which already respects user overrides)
+            // to decide which panel the matrix-king star should land on.
+            const actualExp = visiblePanelExps[i] || defaultExp;
+            const myMatrixKing = matrixKing && matrixKing.exp === actualExp ? matrixKing : null;
             return (
               <HeatmapPanel
                 key={`focus-${focusTicker}-${i}`}
                 ticker={focusTicker}
                 panelIdx={i}
-                expLabelOverride={exp}
+                expLabelOverride={defaultExp}
                 matrixKing={myMatrixKing}
               />
             );
