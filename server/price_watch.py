@@ -381,4 +381,35 @@ _WATCHES: list[dict[str, Any]] = [
         ],
         "note": "MSFT $430C 4/24 — Mir's sized-up position from earlier week, now running. Entry $2.22. Note from Mir today: 'don't forget to take profits or at least trim'. CTA buying expected in MSFT/GOOGL adds upside fuel but don't get greedy — discipline harvest.",
     },
+    {
+        "id": "nflx_100c_0424_post_er_dip",
+        "ticker": "NFLX",
+        "expiration": "2026-04-24",
+        "strike": 100.0,
+        "option_type": "call",
+        "direction": "below",  # BUY-side — waiting for dip price
+        "active_from": "2026-04-17",
+        "active_until": "2026-04-22",
+        "tiers": [
+            {
+                "label": "APPROACHING",
+                "threshold": 3.50,
+                "emoji": "👀",
+                "note": "Post-ER panic selling pricing into range. Do NOT buy yet — wait for higher-low chart confirmation.",
+            },
+            {
+                "label": "ENTRY",
+                "threshold": 2.75,
+                "emoji": "🎯",
+                "note": "Discipline price. Need (1) NFLX higher-low on 5-min chart AND (2) support holding ~$95-96 before pulling trigger.",
+            },
+            {
+                "label": "DEEP_DISCOUNT",
+                "threshold": 2.00,
+                "emoji": "🔥",
+                "note": "Max oversold zone. IV has crushed further. Size up ONLY on clear reversal signal (RSI divergence, VWAP reclaim, volume exhaustion).",
+            },
+        ],
+        "note": "NFLX $100C 4/24 dip-buy on post-ER crash. Premarket -10% at ~$96.75 from $107.79 close. Guidance cut = fundamental concern, not just technical flush. Wait 30-60 min at open for panic to exhaust. Cleanest signal: first higher-low on 5-min chart. Skip if no HL by 10:30 AM. These tiers are PLACEHOLDER — may need tightening after first 30 min of real post-ER quotes.",
+    },
 ]
