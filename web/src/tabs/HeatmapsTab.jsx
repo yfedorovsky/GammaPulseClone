@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store.js';
 import { api } from '../api.js';
 import HeatmapPanel from '../components/HeatmapPanel.jsx';
@@ -20,12 +20,24 @@ export default function HeatmapsTab() {
     setChains,
     chains,
     streamMode,
+    focusTickerOverride,
+    setFocusTickerOverride,
   } = useStore();
 
   const wl = watchlists.find((w) => w.id === activeWL) || watchlists[0];
   const multiTickers = wl.tickers.slice(0, panels);
-  const focusTicker = wl.tickers[0] || 'SPY';
+  // FOCUS ticker resolution:
+  //   1. User override (from the picker) — wins if set
+  //   2. First ticker in active watchlist — legacy default
+  //   3. SPY as last-resort fallback
+  const focusTicker = (focusTickerOverride && focusTickerOverride.trim())
+    || wl.tickers[0]
+    || 'SPY';
   const focusPanelCount = Math.max(1, Math.min(5, fpanels));
+
+  // Custom-ticker input state for the picker UI
+  const [customInput, setCustomInput] = useState('');
+  const [showCustom, setShowCustom] = useState(false);
 
   // Determine which tickers we actually need data for
   const neededTickers = useMemo(() => {
@@ -106,8 +118,121 @@ export default function HeatmapsTab() {
       ? 'poll'
       : 'offline';
 
+  // Watchlist tickers offered in the FOCUS picker dropdown
+  const watchlistTickers = wl.tickers || [];
+
+  const applyCustomTicker = () => {
+    const t = customInput.trim().toUpperCase();
+    if (!t) return;
+    setFocusTickerOverride(t);
+    setShowCustom(false);
+    setCustomInput('');
+  };
+
   return (
-    <div style={{ display: 'grid', gridTemplateRows: '1fr', height: '100%', minHeight: 0 }}>
+    <div style={{ display: 'grid', gridTemplateRows: focus ? 'auto 1fr' : '1fr', height: '100%', minHeight: 0 }}>
+
+      {/* FOCUS-mode ticker picker */}
+      {focus && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, padding: '6px 12px',
+          borderBottom: '1px solid var(--border-faint)',
+          background: 'var(--bg-card)',
+          fontSize: 11,
+        }}>
+          <span style={{
+            fontSize: 9, fontWeight: 800, color: 'var(--text-3)',
+            textTransform: 'uppercase', letterSpacing: 0.5,
+          }}>
+            Focus ticker
+          </span>
+
+          <select
+            value={focusTicker}
+            onChange={(e) => {
+              if (e.target.value === '__custom__') {
+                setShowCustom(true);
+              } else {
+                setShowCustom(false);
+                setFocusTickerOverride(e.target.value);
+              }
+            }}
+            style={{
+              background: 'var(--bg-input, #1a1a20)',
+              color: 'var(--text-1)',
+              border: '1px solid var(--border-faint)',
+              borderRadius: 'var(--radius-sm)',
+              padding: '3px 8px', fontSize: 11, fontFamily: 'var(--mono)',
+              fontWeight: 700, cursor: 'pointer', minWidth: 90,
+            }}
+          >
+            {/* Keep the current focus ticker selectable even if not in watchlist */}
+            {!watchlistTickers.includes(focusTicker) && (
+              <option value={focusTicker}>{focusTicker} (custom)</option>
+            )}
+            {watchlistTickers.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+            <option value="__custom__">Custom…</option>
+          </select>
+
+          {showCustom && (
+            <>
+              <input
+                autoFocus
+                type="text"
+                value={customInput}
+                onChange={(e) => setCustomInput(e.target.value.toUpperCase())}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') applyCustomTicker();
+                  if (e.key === 'Escape') { setShowCustom(false); setCustomInput(''); }
+                }}
+                placeholder="AAOI"
+                maxLength={10}
+                style={{
+                  background: 'var(--bg-input, #1a1a20)',
+                  color: '#f4c430',
+                  border: '1px solid #f4c430',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '3px 8px', fontSize: 11, fontFamily: 'var(--mono)',
+                  fontWeight: 800, width: 80, textTransform: 'uppercase',
+                }}
+              />
+              <button
+                onClick={applyCustomTicker}
+                className="ctrl-btn"
+                style={{ fontSize: 9, color: '#10dc9a' }}
+              >
+                APPLY
+              </button>
+              <button
+                onClick={() => { setShowCustom(false); setCustomInput(''); }}
+                className="ctrl-btn"
+                style={{ fontSize: 9, color: 'var(--text-3)' }}
+              >
+                CANCEL
+              </button>
+            </>
+          )}
+
+          {focusTickerOverride && !showCustom && (
+            <button
+              onClick={() => setFocusTickerOverride(null)}
+              className="ctrl-btn"
+              style={{ fontSize: 9, color: 'var(--text-3)' }}
+              title="Revert to first ticker in active watchlist"
+            >
+              ✕ CLEAR OVERRIDE
+            </button>
+          )}
+
+          <span style={{ color: 'var(--text-3)', fontSize: 10, marginLeft: 'auto' }}>
+            {focusTickerOverride
+              ? <>Showing <b style={{ color: '#f4c430' }}>{focusTickerOverride}</b> across {focusPanelCount} expirations</>
+              : <>Showing <b>{focusTicker}</b> (watchlist position 1)</>}
+          </span>
+        </div>
+      )}
 
       {/* Panels grid */}
       {focus ? (

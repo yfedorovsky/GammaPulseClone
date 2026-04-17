@@ -56,6 +56,16 @@ export const useStore = create((set, get) => ({
     LS.set('gp_fpanels', fpanels);
     set({ fpanels });
   },
+  // Override ticker for FOCUS mode. When null, HeatmapsTab falls back to
+  // wl.tickers[0] (legacy behavior). When set, FOCUS mode shows this ticker
+  // instead — useful for deep-diving a single name without having to reorder
+  // the watchlist. Persisted so refresh remembers your last focus.
+  focusTickerOverride: LS.get('gp_focus_ticker_override', null),
+  setFocusTickerOverride: (ticker) => {
+    const t = ticker ? String(ticker).toUpperCase().trim() : null;
+    LS.set('gp_focus_ticker_override', t);
+    set({ focusTickerOverride: t });
+  },
   strikes: LS.get('gp_strikes', 60),
   setStrikes: (strikes) => {
     LS.set('gp_strikes', strikes);
