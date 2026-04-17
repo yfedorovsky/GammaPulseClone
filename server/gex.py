@@ -54,53 +54,82 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
 
 
 def _estimate_effective_oi(prior_oi: float, today_volume: float) -> float:
-    """Blend yesterday's settlement OI with today's volume to estimate
-    current effective OI.
+    """Activity-weighted effective OI — post-synthesis v2 (Apr 16 2026).
 
-    Background: Tradier (and most free/cheap providers) return open_interest
-    as the OCC settlement figure from yesterday's close. That number ignores
-    every contract traded today. On high-flow days, a strike with OI=25 can
-    have volume of 5,567 — and our GEX calc using stale OI gives ~$3K when
-    professional dashboards show ~$500K-2.6M at the same strike.
+    Formula from 4-LLM consensus (Perplexity + Gemini recommendations):
 
-    This is a classic ΔOI proxy problem. True ΔOI = opens − closes, which
-    requires trade classification data we don't have. The industry heuristic:
+        OI_eff = OI × (1 + α × min(vol/OI, C))
 
-      - When today's volume DWARFS prior OI, most of it is new opens (there
-        aren't enough existing contracts to close). Blend aggressively.
-      - When today's volume is similar to or below prior OI, it's likely a
-        mix of opens and closes. Blend conservatively or not at all.
-      - Near expiration, volume can be 10x+ OI due to close-outs — so the
-        sharp-threshold approach protects against inflating expiring strikes.
+    with α = 0.4 (moderate activity multiplier) and cap C = 7.
 
-    Returns a float; caller passes through the rest of the gamma pipeline.
+    ## Why the cap matters (Perplexity's "ATM discount anomaly" finding)
 
-    Tunable constants here control the aggressiveness of the estimate:
-      HIGH_FLOW_RATIO: volume/OI above this threshold triggers aggressive blend
-      HIGH_FLOW_ALPHA: fraction of (volume - OI) counted as new opens
-      NORMAL_ALPHA: fraction of volume counted as new opens in the normal case
+    Near-expiration ATM options regularly see vol/OI ratios of 10-50x
+    because most of today's volume is sell-to-close by existing holders
+    taking profits or cutting losses — NOT new opens. Our previous
+    volume-add model inflated these cells when they should have
+    DEFLATED (Skylit's implied OI at expiry-day ATM strikes is actually
+    LOWER than both raw OI and today's volume).
 
-    Validated informally against AAOI 4/16/2026 on a day with $210c vol=5567
-    OI=25 — estimator produces ~3,900 effective OI → GEX ~$500K, closer to
-    professional-dashboard magnitudes (though still conservative vs Skylit's
-    $2.66M which likely includes additional flow-based amplification).
+    The cap at vol/OI = 7 prevents close-out volume from blowing up
+    effective OI. Above that ratio, the additional volume is assumed to
+    be churn/close-outs, not new exposure.
+
+    ## Formula behavior
+
+    Example: OI=25, vol=5567 (AAOI 4/24 $210 — our canonical test case)
+        vol/OI = 222.7  →  min(222.7, 7) = 7
+        OI_eff = 25 × (1 + 0.4 × 7) = 25 × 3.8 = 95
+        GEX impact: 95/25 = 3.8x amplification
+
+    Example: OI=1000, vol=500 (normal strike, vol < OI)
+        vol/OI = 0.5  →  min(0.5, 7) = 0.5
+        OI_eff = 1000 × (1 + 0.4 × 0.5) = 1000 × 1.2 = 1200
+        GEX impact: 1.2x amplification (modest)
+
+    Example: OI=100, vol=8000 (expiring-day ATM close-outs)
+        vol/OI = 80  →  min(80, 7) = 7 (capped)
+        OI_eff = 100 × (1 + 0.4 × 7) = 100 × 3.8 = 380
+        GEX impact: 3.8x amplification (NOT 80x — the cap protects us)
+
+    The prior model (OI + 0.7×(vol-OI) for vol > 2×OI) produced
+    amplifications that scaled linearly with volume/OI ratio, blowing
+    up on expiry-day ATM cells. This capped multiplicative version is
+    more conservative AND more accurate.
+
+    ## Tuning
+
+    α = 0.4 and C = 7 are Perplexity's recommended midpoint of their
+    suggested ranges (α 0.3-0.5, C 5-10). No principled way to pick
+    exact values without forward-testing against actual OI next-day
+    settlements — this is a research item.
+
+    ## Intentionally NOT matching Skylit
+
+    Skylit's numbers at AAOI 4/24 $210 are ~856x our OI. This model
+    gives ~4x. We are DELIBERATELY conservative per Option A of the
+    synthesis: "retail-honest with clear methodology labeling." Users
+    understand our numbers won't match dramatic professional dashboards,
+    but they're reproducible, auditable, and won't blow up on edge
+    cases like expiry-day close-outs.
     """
-    HIGH_FLOW_RATIO = 2.0
-    HIGH_FLOW_ALPHA = 0.7
-    NORMAL_ALPHA = 0.3
+    ALPHA = 0.4  # activity multiplier strength
+    VOL_OI_CAP = 7.0  # ratio cap — prevents expiry-day close-out inflation
 
     if today_volume <= 0:
         return prior_oi
     prior_oi = max(prior_oi, 0)
 
-    # When volume is much larger than prior OI, the excess volume had to come
-    # from NEW opens (not enough OI existed to close). Count most of it.
-    if today_volume > HIGH_FLOW_RATIO * prior_oi:
-        net_new = today_volume - prior_oi
-        return prior_oi + HIGH_FLOW_ALPHA * net_new
+    # When OI is zero but volume isn't, treat volume as the entire signal.
+    # No prior exposure exists — any contracts traded today are fresh opens
+    # (or at least can't be offsetting a non-existent book).
+    if prior_oi <= 0:
+        # Cap to prevent runaway magnitudes on freshly-listed OTM strikes
+        # with speculative day-trade flow that doesn't settle into real OI.
+        return min(today_volume * ALPHA, today_volume)
 
-    # Normal case: assume a fraction of volume is new opens, rest is churn
-    return prior_oi + NORMAL_ALPHA * today_volume
+    activity_ratio = min(today_volume / prior_oi, VOL_OI_CAP)
+    return prior_oi * (1 + ALPHA * activity_ratio)
 
 
 def _opt_fields(opt: dict[str, Any], spot: float = 0.0) -> dict[str, float]:

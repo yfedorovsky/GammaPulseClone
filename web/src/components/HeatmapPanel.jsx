@@ -236,6 +236,24 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
 
         <div className="panel-desc">
           {ticker} · {stripText || '\u00a0'}
+          <span
+            title={
+              "GEX methodology: γ × activity-weighted OI × 100 × S² × 0.01.\n" +
+              "Effective OI = raw_OI × (1 + 0.4 × min(vol/OI, 7)).\n" +
+              "Data source: Tradier (OCC settlement OI, live Greeks).\n\n" +
+              "We do NOT replicate professional dashboards (SpotGamma, Skylit):\n" +
+              "those use OPRA tick-level data with trade classification +\n" +
+              "continuous dealer inventory state. Magnitudes will differ,\n" +
+              "sometimes by 10-100x on high-flow strikes. Our model is\n" +
+              "conservative, reproducible, and auditable by design."
+            }
+            style={{
+              marginLeft: 6, cursor: 'help', color: 'var(--text-3)',
+              fontSize: 9, opacity: 0.5, userSelect: 'none',
+            }}
+          >
+            ⓘ methodology
+          </span>
         </div>
       </div>
 

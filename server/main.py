@@ -64,6 +64,8 @@ async def lifespan(app: FastAPI):
     init_runner_db()
     from .cell_history import init_cell_history_db
     init_cell_history_db()
+    from .oi_delta import init_oi_delta_db
+    init_oi_delta_db()
     await db.start()  # Single-writer queue for SQLite (prevents SQLITE_BUSY)
     await streamer.ensure_running()
     # Compute quarterly basket on startup (PIT sector selection)
@@ -1136,6 +1138,17 @@ async def runners_route(status: str = "active"):
     if status == "history":
         return {"runners": get_recent_runners(limit=50)}
     return {"runners": get_active_runners()}
+
+
+@app.get("/api/oi-delta/stats")
+async def oi_delta_stats_route():
+    """Diagnostic: how many OI snapshots have accumulated?
+
+    Priority 3 from Skylit synthesis — daily OI persistence for ΔOI
+    flow-direction inference. Burn-in: 1 trading day before ΔOI is useful.
+    """
+    from .oi_delta import stats
+    return stats()
 
 
 @app.get("/api/proto-runners")

@@ -564,6 +564,55 @@ async def _scan_cycle(
     await cache.set_status("Idle (waiting for next cycle)")
 
 
+# Module-level: track last date we persisted EOD OI snapshot (run once/day)
+_last_oi_snapshot_date: str = ""
+
+
+async def _maybe_snapshot_eod_oi() -> None:
+    """Once per day at ~4:15 PM ET, walk cache.snapshot() and persist each
+    ticker's OI by strike/exp/option_type to daily_oi_snapshot table.
+
+    Used tomorrow to compute ΔOI vs today's live Tradier OI — a free
+    flow-direction proxy per Priority 3 of the Option A action plan.
+    """
+    global _last_oi_snapshot_date
+    import datetime as _dt
+    now = _dt.datetime.now()
+
+    # Window: 4:15 PM through end of day — allow catch-up if we miss the
+    # first minute. Only fires once per date thanks to _last_oi_snapshot_date.
+    if not (now.hour == 16 and now.minute >= 15) and now.hour < 17:
+        return
+    if now.weekday() >= 5:
+        return
+
+    today_iso = _dt.date.today().isoformat()
+    if _last_oi_snapshot_date == today_iso:
+        return  # already ran today
+
+    try:
+        from .oi_delta import snapshot_ticker_oi, prune_old_snapshots
+        snapshot = await cache.snapshot()
+        total_rows = 0
+        tickers_done = 0
+        for ticker, state in snapshot.items():
+            raw_contracts = state.get("_raw_contracts") or {}
+            if not raw_contracts:
+                continue
+            rows = snapshot_ticker_oi(ticker, raw_contracts)
+            total_rows += rows
+            if rows > 0:
+                tickers_done += 1
+        pruned = prune_old_snapshots()
+        _last_oi_snapshot_date = today_iso
+        print(
+            f"[worker] EOD OI snapshot: {total_rows} rows across {tickers_done} tickers, "
+            f"pruned {pruned} older rows (retention 30d)"
+        )
+    except Exception as e:
+        print(f"[worker] EOD OI snapshot failed: {e}")
+
+
 async def run_worker(stop_event: asyncio.Event) -> None:
     settings = get_settings()
     tradier = TradierClient()
@@ -582,6 +631,8 @@ async def run_worker(stop_event: asyncio.Event) -> None:
             cycle += 1
             try:
                 await _scan_cycle(tradier, cycle, massive)
+                # EOD snapshot hook — self-gates to once/day at 4:15 PM
+                await _maybe_snapshot_eod_oi()
             except Exception as e:  # noqa: BLE001
                 await cache.set_status(f"Cycle error: {e!r}")
             try:
