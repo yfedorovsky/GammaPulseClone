@@ -62,6 +62,8 @@ async def lifespan(app: FastAPI):
     init_breadth_db()
     from .runner_tracker import init_runner_db
     init_runner_db()
+    from .cell_history import init_cell_history_db
+    init_cell_history_db()
     await db.start()  # Single-writer queue for SQLite (prevents SQLITE_BUSY)
     await streamer.ensure_running()
     # Compute quarterly basket on startup (PIT sector selection)

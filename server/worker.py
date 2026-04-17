@@ -400,6 +400,19 @@ async def _compute_one(
     # MACRO = all merged
     exp_data[MACRO_KEY] = compute_exp_data(contracts, spot)
 
+    # Decorate per-cell strikes with intraday % change vs open. Skylit
+    # heatseeker-style: shows "+11%" / "-3%" badges indicating which specific
+    # strikes dealers are moving GEX into or out of during the session.
+    # Safe to call before market open — it's a no-op.
+    try:
+        from .cell_history import snapshot_and_decorate
+        for exp, ed in exp_data.items():
+            if ed and ed.get("strikes"):
+                snapshot_and_decorate(ticker, exp, ed["strikes"])
+    except Exception as e:
+        # Never let cell-history failures break a cycle — it's informational
+        print(f"[worker] cell_history decorate failed for {ticker}: {e}")
+
     macro = exp_data[MACRO_KEY]
     signal, regime, king_pos = build_signal(macro, spot)
 

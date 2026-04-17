@@ -277,6 +277,20 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
                     </span>
                     <span className="gex">
                       {fmtBigPrecise(s.net_gex)}
+                      {s.open_change_pct != null && (
+                        <span
+                          title={`Change since 9:30 AM ET open: ${s.open_change_pct > 0 ? '+' : ''}${s.open_change_pct}%`}
+                          style={{
+                            fontSize: 9, fontWeight: 800, marginLeft: 5,
+                            padding: '1px 4px', borderRadius: 3,
+                            background: s.open_change_pct >= 0 ? 'rgba(16,220,154,0.22)' : 'rgba(255,86,86,0.22)',
+                            color: s.open_change_pct >= 0 ? '#10dc9a' : '#ff5656',
+                            fontFamily: 'var(--mono)',
+                          }}
+                        >
+                          {s.open_change_pct > 0 ? '+' : ''}{s.open_change_pct}%
+                        </span>
+                      )}
                       {isMatrixKing && (
                         <span
                           title="Matrix King — largest |GEX| across all visible expirations"
@@ -376,6 +390,20 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
                       />
                       <span className="profile-val">
                         {fmtBigPrecise(s.net_gex)}
+                        {s.open_change_pct != null && (
+                          <span
+                            title={`Change since 9:30 AM ET open: ${s.open_change_pct > 0 ? '+' : ''}${s.open_change_pct}%`}
+                            style={{
+                              fontSize: 9, fontWeight: 800, marginLeft: 5,
+                              padding: '1px 4px', borderRadius: 3,
+                              background: s.open_change_pct >= 0 ? 'rgba(16,220,154,0.22)' : 'rgba(255,86,86,0.22)',
+                              color: s.open_change_pct >= 0 ? '#10dc9a' : '#ff5656',
+                              fontFamily: 'var(--mono)',
+                            }}
+                          >
+                            {s.open_change_pct > 0 ? '+' : ''}{s.open_change_pct}%
+                          </span>
+                        )}
                         {s.node_type === 'king' && ' ★ KING'}
                         {s.node_type === 'gatekeeper' && ' ◆'}
                         {s.node_type === 'floor' && ' ▬ FLOOR'}
