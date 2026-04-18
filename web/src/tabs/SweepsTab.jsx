@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { api } from '../api.js';
 import { fmtBig } from '../lib/format.js';
+import HitRateStrip from '../components/HitRateStrip.jsx';
 
 /**
  * SWEEPS tab — ISO sweep flow (OPRA condition=95/126/128) via ThetaData.
@@ -439,6 +440,32 @@ export default function SweepsTab({ onClickTicker }) {
         <span style={{ color: 'var(--text-3)' }}>
           {lastRefresh ? `Updated ${new Date(lastRefresh).toLocaleTimeString()}` : 'Loading...'}
         </span>
+      </div>
+
+      {/* Hit-rate strip — cohort reflects current filters */}
+      <div style={{ marginBottom: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <HitRateStrip
+          label={`BUY sweeps${tickerQuery ? ` on ${tickerQuery.toUpperCase()}` : ''}${minNotional >= 500000 ? ` ≥$${minNotional/1000000}M` : ''}`}
+          cohort={{
+            sourceType: 'sweep',
+            direction: 'BUY',
+            ticker: tickerQuery.trim().toUpperCase() || '',
+            minNotional: minNotional,
+            minSweepVenues: 3,
+            lookbackDays: 90,
+          }}
+        />
+        <HitRateStrip
+          label={`SELL sweeps${tickerQuery ? ` on ${tickerQuery.toUpperCase()}` : ''}`}
+          cohort={{
+            sourceType: 'sweep',
+            direction: 'SELL',
+            ticker: tickerQuery.trim().toUpperCase() || '',
+            minNotional: minNotional,
+            minSweepVenues: 3,
+            lookbackDays: 90,
+          }}
+        />
       </div>
 
       {error && (

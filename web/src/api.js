@@ -47,6 +47,14 @@ export const api = {
       'GET',
       `/api/flow/daily?since_date=${encodeURIComponent(sinceDate)}&ticker=${encodeURIComponent(ticker)}&min_notional=${minNotional}&min_oi=${minOI}&side=${side}&limit=${limit}`,
     ),
+  hitRate: ({
+    sourceType = '', ticker = '', direction = '',
+    minNotional = 0, grade = '', isSweep = -1,
+    minSweepVenues = 0, lookbackDays = 90,
+  } = {}) => json(
+    'GET',
+    `/api/stats/hit-rate?source_type=${encodeURIComponent(sourceType)}&ticker=${encodeURIComponent(ticker)}&direction=${encodeURIComponent(direction)}&min_notional=${minNotional}&grade=${encodeURIComponent(grade)}&is_sweep=${isSweep}&min_sweep_venues=${minSweepVenues}&lookback_days=${lookbackDays}`,
+  ),
   signals: (limit = 50, status = '', grade = '') =>
     json('GET', `/api/signals?limit=${limit}${status ? '&status=' + status : ''}${grade ? '&grade=' + grade : ''}`),
   signalStats: () => json('GET', '/api/signals/stats'),

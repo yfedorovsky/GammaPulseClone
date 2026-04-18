@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { api } from '../api.js';
+import HitRateStrip from '../components/HitRateStrip.jsx';
 
 /**
  * BIG FLOW tab — UW-style per-contract DAILY option flow aggregates.
@@ -303,6 +304,24 @@ export default function BigFlowTab({ onClickTicker }) {
         <span style={{ color: 'var(--text-3)' }}>
           {lastRefresh ? `Updated ${new Date(lastRefresh).toLocaleTimeString()}` : 'Loading...'}
         </span>
+      </div>
+
+      {/* Hit-rate strip — forward returns by cohort (ticker + notional filter) */}
+      <div style={{ marginBottom: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <HitRateStrip
+          label={`BUY-dominant flow${tickerQuery ? ` on ${tickerQuery.toUpperCase()}` : ''}`}
+          cohort={{
+            sourceType: 'sweep',
+            direction: 'BUY',
+            ticker: tickerQuery.trim().toUpperCase() || '',
+            minNotional,
+            lookbackDays: 90,
+          }}
+        />
+        <HitRateStrip
+          label="SOE BUY signals"
+          cohort={{ sourceType: 'soe_signal', direction: 'BUY', lookbackDays: 90 }}
+        />
       </div>
 
       {error && (

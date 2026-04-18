@@ -23,6 +23,7 @@ from .config import get_settings
 from .db import db
 from .flow_alerts import init_alert_db, get_alerts as get_flow_alerts, run_flow_scanner, get_sweep_alerts
 from .option_flow_daily import init_flow_daily_db, get_flow_daily
+from .signal_outcomes import init_outcomes_db, get_hit_rate
 from .discipline import init_discipline_db, get_ticker_stats, compute_kelly_size, get_circuit_breaker, log_trade
 from .signals import init_signals_db, init_ab_db, get_signals, get_signal_stats, run_signal_engine
 from .paper_trading import init_paper_db
@@ -57,6 +58,7 @@ async def lifespan(app: FastAPI):
     init_db()
     init_alert_db()
     init_flow_daily_db()
+    init_outcomes_db()
     init_tracker_db()
     init_signals_db()
     init_ab_db()
@@ -443,6 +445,39 @@ async def sweeps(
         since_ts=since, limit=limit, ticker=ticker or None, min_notional=min_notional
     )
     return {"sweeps": rows, "count": len(rows)}
+
+
+@app.get("/api/stats/hit-rate")
+async def stats_hit_rate(
+    source_type: str = "",
+    ticker: str = "",
+    direction: str = "",
+    min_notional: float = 0,
+    grade: str = "",
+    is_sweep: int = -1,
+    min_sweep_venues: int = 0,
+    lookback_days: int = 90,
+):
+    """Cohort-filtered forward-return hit rate for alerts/signals.
+
+    Returns {'cohort_size', 'horizons': {'1d', '3d', '1w', '2w', '1mo'}}.
+    Each horizon dict has {'n', 'hits', 'rate', 'avg_return'} — NULL-safe
+    when the forward date hasn't arrived yet (rate=None, n=0).
+
+    Example:
+      /api/stats/hit-rate?source_type=sweep&direction=BUY&min_sweep_venues=3
+        → "last 216 BUY sweeps with ≥3 venues: 1d 51% · 3d 95%"
+    """
+    return get_hit_rate(
+        source_type=source_type or None,
+        ticker=ticker or None,
+        direction=direction or None,
+        min_notional=min_notional,
+        grade=grade or None,
+        is_sweep=is_sweep if is_sweep in (0, 1) else None,
+        min_sweep_venues=min_sweep_venues,
+        lookback_days=lookback_days,
+    )
 
 
 @app.get("/api/flow/daily")
