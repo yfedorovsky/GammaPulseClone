@@ -153,10 +153,22 @@ export default function BigFlowTab({ onClickTicker }) {
       const oi = r.oi || 0;
       const volOi = oi > 0 ? vol / oi : Infinity;
       const otmPct = (r.spot > 0 && r.strike > 0) ? Math.abs(r.strike - r.spot) / r.spot : 1.0;
+      // Trading days (weekdays only) between trade date and expiration.
+      // Mirrors server/option_flow_daily.is_golden_flow DTE calc so
+      // Fri-trade/Mon-exp counts as 1 DTE, not 3.
       let dte = 999;
       if (r.date && r.expiration) {
-        const d1 = new Date(r.date); const d2 = new Date(r.expiration);
-        dte = Math.round((d2 - d1) / 86400000);
+        const d1 = new Date(r.date + 'T00:00:00Z');
+        const d2 = new Date(r.expiration + 'T00:00:00Z');
+        if (d2 > d1) {
+          dte = 0;
+          const cur = new Date(d1);
+          while (cur < d2) {
+            cur.setUTCDate(cur.getUTCDate() + 1);
+            const dow = cur.getUTCDay();  // 0=Sun, 6=Sat
+            if (dow >= 1 && dow <= 5) dte++;
+          }
+        }
       }
       const sideOk = boughtPct >= 0.65 || soldPct >= 0.65;
       const isGolden = (

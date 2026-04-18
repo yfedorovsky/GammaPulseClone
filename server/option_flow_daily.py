@@ -172,18 +172,28 @@ def is_golden_flow(row: dict) -> tuple[bool, list[str]]:
     if otm_pct > GOLDEN_FLOW_RULES["max_otm_pct"]:
         failed.append(f"OTM({otm_pct*100:.1f}%>{GOLDEN_FLOW_RULES['max_otm_pct']*100:.1f}%)")
 
-    # DTE = days between expiration and trade date
-    from datetime import date as _date
+    # DTE = TRADING days between trade date and expiration (weekdays only).
+    # Calendar-day DTE overcounts Fri-trade/Mon-exp as 3 days when it's
+    # really 1 trading day — causing a common insider-flow setup (Fri
+    # afternoon → Mon morning) to fail the ≤2 DTE rule spuriously.
+    from datetime import date as _date, timedelta as _td
     trade_date = row.get("date") or ""
     exp = row.get("expiration") or ""
     try:
         td = _date.fromisoformat(trade_date)
         ed = _date.fromisoformat(exp)
-        dte = (ed - td).days
+        # Count weekdays strictly between td and ed, inclusive of exp day.
+        # 4/17 Fri → 4/20 Mon: Sat skip, Sun skip, Mon count = 1 trading day.
+        dte = 0
+        d = td
+        while d < ed:
+            d = d + _td(days=1)
+            if d.weekday() < 5:
+                dte += 1
     except (ValueError, TypeError):
         dte = 999
     if dte > GOLDEN_FLOW_RULES["max_dte"]:
-        failed.append(f"dte({dte}>{GOLDEN_FLOW_RULES['max_dte']})")
+        failed.append(f"dte({dte}td>{GOLDEN_FLOW_RULES['max_dte']})")
 
     return (len(failed) == 0), failed
 
