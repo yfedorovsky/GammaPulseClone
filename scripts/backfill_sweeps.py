@@ -67,6 +67,7 @@ from server.thetadata import (
     ThetaDataClient,
     classify_side,
 )
+from server.root_config import get_strike_step, get_option_roots, is_index_root
 from server.sweep_detector import (
     ROLLUP_SECONDS,
     MIN_SWEEP_NOTIONAL,
@@ -174,24 +175,20 @@ def atm_strikes(spot: float, step: float, radius: int) -> list[float]:
     return [atm + i * step for i in range(-radius, radius + 1)]
 
 
-def infer_strike_step(spot: float) -> float:
-    """Heuristic: larger-priced tickers need larger strike steps.
+def infer_strike_step(spot: float, root: str = "") -> float:
+    """Strike step in dollars — delegates to root_config when root provided.
 
-    SPY $700  → $1
-    NVDA $150 → $1
-    AAPL $200 → $2.5
-    BKNG $5000 → $50
+    Registered roots (SPX/NDX/SPY/QQQ/RUT/XSP) have hardcoded rules; any
+    other symbol falls through to a spot-price heuristic.
     """
-    if spot < 50:
-        return 0.5
-    if spot < 200:
-        return 1.0
-    if spot < 500:
-        return 2.5
-    if spot < 1000:
-        return 5.0
-    if spot < 5000:
-        return 25.0
+    if root:
+        return get_strike_step(root, spot)
+    # Pure-spot fallback for when caller doesn't pass the root
+    if spot < 50: return 0.5
+    if spot < 200: return 1.0
+    if spot < 500: return 2.5
+    if spot < 1000: return 5.0
+    if spot < 5000: return 25.0
     return 50.0
 
 
@@ -593,7 +590,7 @@ async def backfill_ticker_date(
         print(f"[BACKFILL] {ticker}: no spot available, skipping {date_obj}")
         return 0, 0.0
 
-    step = infer_strike_step(spot)
+    step = infer_strike_step(spot, root=ticker)
     strikes = atm_strikes(spot, step, strikes_radius)
     exps = expirations_after(date_obj, expirations_n)
     if not exps:

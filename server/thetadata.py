@@ -158,16 +158,28 @@ class SubscribeSpec:
 
 def synth_gamma(
     spot: float, strike: float, iv: float, days_to_exp: float,
-    r: float = 0.045, q: float = 0.013,
+    r: float = 0.045, q: float | None = None, root: str | None = None,
 ) -> float:
     """Compute BSM gamma from spot/strike/IV/T.
 
     Mirrors server.gex._bsm_gamma signature but takes days instead of years
     (more natural for upstream callers who have expiration dates).
+
+    Dividend yield (q) is resolved by priority:
+      1. Explicit q argument wins
+      2. If root provided, look up from root_config (SPX=1.5%, QQQ=0.6%, etc.)
+      3. Fall back to 1.3% (SPY-equivalent default)
+
     Returns 0 for invalid inputs (follows gex.py convention — caller filters).
     """
     if spot <= 0 or strike <= 0 or iv <= 0 or days_to_exp <= 0:
         return 0.0
+    if q is None:
+        if root:
+            from .root_config import get_dividend_yield
+            q = get_dividend_yield(root)
+        else:
+            q = 0.013
     T = max(days_to_exp, 1.0) / 365.0
     sqrt_T = math.sqrt(T)
     d1 = (math.log(spot / strike) + (r - q + 0.5 * iv * iv) * T) / (iv * sqrt_T)
@@ -412,12 +424,14 @@ async def snapshot_greeks(
             if delta == 0 and iv == 0:
                 continue
 
-            # Synthesize gamma via BSM (Standard tier doesn't provide it)
+            # Synthesize gamma via BSM (Standard tier doesn't provide it).
+            # Pass root so the right dividend yield is used (SPX vs SPY differ).
             gamma = synth_gamma(
                 spot=underlying or 0,
                 strike=strike,
                 iv=iv,
                 days_to_exp=_days_to_exp(exp_date),
+                root=ticker,
             ) if underlying else 0.0
 
             out[(strike, exp_date, otype)] = {

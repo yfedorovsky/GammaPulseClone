@@ -60,6 +60,7 @@ from server.thetadata import (
     ThetaDataClient,
     classify_side,
 )
+from server.root_config import get_strike_step, get_option_roots
 from server.sweep_detector import MVP_WATCHLIST_ROOTS
 
 

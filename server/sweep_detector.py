@@ -145,8 +145,13 @@ def _next_expirations(n: int = 3) -> list[int]:
 
 # Hardcoded MVP watchlist. Expansion: dynamically read from worker's Tier 1
 # watchlist once worker has populated the cache (follow-up work).
+#
+# SPX/SPXW added 2026-04-18: SPX = monthly AM-settled, SPXW = weekly + 0DTE
+# PM-settled. Both trade OPRA and support ISO sweeps. 0DTE SPXW is where
+# most insider flow lives (UW's best-performing alert category).
 MVP_WATCHLIST_ROOTS = [
-    "SPY", "QQQ",  # indices
+    "SPY", "QQQ", "IWM",                              # ETF indices
+    "SPX", "SPXW", "NDX", "RUT",                      # Cash-settled index options
     "AAPL", "NVDA", "MSFT", "TSLA", "META", "AMZN", "GOOGL",  # mega-cap momentum
     "AMD", "AVGO", "NFLX", "CRM", "ORCL",
 ]

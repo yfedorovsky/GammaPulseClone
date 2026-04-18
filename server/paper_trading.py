@@ -215,25 +215,65 @@ def open_position(signal_id: int, contracts: int | None = None) -> dict[str, Any
         acct = c.execute("SELECT cash FROM paper_account WHERE id = 1").fetchone()
         cash = acct["cash"]
 
-        # Compute contracts from Kelly if not specified
+        # Compute contracts from Kelly if not specified — notional-based,
+        # NOT count-based. Critical for SPX/NDX where 1 contract can be $2K+
+        # premium (vs $200 on SPY) — the old max(1, int(...)) would force 1
+        # SPX contract at 2.6x intended risk and blow up paper account sizing.
+        #
+        # New policy:
+        #   1. target_dollars = Kelly's recommended $ at risk
+        #   2. ideal_contracts = target_dollars / (entry_price * 100)
+        #   3. If 1 contract exceeds 1.5x target → SKIP TRADE (position too
+        #      big for this account size on this specific contract)
+        #   4. If ideal_contracts >= 1 → round down
+        #   5. Hard cap at MAX_CONTRACTS_PER_TRADE for concentration limit
+        MAX_OVERSIZE_RATIO = 1.5       # allow 1 contract at up to 1.5x target
+        MAX_CONTRACTS_PER_TRADE = 50   # concentration cap even on cheap options
+
         if contracts is None:
             try:
                 from .discipline import compute_kelly_size
                 kelly = compute_kelly_size(sig["ticker"], is_0dte=(sig.get("dte") or 99) == 0, account_value=cash)
-                kelly_dollars = kelly.get("size_dollars", 0)
-                contracts = max(1, int(kelly_dollars / (entry_price * 100)))
+                target_dollars = kelly.get("size_dollars", 0) or 0
             except Exception:
-                contracts = 1
+                target_dollars = cash * 0.015  # 1.5% fallback
+
+            one_contract_cost = entry_price * 100
+            if target_dollars <= 0 or one_contract_cost <= 0:
+                return {"error": "Invalid sizing inputs (target or entry price zero)"}
+
+            ideal_contracts = target_dollars / one_contract_cost
+
+            if ideal_contracts < 1.0:
+                # Less than 1 contract fits the target. Only buy 1 if it's
+                # within MAX_OVERSIZE_RATIO — otherwise this contract is too
+                # large for our account (blocks SPX 0DTE + tiny accounts).
+                if one_contract_cost <= target_dollars * MAX_OVERSIZE_RATIO:
+                    contracts = 1
+                else:
+                    return {
+                        "error": (
+                            f"Contract too large for account: 1 contract costs "
+                            f"${one_contract_cost:,.0f} vs ${target_dollars:,.0f} target "
+                            f"(oversize={one_contract_cost/target_dollars:.1f}x > {MAX_OVERSIZE_RATIO}x cap). "
+                            f"Skipping trade."
+                        ),
+                        "oversize_ratio": round(one_contract_cost / target_dollars, 2),
+                        "target_dollars": round(target_dollars, 2),
+                        "one_contract_cost": round(one_contract_cost, 2),
+                    }
+            else:
+                contracts = min(int(ideal_contracts), MAX_CONTRACTS_PER_TRADE)
 
         entry_cost = round(entry_price * contracts * 100, 2)
 
-        # Check if enough cash
+        # Cash check — if tight, scale down contracts (but respect oversize cap)
         if entry_cost > cash:
-            # Reduce contracts to fit
-            contracts = max(1, int(cash / (entry_price * 100)))
+            new_contracts = int(cash / (entry_price * 100))
+            if new_contracts < 1:
+                return {"error": f"Insufficient cash: ${cash:.2f} < ${entry_cost:.2f} for even 1 contract"}
+            contracts = new_contracts
             entry_cost = round(entry_price * contracts * 100, 2)
-            if entry_cost > cash:
-                return {"error": f"Insufficient cash: ${cash:.2f} < ${entry_cost:.2f}"}
 
         spot = sig.get("spot") or 0
         signal_ts = sig.get("ts") or 0

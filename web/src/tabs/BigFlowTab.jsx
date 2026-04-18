@@ -89,6 +89,7 @@ export default function BigFlowTab({ onClickTicker }) {
   const [timeframe, setTimeframe] = useState(TIMEFRAMES[2]);  // 5d default
   const [sortBy, setSortBy] = useState('total_notional');
   const [sortDesc, setSortDesc] = useState(true);
+  const [goldenOnly, setGoldenOnly] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -128,20 +129,52 @@ export default function BigFlowTab({ onClickTicker }) {
   const filtered = useMemo(() => {
     let rows = [...flow];
 
-    // Derive fields server doesn't return pre-computed
+    // Derive fields server doesn't return pre-computed — including GOLDEN FLOW tag
     rows = rows.map((r) => {
       const total = r.total_notional || 0;
       const sweepShare = total > 0 ? (r.sweep_notional || 0) / total : 0;
-      const sideTotal = (r.buy_notional || 0) + (r.sell_notional || 0);
-      const boughtPct = sideTotal > 0 ? (r.buy_notional || 0) / sideTotal : 0;
+      const sideTotalAll = (r.buy_notional || 0) + (r.sell_notional || 0) + (r.neutral_notional || 0);
+      const boughtPctAll = sideTotalAll > 0 ? (r.buy_notional || 0) / sideTotalAll : 0;
       let dominantSide = 'NEUTRAL';
       if ((r.buy_notional || 0) > (r.sell_notional || 0) && (r.buy_notional || 0) > (r.neutral_notional || 0)) {
         dominantSide = 'BUY';
       } else if ((r.sell_notional || 0) > (r.buy_notional || 0) && (r.sell_notional || 0) > (r.neutral_notional || 0)) {
         dominantSide = 'SELL';
       }
-      return { ...r, sweep_share: sweepShare, bought_pct: boughtPct, dominant_side: dominantSide };
+
+      // GOLDEN FLOW classifier — SPY 647P insider pattern
+      const vol = r.total_volume || 0;
+      const oi = r.oi || 0;
+      const volOi = oi > 0 ? vol / oi : Infinity;
+      const otmPct = (r.spot > 0 && r.strike > 0) ? Math.abs(r.strike - r.spot) / r.spot : 1.0;
+      let dte = 999;
+      if (r.date && r.expiration) {
+        const d1 = new Date(r.date); const d2 = new Date(r.expiration);
+        dte = Math.round((d2 - d1) / 86400000);
+      }
+      const isGolden = (
+        total >= 500_000 &&
+        boughtPctAll >= 0.70 &&
+        (oi === 0 || volOi >= 3.0) &&
+        otmPct <= 0.025 &&
+        dte <= 2
+      );
+
+      return {
+        ...r,
+        sweep_share: sweepShare,
+        bought_pct: boughtPctAll,  // use all-notional denominator (matches classifier)
+        dominant_side: dominantSide,
+        vol_oi: volOi === Infinity ? null : volOi,
+        otm_pct: otmPct,
+        dte,
+        is_golden: isGolden,
+      };
     });
+
+    if (goldenOnly) {
+      rows = rows.filter((r) => r.is_golden);
+    }
 
     const q = tickerQuery.trim().toUpperCase();
     if (q) {
@@ -163,7 +196,7 @@ export default function BigFlowTab({ onClickTicker }) {
     });
 
     return rows;
-  }, [flow, tickerQuery, typeFilter, sortBy, sortDesc]);
+  }, [flow, tickerQuery, typeFilter, sortBy, sortDesc, goldenOnly]);
 
   const stats = useMemo(() => {
     const tickers = new Set();
@@ -278,6 +311,22 @@ export default function BigFlowTab({ onClickTicker }) {
             }}>{tf.label}</button>
           ))}
         </div>
+
+        {/* GOLDEN FLOW filter — SPY 647P pattern (≥$500K, ≥70% bought, V/OI≥3x, ≤2.5% OTM, ≤2DTE) */}
+        <button
+          onClick={() => setGoldenOnly(!goldenOnly)}
+          title="Show only trades matching the composite insider-flow pattern: ≥$500K, ≥70% bought at ask, V/OI ≥3x, ≤2.5% OTM, ≤2 DTE"
+          style={{
+            background: goldenOnly ? '#f4c43030' : 'transparent',
+            color: goldenOnly ? '#f4c430' : 'var(--text-3)',
+            border: '1px solid ' + (goldenOnly ? '#f4c430' : 'var(--border-mid)'),
+            padding: '5px 12px', fontSize: 10, fontFamily: 'var(--mono)',
+            cursor: 'pointer', borderRadius: 3,
+            fontWeight: goldenOnly ? 700 : 500,
+          }}
+        >
+          ⚡ GOLDEN{goldenOnly ? ' ✓' : ''}
+        </button>
       </div>
 
       {/* Stats */}
@@ -391,6 +440,16 @@ export default function BigFlowTab({ onClickTicker }) {
                         }}>
                         {r.ticker}
                       </a>
+                      {r.is_golden && (
+                        <span
+                          title="GOLDEN FLOW: matches the composite insider-pattern (≥$500K, ≥70% bought, V/OI ≥3x, ≤2.5% OTM, ≤2 DTE)"
+                          style={{
+                            marginLeft: 6, fontSize: 9, fontWeight: 700,
+                            padding: '1px 4px', borderRadius: 2,
+                            background: '#f4c430', color: '#1a1a1a',
+                          }}
+                        >⚡ GOLD</span>
+                      )}
                     </td>
                     <td style={{ padding: '6px 10px', color: 'var(--text-1)' }}>{fmtInt(r.total_volume)}</td>
                     <td style={{ padding: '6px 10px', color: 'var(--text-2)' }}>{fmtInt(r.oi)}</td>

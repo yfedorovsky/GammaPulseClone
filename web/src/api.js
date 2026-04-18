@@ -47,6 +47,8 @@ export const api = {
       'GET',
       `/api/flow/daily?since_date=${encodeURIComponent(sinceDate)}&ticker=${encodeURIComponent(ticker)}&min_notional=${minNotional}&min_oi=${minOI}&side=${side}&limit=${limit}`,
     ),
+  flowGolden: ({ sinceDate = '', ticker = '', limit = 200 } = {}) =>
+    json('GET', `/api/flow/golden?since_date=${encodeURIComponent(sinceDate)}&ticker=${encodeURIComponent(ticker)}&limit=${limit}`),
   hitRate: ({
     sourceType = '', ticker = '', direction = '',
     minNotional = 0, grade = '', isSweep = -1,

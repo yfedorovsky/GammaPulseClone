@@ -106,6 +106,96 @@ def _conn():
         c.close()
 
 
+# ── GOLDEN FLOW classifier ─────────────────────────────────────────
+#
+# Pattern targeted: the SPY 647P 03/24/2026 trade that hit 15 min before
+# market-moving headlines — $1.49M premium, 76% bought at ask, V/OI ~10x,
+# 1% OTM, 1DTE. All the classic insider-flow fingerprints.
+#
+# Rules (all must match):
+#   1. Notional        >= $500K          (material size)
+#   2. Bought%         >= 70%            (aggressive at-ask, not mid)
+#   3. Volume / OI     >= 3.0            (opening position, not closing)
+#   4. |strike-spot|/spot <= 2.5%        (just OTM / near-ATM)
+#   5. DTE             <= 2              (short-dated = high leverage)
+
+GOLDEN_FLOW_RULES = {
+    "min_notional": 500_000,
+    "min_bought_pct": 0.70,
+    "min_vol_oi_ratio": 3.0,
+    "max_otm_pct": 0.025,
+    "max_dte": 2,
+}
+
+
+def is_golden_flow(row: dict) -> tuple[bool, list[str]]:
+    """Return (is_golden, list_of_failed_rules).
+
+    Row is a dict matching option_flow_daily columns (or close). Missing
+    fields fail their rule. Enables "show me what's ALMOST golden" UI later.
+    """
+    failed: list[str] = []
+
+    notional = row.get("total_notional") or 0
+    if notional < GOLDEN_FLOW_RULES["min_notional"]:
+        failed.append(f"notional(${notional/1000:.0f}K<${GOLDEN_FLOW_RULES['min_notional']/1000:.0f}K)")
+
+    buy = row.get("buy_notional") or 0
+    sell = row.get("sell_notional") or 0
+    neutral = row.get("neutral_notional") or 0
+    total = buy + sell + neutral
+    bought_pct = (buy / total) if total > 0 else 0
+    if bought_pct < GOLDEN_FLOW_RULES["min_bought_pct"]:
+        failed.append(f"bought_pct({bought_pct*100:.0f}%<{GOLDEN_FLOW_RULES['min_bought_pct']*100:.0f}%)")
+
+    vol = row.get("total_volume") or 0
+    oi = row.get("oi") or 0
+    vol_oi = (vol / oi) if oi > 0 else float("inf")  # no OI = definitely new
+    if oi > 0 and vol_oi < GOLDEN_FLOW_RULES["min_vol_oi_ratio"]:
+        failed.append(f"vol/oi({vol_oi:.1f}x<{GOLDEN_FLOW_RULES['min_vol_oi_ratio']}x)")
+
+    strike = row.get("strike") or 0
+    spot = row.get("spot") or 0
+    otm_pct = abs(strike - spot) / spot if (strike > 0 and spot > 0) else 1.0
+    if otm_pct > GOLDEN_FLOW_RULES["max_otm_pct"]:
+        failed.append(f"OTM({otm_pct*100:.1f}%>{GOLDEN_FLOW_RULES['max_otm_pct']*100:.1f}%)")
+
+    # DTE = days between expiration and trade date
+    from datetime import date as _date
+    trade_date = row.get("date") or ""
+    exp = row.get("expiration") or ""
+    try:
+        td = _date.fromisoformat(trade_date)
+        ed = _date.fromisoformat(exp)
+        dte = (ed - td).days
+    except (ValueError, TypeError):
+        dte = 999
+    if dte > GOLDEN_FLOW_RULES["max_dte"]:
+        failed.append(f"dte({dte}>{GOLDEN_FLOW_RULES['max_dte']})")
+
+    return (len(failed) == 0), failed
+
+
+def get_golden_flow(
+    since_date: str | None = None, ticker: str | None = None,
+    limit: int = 500,
+) -> list[dict]:
+    """Query flow_daily + apply Golden Flow classifier. Returns only matches."""
+    from .option_flow_daily import get_flow_daily  # self-ref for import clarity
+    rows = get_flow_daily(
+        since_date=since_date, ticker=ticker,
+        min_notional=GOLDEN_FLOW_RULES["min_notional"],
+        limit=limit * 5,  # fetch more, filter down
+    )
+    golden: list[dict] = []
+    for r in rows:
+        is_gold, _failed = is_golden_flow(r)
+        if is_gold:
+            r["_golden"] = True
+            golden.append(r)
+    return golden[:limit]
+
+
 def init_flow_daily_db() -> None:
     with _conn() as c:
         c.executescript(FLOW_DAILY_SCHEMA)

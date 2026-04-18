@@ -22,7 +22,7 @@ from .cache import cache
 from .config import get_settings
 from .db import db
 from .flow_alerts import init_alert_db, get_alerts as get_flow_alerts, run_flow_scanner, get_sweep_alerts
-from .option_flow_daily import init_flow_daily_db, get_flow_daily
+from .option_flow_daily import init_flow_daily_db, get_flow_daily, get_golden_flow, is_golden_flow, GOLDEN_FLOW_RULES
 from .signal_outcomes import init_outcomes_db, get_hit_rate
 from .discipline import init_discipline_db, get_ticker_stats, compute_kelly_size, get_circuit_breaker, log_trade
 from .signals import init_signals_db, init_ab_db, get_signals, get_signal_stats, run_signal_engine
@@ -478,6 +478,30 @@ async def stats_hit_rate(
         min_sweep_venues=min_sweep_venues,
         lookback_days=lookback_days,
     )
+
+
+@app.get("/api/flow/golden")
+async def flow_golden(
+    since_date: str = "", ticker: str = "", limit: int = 200,
+):
+    """GOLDEN FLOW alerts — composite unusual-flow pattern matching the
+    SPY 647P 03/24 insider-flow profile shown in the UW screenshot.
+
+    5 rules (all must match):
+      1. notional         >= $500K
+      2. bought at ask    >= 70%
+      3. volume / OI      >= 3x (opening position)
+      4. |strike-spot|/spot <= 2.5% (near-ATM / just-OTM)
+      5. DTE              <= 2 (short-dated = high leverage + urgency)
+
+    The 3/23 example: $1.49M prem, 76% bought, V/OI 10.2x, 1% OTM, 1DTE.
+    Fires 15 min before market-moving headlines.
+    """
+    rows = get_golden_flow(since_date=since_date or None, ticker=ticker or None, limit=limit)
+    return {
+        "golden": rows, "count": len(rows),
+        "rules": GOLDEN_FLOW_RULES,
+    }
 
 
 @app.get("/api/flow/daily")
