@@ -22,6 +22,7 @@ from .cache import cache
 from .config import get_settings
 from .db import db
 from .flow_alerts import init_alert_db, get_alerts as get_flow_alerts, run_flow_scanner, get_sweep_alerts
+from .option_flow_daily import init_flow_daily_db, get_flow_daily
 from .discipline import init_discipline_db, get_ticker_stats, compute_kelly_size, get_circuit_breaker, log_trade
 from .signals import init_signals_db, init_ab_db, get_signals, get_signal_stats, run_signal_engine
 from .paper_trading import init_paper_db
@@ -55,6 +56,7 @@ _sweep_task: asyncio.Task | None = None
 async def lifespan(app: FastAPI):
     init_db()
     init_alert_db()
+    init_flow_daily_db()
     init_tracker_db()
     init_signals_db()
     init_ab_db()
@@ -441,6 +443,36 @@ async def sweeps(
         since_ts=since, limit=limit, ticker=ticker or None, min_notional=min_notional
     )
     return {"sweeps": rows, "count": len(rows)}
+
+
+@app.get("/api/flow/daily")
+async def flow_daily(
+    since_date: str = "", ticker: str = "",
+    min_notional: float = 0, min_oi: int = 0,
+    side: str = "ALL", limit: int = 500,
+):
+    """Per-contract DAILY option flow — UW-style aggregated view.
+
+    Returns all aggressive flow (not just ISO sweeps) aggregated by
+    (date, ticker, strike, expiration, option_type). Includes buy/sell
+    split, sweep share, block share, and the biggest single print.
+
+    Filters:
+      since_date: 'YYYY-MM-DD' — return rows on or after this date
+      ticker: exact ticker match
+      min_notional: minimum total_notional in dollars
+      min_oi: minimum open interest
+      side: 'ALL' | 'BUY' | 'SELL' | 'NEUTRAL' (dominant-side filter)
+    """
+    rows = get_flow_daily(
+        since_date=since_date or None,
+        ticker=ticker or None,
+        min_notional=min_notional,
+        min_oi=min_oi,
+        side=side,
+        limit=limit,
+    )
+    return {"flow": rows, "count": len(rows)}
 
 
 @app.get("/api/trades")

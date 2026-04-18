@@ -65,6 +65,7 @@ from server.thetadata import (
     NON_ISO_AUCTION_CONDITIONS,
     EXCLUDE_CONDITIONS,
     ThetaDataClient,
+    classify_side,
 )
 from server.sweep_detector import (
     ROLLUP_SECONDS,
@@ -203,6 +204,10 @@ class BackfillRollup:
     We reimplement (rather than import) because the live detector's
     SweepRollup is designed for streaming where window_start = wall time;
     in backfill the window boundaries come from the trade timestamps.
+
+    Each `add()` call receives the NBBO at trade time (from trade_quote
+    endpoint), so we can classify BUY / SELL / NEUTRAL per print and
+    derive the rollup's dominant sweep_side.
     """
 
     def __init__(self, ticker: str, strike: float, expiration: str, option_type: str, window_start_ts: int):
@@ -220,15 +225,37 @@ class BackfillRollup:
         self.first_price = 0.0
         self.last_price = 0.0
 
-    def add(self, size: int, price: float, exchange: int) -> None:
+        # Side classification tallies (weighted by notional, not print count)
+        self.buy_notional = 0.0
+        self.sell_notional = 0.0
+        self.neutral_notional = 0.0
+
+        # Last observed NBBO (for UI enrichment)
+        self.last_bid = 0.0
+        self.last_ask = 0.0
+
+    def add(self, size: int, price: float, exchange: int, bid: float, ask: float) -> None:
+        notional = size * price * 100.0
         if self.print_count == 0:
             self.first_price = price
         self.print_count += 1
         self.total_contracts += size
-        self.total_notional += size * price * 100.0
+        self.total_notional += notional
         self.exchanges.add(exchange)
         self.prices.append(price)
         self.last_price = price
+        if bid > 0:
+            self.last_bid = bid
+        if ask > 0:
+            self.last_ask = ask
+
+        side = classify_side(price, bid, ask)
+        if side == "BUY":
+            self.buy_notional += notional
+        elif side == "SELL":
+            self.sell_notional += notional
+        else:
+            self.neutral_notional += notional
 
     @property
     def venue_count(self) -> int:
@@ -238,7 +265,28 @@ class BackfillRollup:
     def avg_price(self) -> float:
         return sum(self.prices) / len(self.prices) if self.prices else 0.0
 
-    def to_payload(self, spot: float | None, oi: int | None, iv: float | None, delta: float | None, bid: float | None, ask: float | None) -> dict[str, Any]:
+    @property
+    def dominant_side(self) -> str:
+        """Rollup-level BUY/SELL/NEUTRAL determined by notional majority.
+        Requires >55% of notional on one side; otherwise NEUTRAL."""
+        total = self.buy_notional + self.sell_notional + self.neutral_notional
+        if total <= 0:
+            return "NEUTRAL"
+        buy_pct = self.buy_notional / total
+        sell_pct = self.sell_notional / total
+        if buy_pct >= 0.55:
+            return "BUY"
+        if sell_pct >= 0.55:
+            return "SELL"
+        return "NEUTRAL"
+
+    @property
+    def bought_pct(self) -> float:
+        """Fraction of notional at/above ask (UW-style 'Bought at Ask' %)."""
+        total = self.buy_notional + self.sell_notional + self.neutral_notional
+        return self.buy_notional / total if total > 0 else 0.0
+
+    def to_payload(self, spot: float | None, oi: int | None, iv: float | None, delta: float | None) -> dict[str, Any]:
         return {
             "ticker": self.ticker,
             "strike": self.strike,
@@ -248,11 +296,11 @@ class BackfillRollup:
             "sweep_contracts": self.total_contracts,
             "sweep_venues": self.venue_count,
             "sweep_prints": self.print_count,
-            "sweep_side": "NEUTRAL",   # same as live detector MVP — classifier is follow-up
+            "sweep_side": self.dominant_side,
             "sweep_window_s": ROLLUP_SECONDS,
             "last": self.last_price,
-            "bid": bid,
-            "ask": ask,
+            "bid": self.last_bid or None,
+            "ask": self.last_ask or None,
             "iv": iv,
             "delta": delta,
             "oi": oi,
@@ -283,9 +331,11 @@ def rollup_trades(
     ticker: str, strike: float, expiration: str, option_type: str,
     rows: list[dict[str, str]], date_obj: dt.date,
 ) -> list[BackfillRollup]:
-    """Bucket raw trade prints into 30s rollup windows, ISO-only.
+    """Bucket raw trade_quote prints into 30s rollup windows, ISO-only.
 
-    Returns only rollups that meet the live detector's minimum criteria.
+    Expects rows from /v3/option/history/trade_quote which include both
+    trade fields AND NBBO-at-trade-time. Side classification happens in
+    BackfillRollup.add() by comparing price to bid/ask.
     """
     buckets: dict[int, BackfillRollup] = {}  # bucket_start_ts -> rollup
 
@@ -306,12 +356,15 @@ def rollup_trades(
             size = int(r.get("size") or 0)
             price = float(r.get("price") or 0)
             exch = int(r.get("exchange") or 0)
+            bid = float(r.get("bid") or 0)
+            ask = float(r.get("ask") or 0)
         except (ValueError, TypeError):
             continue
         if size <= 0 or price <= 0:
             continue
 
-        ts_str = r.get("timestamp", "")
+        # trade_quote uses 'trade_timestamp' (not 'timestamp' like plain trade endpoint)
+        ts_str = r.get("trade_timestamp") or r.get("timestamp", "")
         ts_epoch = parse_ms_timestamp(ts_str, date_obj)
         # Quantize to 30-second bucket
         bucket_start = (ts_epoch // ROLLUP_SECONDS) * ROLLUP_SECONDS
@@ -326,7 +379,7 @@ def rollup_trades(
                 window_start_ts=bucket_start,
             )
             buckets[bucket_start] = rollup
-        rollup.add(size, price, exch)
+        rollup.add(size, price, exch, bid, ask)
 
     return [r for r in buckets.values() if r.total_notional >= MIN_SWEEP_NOTIONAL]
 
@@ -336,8 +389,23 @@ def rollup_trades(
 
 @contextmanager
 def _db_conn():
+    """SQLite connection with WAL + busy_timeout so backfill can coexist
+    with a running server (which holds its own single-writer queue).
+
+    WAL mode is a persistent DB file property — once enabled here it stays
+    on for all future connections (server included), no re-application
+    needed on later runs.
+    """
     s = get_settings()
-    c = sqlite3.connect(s.snapshot_db)
+    c = sqlite3.connect(s.snapshot_db, timeout=30.0)
+    # Enable WAL once (idempotent; cheap if already set)
+    try:
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA busy_timeout=10000")  # ms — wait up to 10s for writer lock
+        c.execute("PRAGMA synchronous=NORMAL")  # WAL-safe, faster than FULL
+    except sqlite3.OperationalError:
+        # If WAL can't be set (eg. readonly mount), fall back to default journal
+        pass
     try:
         yield c
         c.commit()
@@ -372,43 +440,47 @@ def clean_existing_sweeps(dates: list[dt.date], tickers: list[str]) -> int:
 
 
 def insert_sweep_with_ts(rollup_payload: dict[str, Any], ts_epoch: int) -> None:
+    """Single-row insert (kept for compatibility). Prefer insert_sweeps_batch
+    when inserting many rows — batching is ~100x fewer DB transactions,
+    which matters when the server's writer queue is also active."""
+    insert_sweeps_batch([(rollup_payload, ts_epoch)])
+
+
+def insert_sweeps_batch(rows: list[tuple[dict[str, Any], int]]) -> int:
+    """Insert many sweep rollups in a single transaction.
+
+    Reduces SQLite writer contention vs N separate transactions. Returns
+    the number of rows inserted. No-op if rows is empty.
+    """
+    if not rows:
+        return 0
+    tuples = [
+        (
+            ts_epoch,
+            p["ticker"], p["strike"], p["expiration"], p["option_type"],
+            p.get("sweep_contracts"), p.get("oi"), None,
+            p.get("last"), p.get("bid"), p.get("ask"),
+            p.get("sweep_side"), p.get("sweep_side"),
+            p.get("iv"), p.get("delta"),
+            p.get("sweep_notional"), p.get("spot"),
+            "SWEEP", "OPEN", 1,
+            p.get("sweep_side"),
+            p.get("sweep_notional"), p.get("sweep_contracts"),
+            p.get("sweep_venues"), p.get("sweep_prints"), p.get("sweep_window_s"),
+        )
+        for (p, ts_epoch) in rows
+    ]
     with _db_conn() as c:
-        c.execute(
+        c.executemany(
             """INSERT INTO flow_alerts
             (ts, ticker, strike, expiration, option_type, volume, oi, vol_oi,
              last_price, bid, ask, side, sentiment, iv, delta, notional, spot,
              conviction, status, is_sweep, sweep_side, sweep_notional,
              sweep_contracts, sweep_venues, sweep_prints, sweep_window_s)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                ts_epoch,
-                rollup_payload["ticker"],
-                rollup_payload["strike"],
-                rollup_payload["expiration"],
-                rollup_payload["option_type"],
-                rollup_payload.get("sweep_contracts"),
-                rollup_payload.get("oi"),
-                None,
-                rollup_payload.get("last"),
-                rollup_payload.get("bid"),
-                rollup_payload.get("ask"),
-                rollup_payload.get("sweep_side"),
-                rollup_payload.get("sweep_side"),
-                rollup_payload.get("iv"),
-                rollup_payload.get("delta"),
-                rollup_payload.get("sweep_notional"),
-                rollup_payload.get("spot"),
-                "SWEEP",
-                "OPEN",
-                1,
-                rollup_payload.get("sweep_side"),
-                rollup_payload.get("sweep_notional"),
-                rollup_payload.get("sweep_contracts"),
-                rollup_payload.get("sweep_venues"),
-                rollup_payload.get("sweep_prints"),
-                rollup_payload.get("sweep_window_s"),
-            ),
+            tuples,
         )
+    return len(tuples)
 
 
 # ── Main pipeline ───────────────────────────────────────────────────
@@ -419,12 +491,13 @@ async def backfill_contract(
     ticker: str, strike: float, expiration: dt.date, right: str,
     date_obj: dt.date, spot: float | None, verbose: bool = False,
 ) -> list[BackfillRollup]:
-    """Fetch one contract's trades for one date and return ISO rollups."""
+    """Fetch one contract's trade_quote stream for one date, return ISO rollups
+    with side classification already populated."""
     exp_str = expiration.strftime("%Y-%m-%d")
     right_long = "call" if right == "C" else "put"
     date_str = date_obj.strftime("%Y-%m-%d")
 
-    rows = await client.history_trades(
+    rows = await client.history_trade_quote(
         ticker=ticker,
         expiration=exp_str,
         strike=strike,
@@ -442,21 +515,80 @@ async def backfill_contract(
 
     if verbose and rollups:
         total = sum(r.total_notional for r in rollups)
+        sides = {"BUY": 0, "SELL": 0, "NEUTRAL": 0}
+        for r in rollups:
+            sides[r.dominant_side] += 1
         print(
             f"  {ticker} ${strike:.0f}{right} {exp_str} {date_str}: "
-            f"{len(rollups)} sweeps, ${total:,.0f} notional",
+            f"{len(rollups)} sweeps (B={sides['BUY']}/S={sides['SELL']}/N={sides['NEUTRAL']}), "
+            f"${total:,.0f} notional",
             flush=True,
         )
 
     return rollups
 
 
+async def _build_chain_enrichment(
+    client: ThetaDataClient, ticker: str,
+) -> tuple[float | None, dict[tuple[float, str, str], dict[str, Any]]]:
+    """Build a (strike, exp, right) -> {oi, iv, delta} lookup from TODAY's
+    current snapshot, to enrich backfilled sweeps with contract metadata.
+
+    Returns (spot, lookup_dict). The lookup is used at flush time to fill
+    OI / IV / delta for the UI — approximate for historical dates (OI/IV
+    drift day-to-day) but good enough for post-hoc flow analysis.
+    """
+    # One call for Greeks + underlying + IV + delta across every contract
+    rows, spot = await client.snapshot_chain_greeks(ticker, expiration="*")
+    lookup: dict[tuple[float, str, str], dict[str, Any]] = {}
+    for r in rows:
+        try:
+            k_strike = float(r.get("strike") or 0)
+            k_exp = r.get("expiration") or ""
+            k_right = (r.get("right") or "").lower()
+            if not k_strike or not k_exp or k_right not in ("call", "put"):
+                continue
+            lookup[(k_strike, k_exp, k_right)] = {
+                "delta": float(r.get("delta") or 0) or None,
+                "iv": float(r.get("implied_vol") or 0) or None,
+                "oi": None,  # filled by OI snapshot call below
+            }
+        except (ValueError, TypeError):
+            continue
+
+    # Layer in OI from the dedicated endpoint (Greeks response doesn't include OI)
+    oi_rows = await client.snapshot_chain_oi(ticker, expiration="*")
+    for r in oi_rows:
+        try:
+            k_strike = float(r.get("strike") or 0)
+            k_exp = r.get("expiration") or ""
+            k_right = (r.get("right") or "").lower()
+            if not k_strike or not k_exp or k_right not in ("call", "put"):
+                continue
+            oi_val = int(float(r.get("open_interest") or 0))
+            key = (k_strike, k_exp, k_right)
+            if key in lookup:
+                lookup[key]["oi"] = oi_val or None
+            else:
+                lookup[key] = {"oi": oi_val or None, "iv": None, "delta": None}
+        except (ValueError, TypeError):
+            continue
+
+    return spot, lookup
+
+
 async def backfill_ticker_date(
     client: ThetaDataClient, ticker: str, date_obj: dt.date,
     strikes_radius: int, expirations_n: int, verbose: bool,
+    chain_lookup: dict[tuple[float, str, str], dict[str, Any]] | None = None,
+    cached_spot: float | None = None,
 ) -> tuple[int, float]:
     """Backfill one (ticker, date) pair. Returns (rollup_count, total_notional)."""
-    spot = await get_spot_price(client, ticker)
+    # Reuse the cached enrichment if caller already fetched it for this ticker
+    if chain_lookup is None or cached_spot is None:
+        cached_spot, chain_lookup = await _build_chain_enrichment(client, ticker)
+    spot = cached_spot
+
     if not spot or spot <= 0:
         print(f"[BACKFILL] {ticker}: no spot available, skipping {date_obj}")
         return 0, 0.0
@@ -481,19 +613,26 @@ async def backfill_ticker_date(
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    rollup_count = 0
+    # Collect all rollups first, then write in one batched transaction per ticker.
+    batch: list[tuple[dict[str, Any], int]] = []
     total_notional = 0.0
     for res in results:
         if isinstance(res, Exception):
             continue
         for rollup in res:
+            # Look up OI / IV / delta for this contract from today's snapshot
+            right_key = rollup.option_type
+            meta = chain_lookup.get((rollup.strike, rollup.expiration, right_key)) or {}
             payload = rollup.to_payload(
-                spot=spot, oi=None, iv=None, delta=None, bid=None, ask=None,
+                spot=spot,
+                oi=meta.get("oi"),
+                iv=meta.get("iv"),
+                delta=meta.get("delta"),
             )
-            insert_sweep_with_ts(payload, rollup.window_start_ts)
-            rollup_count += 1
+            batch.append((payload, rollup.window_start_ts))
             total_notional += rollup.total_notional
 
+    rollup_count = insert_sweeps_batch(batch)
     return rollup_count, total_notional
 
 
@@ -523,31 +662,48 @@ async def main() -> int:
 
     if args.dry_run:
         print("[BACKFILL] DRY-RUN — would write to DB; inserting nothing.")
-        # Still exercise the pipeline for validation; substitute a no-op insert.
-        global insert_sweep_with_ts
-        _real_insert = insert_sweep_with_ts
-        def _noop(payload, ts):
-            pass
-        insert_sweep_with_ts = _noop  # type: ignore
+        # Monkey-patch the batch insert so all rollups get counted but no DB writes happen
+        global insert_sweeps_batch
+        def _noop_batch(rows):
+            return len(rows)
+        insert_sweeps_batch = _noop_batch  # type: ignore
 
     client = ThetaDataClient()
     t0 = time.time()
     total_rollups = 0
     total_notional = 0.0
+
+    # Build chain enrichment ONCE per ticker — reused across all dates.
+    # Saves 1 snapshot + 1 OI call per (ticker × date) → per ticker.
+    enrichment_cache: dict[str, tuple[float | None, dict]] = {}
+
     try:
-        for date_obj in dates:
-            print(f"\n[BACKFILL] === {date_obj.isoformat()} ===")
-            for ticker in tickers:
+        for ticker in tickers:
+            print(f"\n[BACKFILL] === {ticker} ===")
+            try:
+                spot, lookup = await _build_chain_enrichment(client, ticker)
+                enrichment_cache[ticker] = (spot, lookup)
+                print(
+                    f"[BACKFILL] {ticker}: spot=${spot:.2f} "
+                    f"loaded {len(lookup)} contracts for OI/IV/delta enrichment"
+                )
+            except Exception as e:
+                print(f"[BACKFILL] {ticker}: chain snapshot failed ({e}), skipping ticker")
+                continue
+
+            for date_obj in dates:
                 n, notional = await backfill_ticker_date(
                     client, ticker, date_obj,
                     strikes_radius=args.strikes,
                     expirations_n=args.expirations,
                     verbose=args.verbose,
+                    chain_lookup=lookup,
+                    cached_spot=spot,
                 )
                 total_rollups += n
                 total_notional += notional
                 if n:
-                    print(f"[BACKFILL]   {ticker}: {n} sweeps, ${notional:,.0f} notional")
+                    print(f"[BACKFILL]   {date_obj.isoformat()}: {n} sweeps, ${notional:,.0f} notional")
     finally:
         await client.close()
 

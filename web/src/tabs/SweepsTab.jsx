@@ -23,21 +23,41 @@ const NOTIONAL_PRESETS = [
 ];
 
 const TYPE_FILTERS = ['ALL', 'CALL', 'PUT'];
+
+// Timeframes: "Today" is special — computed as midnight local time at load
+// time so the boundary is always sensible regardless of wall-clock now().
 const TIMEFRAMES = [
-  { label: '1h', seconds: 3600 },
-  { label: '4h', seconds: 14400 },
-  { label: 'Today', seconds: null },
+  { label: '1h',    seconds: 3600 },
+  { label: '4h',    seconds: 14400 },
+  { label: 'Today', seconds: 'today' },     // since midnight local
+  { label: '3d',    seconds: 3 * 86400 },
+  { label: '5d',    seconds: 5 * 86400 },
+  { label: '1w',    seconds: 7 * 86400 },
+  { label: 'All',   seconds: null },        // since epoch 0 = everything
 ];
 
 const SORT_COLUMNS = [
   { key: 'ts', label: 'Time' },
   { key: 'ticker', label: 'Ticker' },
+  { key: 'sweep_side', label: 'Side' },
   { key: 'sweep_notional', label: 'Notional' },
   { key: 'sweep_contracts', label: 'Contracts' },
   { key: 'sweep_venues', label: 'Venues' },
   { key: 'sweep_prints', label: 'Prints' },
   { key: 'oi', label: 'OI' },
   { key: 'iv', label: 'IV' },
+];
+
+const SIDE_FILTERS = ['ALL', 'BUY', 'SELL', 'NEUTRAL'];
+const SIDE_COLORS = {
+  BUY:     { fg: '#10dc9a', bg: 'rgba(16,220,154,0.08)' },
+  SELL:    { fg: '#ff5656', bg: 'rgba(255,86,86,0.08)' },
+  NEUTRAL: { fg: 'var(--text-3)', bg: 'transparent' },
+};
+
+const GROUP_MODES = [
+  { key: 'bucket',   label: '30s' },      // raw 30-second rollup windows
+  { key: 'contract', label: 'Contract' }, // aggregate all windows per (ticker,strike,exp,side)
 ];
 
 
@@ -86,15 +106,24 @@ export default function SweepsTab({ onClickTicker }) {
   const [minNotional, setMinNotional] = useState(100_000);
   const [minOI, setMinOI] = useState('');
   const [typeFilter, setTypeFilter] = useState('ALL');
-  const [timeframe, setTimeframe] = useState(TIMEFRAMES[2]);  // 'Today' default
+  const [sideFilter, setSideFilter] = useState('ALL');
+  const [timeframe, setTimeframe] = useState(TIMEFRAMES[4]);  // '5d' default (covers the backfill range)
   const [sortBy, setSortBy] = useState('sweep_notional');
   const [sortDesc, setSortDesc] = useState(true);
+  const [groupMode, setGroupMode] = useState('contract');  // default to UW-style aggregated view
 
   const load = useCallback(async () => {
     try {
-      const since = timeframe.seconds
-        ? Math.floor(Date.now() / 1000) - timeframe.seconds
-        : 0;
+      let since = 0;
+      if (timeframe.seconds === 'today') {
+        // Midnight local time today → epoch seconds
+        const d = new Date();
+        d.setHours(0, 0, 0, 0);
+        since = Math.floor(d.getTime() / 1000);
+      } else if (typeof timeframe.seconds === 'number') {
+        since = Math.floor(Date.now() / 1000) - timeframe.seconds;
+      }
+      // else: null = 'All' → since=0 = everything
       const resp = await api.sweeps(since, 500, '', minNotional);
       setSweeps(resp.sweeps || []);
       setError(null);
@@ -112,8 +141,8 @@ export default function SweepsTab({ onClickTicker }) {
     return () => clearInterval(id);
   }, [load]);
 
-  // Client-side filtering (ticker search + OI + type) + sorting
-  const filtered = useMemo(() => {
+  // Client-side filtering (ticker search + OI + type + side)
+  const prefiltered = useMemo(() => {
     let rows = [...sweeps];
 
     const q = tickerQuery.trim().toUpperCase();
@@ -131,6 +160,57 @@ export default function SweepsTab({ onClickTicker }) {
       rows = rows.filter((s) => (s.option_type || '').toLowerCase() === ot);
     }
 
+    if (sideFilter !== 'ALL') {
+      rows = rows.filter((s) => (s.sweep_side || 'NEUTRAL') === sideFilter);
+    }
+
+    return rows;
+  }, [sweeps, tickerQuery, minOI, typeFilter, sideFilter]);
+
+  // Apply groupMode — either raw 30s rows or aggregated per (ticker,strike,exp,side)
+  const filtered = useMemo(() => {
+    let rows = prefiltered;
+
+    if (groupMode === 'contract') {
+      const groups = new Map();
+      for (const s of rows) {
+        const key = `${s.ticker}|${s.strike}|${s.expiration}|${s.option_type}|${s.sweep_side || 'NEUTRAL'}`;
+        const g = groups.get(key);
+        if (!g) {
+          groups.set(key, {
+            ...s,
+            id: key,  // synthetic id for react key
+            sweep_notional: s.sweep_notional || 0,
+            sweep_contracts: s.sweep_contracts || 0,
+            sweep_prints: s.sweep_prints || 0,
+            sweep_venues: s.sweep_venues || 0,
+            _rollup_count: 1,
+            _latest_ts: s.ts,
+            _earliest_ts: s.ts,
+          });
+        } else {
+          g.sweep_notional += s.sweep_notional || 0;
+          g.sweep_contracts += s.sweep_contracts || 0;
+          g.sweep_prints += s.sweep_prints || 0;
+          // Venues: take max across rollups (not perfect union, but close enough for UI)
+          if ((s.sweep_venues || 0) > g.sweep_venues) g.sweep_venues = s.sweep_venues;
+          g._rollup_count += 1;
+          if (s.ts > g._latest_ts) g._latest_ts = s.ts;
+          if (s.ts < g._earliest_ts) g._earliest_ts = s.ts;
+          // Keep latest's OI/IV/delta/bid/ask (most recent snapshot)
+          if (s.ts >= g._latest_ts) {
+            g.oi = s.oi ?? g.oi;
+            g.iv = s.iv ?? g.iv;
+            g.delta = s.delta ?? g.delta;
+            g.bid = s.bid ?? g.bid;
+            g.ask = s.ask ?? g.ask;
+            g.ts = s.ts;
+          }
+        }
+      }
+      rows = Array.from(groups.values());
+    }
+
     rows.sort((a, b) => {
       const va = a[sortBy] ?? 0;
       const vb = b[sortBy] ?? 0;
@@ -141,7 +221,7 @@ export default function SweepsTab({ onClickTicker }) {
     });
 
     return rows;
-  }, [sweeps, tickerQuery, minOI, typeFilter, sortBy, sortDesc]);
+  }, [prefiltered, groupMode, sortBy, sortDesc]);
 
   // Stats bar
   const stats = useMemo(() => {
@@ -158,12 +238,24 @@ export default function SweepsTab({ onClickTicker }) {
     for (const [t, n] of Object.entries(tickerNotional)) {
       if (n > topNotional) { topNotional = n; topTicker = t; }
     }
+    // Buy/Sell notional split — the UW "bought at ask" equivalent
+    let buyNotional = 0, sellNotional = 0;
+    for (const s of filtered) {
+      if (s.sweep_side === 'BUY') buyNotional += s.sweep_notional || 0;
+      else if (s.sweep_side === 'SELL') sellNotional += s.sweep_notional || 0;
+    }
+    const sideTotal = buyNotional + sellNotional;
+    const buyPct = sideTotal > 0 ? (buyNotional / sideTotal) * 100 : 0;
+
     return {
       count: filtered.length,
       uniqueTickers: tickers.size,
       totalNotional,
       topTicker,
       topNotional,
+      buyNotional,
+      sellNotional,
+      buyPct,
     };
   }, [filtered]);
 
@@ -235,7 +327,7 @@ export default function SweepsTab({ onClickTicker }) {
           }}
         />
 
-        {/* Type filter */}
+        {/* Type filter (CALL/PUT) */}
         <div style={{ display: 'flex', gap: 2 }}>
           {TYPE_FILTERS.map((t) => (
             <button
@@ -252,6 +344,30 @@ export default function SweepsTab({ onClickTicker }) {
               {t}
             </button>
           ))}
+        </div>
+
+        {/* Side filter (BUY/SELL/NEUTRAL) */}
+        <div style={{ display: 'flex', gap: 2 }}>
+          {SIDE_FILTERS.map((s) => {
+            const active = sideFilter === s;
+            const color = SIDE_COLORS[s]?.fg || 'var(--text-3)';
+            return (
+              <button
+                key={s}
+                onClick={() => setSideFilter(s)}
+                style={{
+                  background: active ? 'var(--bg-2)' : 'transparent',
+                  color: active ? color : 'var(--text-3)',
+                  border: '1px solid var(--border-mid)',
+                  padding: '5px 10px', fontSize: 10, fontFamily: 'var(--mono)',
+                  cursor: 'pointer', borderRadius: 3,
+                  fontWeight: active ? 700 : 400,
+                }}
+              >
+                {s}
+              </button>
+            );
+          })}
         </div>
 
         {/* Timeframe */}
@@ -272,19 +388,52 @@ export default function SweepsTab({ onClickTicker }) {
             </button>
           ))}
         </div>
+
+        {/* Group mode: 30s rollups vs aggregated per contract */}
+        <div style={{ display: 'flex', gap: 2, marginLeft: 6 }} title="30s = one row per rollup window. Contract = sum all rollups per (ticker,strike,exp,side).">
+          <span style={{ fontSize: 9, color: 'var(--text-3)', alignSelf: 'center', marginRight: 4 }}>Group:</span>
+          {GROUP_MODES.map((g) => (
+            <button
+              key={g.key}
+              onClick={() => setGroupMode(g.key)}
+              style={{
+                background: groupMode === g.key ? 'var(--bg-2)' : 'transparent',
+                color: groupMode === g.key ? 'var(--text-1)' : 'var(--text-3)',
+                border: '1px solid var(--border-mid)',
+                padding: '5px 10px', fontSize: 10, fontFamily: 'var(--mono)',
+                cursor: 'pointer', borderRadius: 3,
+              }}
+            >
+              {g.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Stats strip */}
       <div style={{
         display: 'flex', gap: 20, padding: '8px 2px',
         fontSize: 11, fontFamily: 'var(--mono)', color: 'var(--text-2)',
-        marginBottom: 8,
+        marginBottom: 8, flexWrap: 'wrap',
       }}>
         <span>Sweeps: <b style={{ color: 'var(--text-1)' }}>{stats.count.toLocaleString()}</b></span>
         <span>Tickers: <b style={{ color: 'var(--text-1)' }}>{stats.uniqueTickers}</b></span>
         <span>Total: <b style={{ color: '#f4c430' }}>{fmtNotional(stats.totalNotional)}</b></span>
         {stats.topTicker && (
           <span>Top: <b style={{ color: 'var(--text-1)' }}>{stats.topTicker}</b> ({fmtNotional(stats.topNotional)})</span>
+        )}
+        {(stats.buyNotional > 0 || stats.sellNotional > 0) && (
+          <>
+            <span style={{ color: 'var(--text-3)' }}>|</span>
+            <span>
+              Bought: <b style={{ color: SIDE_COLORS.BUY.fg }}>{fmtNotional(stats.buyNotional)}</b>
+              {' '}({stats.buyPct.toFixed(0)}%)
+            </span>
+            <span>
+              Sold: <b style={{ color: SIDE_COLORS.SELL.fg }}>{fmtNotional(stats.sellNotional)}</b>
+              {' '}({(100 - stats.buyPct).toFixed(0)}%)
+            </span>
+          </>
         )}
         <div style={{ flex: 1 }} />
         <span style={{ color: 'var(--text-3)' }}>
@@ -352,14 +501,19 @@ export default function SweepsTab({ onClickTicker }) {
                 const rightColor = isCall ? '#10dc9a' : '#ff5656';
                 const venues = s.sweep_venues || 0;
                 const venueBadge = venues >= 3 ? '#f4c430' : venues >= 2 ? '#10dc9a' : 'var(--text-3)';
+                const side = s.sweep_side || 'NEUTRAL';
+                const sideColors = SIDE_COLORS[side] || SIDE_COLORS.NEUTRAL;
+                const isBig = (s.sweep_notional || 0) >= 1_000_000;
+                // Row background: strong side tint if big sweep, faint otherwise
+                const rowBg = isBig
+                  ? sideColors.bg.replace('0.08', '0.15')  // punchier for $1M+
+                  : sideColors.bg;
                 return (
                   <tr
                     key={s.id}
                     style={{
                       borderBottom: '1px solid var(--border-faint)',
-                      background: (s.sweep_notional || 0) >= 1_000_000
-                        ? 'rgba(244,196,48,0.04)'
-                        : 'transparent',
+                      background: rowBg,
                     }}
                   >
                     <td style={{ padding: '6px 10px', color: 'var(--text-2)' }}>
@@ -380,6 +534,14 @@ export default function SweepsTab({ onClickTicker }) {
                       </a>
                     </td>
                     <td style={{
+                      padding: '6px 10px',
+                      color: sideColors.fg,
+                      fontWeight: 700,
+                      fontSize: 10,
+                    }}>
+                      {side === 'BUY' ? '▲ BUY' : side === 'SELL' ? '▼ SELL' : '• NEUTRAL'}
+                    </td>
+                    <td style={{
                       padding: '6px 10px', color: '#f4c430', fontWeight: 700,
                     }}>
                       {fmtNotional(s.sweep_notional)}
@@ -388,7 +550,20 @@ export default function SweepsTab({ onClickTicker }) {
                     <td style={{ padding: '6px 10px', color: venueBadge, fontWeight: venues >= 2 ? 700 : 400 }}>
                       {venues}
                     </td>
-                    <td style={{ padding: '6px 10px' }}>{s.sweep_prints}</td>
+                    <td style={{ padding: '6px 10px' }}>
+                      {s.sweep_prints}
+                      {s._rollup_count > 1 && (
+                        <span
+                          title={`${s._rollup_count} distinct 30s rollup windows aggregated`}
+                          style={{
+                            marginLeft: 6, fontSize: 9, color: 'var(--text-3)',
+                            padding: '1px 4px', background: 'var(--bg-2)', borderRadius: 2,
+                          }}
+                        >
+                          ×{s._rollup_count}
+                        </span>
+                      )}
+                    </td>
                     <td style={{ padding: '6px 10px', color: 'var(--text-2)' }}>{fmtInt(s.oi)}</td>
                     <td style={{ padding: '6px 10px', color: 'var(--text-2)' }}>{fmtPct(s.iv)}</td>
                     <td style={{ padding: '6px 10px', color: rightColor, fontWeight: 600 }}>

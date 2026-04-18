@@ -42,6 +42,11 @@ export const api = {
       'GET',
       `/api/sweeps?since=${since}&limit=${limit}${ticker ? '&ticker=' + encodeURIComponent(ticker) : ''}${minNotional ? '&min_notional=' + minNotional : ''}`,
     ),
+  flowDaily: ({ sinceDate = '', ticker = '', minNotional = 0, minOI = 0, side = 'ALL', limit = 500 } = {}) =>
+    json(
+      'GET',
+      `/api/flow/daily?since_date=${encodeURIComponent(sinceDate)}&ticker=${encodeURIComponent(ticker)}&min_notional=${minNotional}&min_oi=${minOI}&side=${side}&limit=${limit}`,
+    ),
   signals: (limit = 50, status = '', grade = '') =>
     json('GET', `/api/signals?limit=${limit}${status ? '&status=' + status : ''}${grade ? '&grade=' + grade : ''}`),
   signalStats: () => json('GET', '/api/signals/stats'),

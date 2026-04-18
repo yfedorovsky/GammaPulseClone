@@ -65,6 +65,31 @@ EXCLUDE_CONDITIONS = frozenset({40, 41, 42, 43, 44})  # CANC* variants
 # Non-ISO auction prints — real trades but NOT sweeps; keep them out of sweep detector
 NON_ISO_AUCTION_CONDITIONS = frozenset({125, 127})
 
+
+# ── Trade side classification (BUY/SELL/NEUTRAL from price vs NBBO) ────
+
+def classify_side(price: float, bid: float, ask: float) -> str:
+    """Classify a trade print as BUY / SELL / NEUTRAL from price vs NBBO.
+
+    UW-style strict logic:
+      - price >= ask → BUY  (aggressive buyer lifted the ask)
+      - price <= bid → SELL (aggressive seller hit the bid)
+      - strictly inside spread → NEUTRAL (mid-cross, paired, auction)
+
+    Strict comparison is correct because Theta returns the NBBO AT trade
+    time — no loose tolerance needed. Ambiguous mid-spread prints are
+    legitimately neutral.
+
+    Returns 'NEUTRAL' if bid/ask are missing, zero, or crossed.
+    """
+    if bid <= 0 or ask <= 0 or ask <= bid:
+        return "NEUTRAL"
+    if price >= ask:
+        return "BUY"
+    if price <= bid:
+        return "SELL"
+    return "NEUTRAL"
+
 # ── Caches ─────────────────────────────────────────────────────────────
 
 # Greeks cache: ticker -> (timestamp, {(strike, exp_date, type): greeks_dict})
@@ -285,9 +310,39 @@ class ThetaDataClient:
 
         date, expiration: "YYYY-MM-DD"
         right: "call" or "put"
+
+        NOTE: prefer history_trade_quote() for backfill — same cost, richer
+        response (includes NBBO at trade time for side classification).
         """
         return await self._get_csv(
             "/v3/option/history/trade",
+            {
+                "symbol": ticker.upper(),
+                "expiration": expiration,
+                "strike": f"{strike:g}",
+                "right": right,
+                "date": date,
+            },
+        )
+
+    async def history_trade_quote(
+        self, ticker: str, expiration: str, strike: float, right: str,
+        date: str,
+    ) -> list[dict[str, Any]]:
+        """Historical trade prints PAIRED with the NBBO at trade time.
+
+        Response columns: trade_timestamp, quote_timestamp, sequence,
+        ext_condition1-4, condition, size, exchange, price,
+        bid_size, bid_exchange, bid, bid_condition,
+        ask_size, ask_exchange, ask, ask_condition
+
+        Enables Bought/Sold classification:
+          price >= ask → BUY  (aggressive buyer lifting the ask)
+          price <= bid → SELL (aggressive seller hitting the bid)
+          else         → NEUTRAL (mid-market, likely rollup or crossing)
+        """
+        return await self._get_csv(
+            "/v3/option/history/trade_quote",
             {
                 "symbol": ticker.upper(),
                 "expiration": expiration,
