@@ -129,20 +129,25 @@ export default function BigFlowTab({ onClickTicker }) {
   const filtered = useMemo(() => {
     let rows = [...flow];
 
-    // Derive fields server doesn't return pre-computed — including GOLDEN FLOW tag
+    // Derive fields server doesn't return pre-computed — including GOLDEN FLOW tag.
+    // Classifier mirrors server.option_flow_daily.is_golden_flow exactly:
+    //   - bought/sold% computed from DIRECTIONAL notional only (excluding neutral)
+    //   - symmetric: either BUY≥65% OR SELL≥65% qualifies (insider puts OR calls)
+    //   - threshold 65% (UW methodology, not 70%)
     rows = rows.map((r) => {
       const total = r.total_notional || 0;
       const sweepShare = total > 0 ? (r.sweep_notional || 0) / total : 0;
-      const sideTotalAll = (r.buy_notional || 0) + (r.sell_notional || 0) + (r.neutral_notional || 0);
-      const boughtPctAll = sideTotalAll > 0 ? (r.buy_notional || 0) / sideTotalAll : 0;
+      const buy = r.buy_notional || 0;
+      const sell = r.sell_notional || 0;
+      const neutral = r.neutral_notional || 0;
+      const directional = buy + sell;
+      const boughtPct = directional > 0 ? buy / directional : 0;
+      const soldPct = directional > 0 ? sell / directional : 0;
       let dominantSide = 'NEUTRAL';
-      if ((r.buy_notional || 0) > (r.sell_notional || 0) && (r.buy_notional || 0) > (r.neutral_notional || 0)) {
-        dominantSide = 'BUY';
-      } else if ((r.sell_notional || 0) > (r.buy_notional || 0) && (r.sell_notional || 0) > (r.neutral_notional || 0)) {
-        dominantSide = 'SELL';
-      }
+      if (buy > sell && buy > neutral) dominantSide = 'BUY';
+      else if (sell > buy && sell > neutral) dominantSide = 'SELL';
 
-      // GOLDEN FLOW classifier — SPY 647P insider pattern
+      // GOLDEN FLOW classifier — symmetric BUY or SELL dominance
       const vol = r.total_volume || 0;
       const oi = r.oi || 0;
       const volOi = oi > 0 ? vol / oi : Infinity;
@@ -152,9 +157,10 @@ export default function BigFlowTab({ onClickTicker }) {
         const d1 = new Date(r.date); const d2 = new Date(r.expiration);
         dte = Math.round((d2 - d1) / 86400000);
       }
+      const sideOk = boughtPct >= 0.65 || soldPct >= 0.65;
       const isGolden = (
         total >= 500_000 &&
-        boughtPctAll >= 0.70 &&
+        sideOk &&
         (oi === 0 || volOi >= 3.0) &&
         otmPct <= 0.025 &&
         dte <= 2
@@ -163,7 +169,7 @@ export default function BigFlowTab({ onClickTicker }) {
       return {
         ...r,
         sweep_share: sweepShare,
-        bought_pct: boughtPctAll,  // use all-notional denominator (matches classifier)
+        bought_pct: boughtPct,  // matches server definition (directional only)
         dominant_side: dominantSide,
         vol_oi: volOi === Infinity ? null : volOi,
         otm_pct: otmPct,
