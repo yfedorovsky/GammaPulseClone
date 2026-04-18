@@ -33,10 +33,21 @@ class Settings(BaseSettings):
     finnhub_api_key: str = ""
     fred_api_key: str = ""  # FRED (Federal Reserve) — free, for NYMO/NAMO breadth data
 
-    # Massive (formerly Polygon) — real-time Greeks & IV
+    # ThetaData (Options Standard, subbed Apr 17 2026) — real-time OPRA Greeks,
+    # NBBO, full tick stream with ISO sweep condition codes. Replaces Massive.
+    # Runs against the locally-installed Theta Terminal (java -jar) — no cloud
+    # API key needed; auth is handled by Terminal's Theta Data credentials.
+    use_thetadata_greeks: bool = True   # Primary Greeks source, default on
+    thetadata_rest_url: str = "http://127.0.0.1:25503"
+    thetadata_ws_url: str = "ws://127.0.0.1:25520/v1/events"
+    thetadata_sweep_enabled: bool = True  # Enables sweep_detector background task
+
+    # Massive (formerly Polygon) — DEPRECATED as of Apr 17 2026.
+    # Kept wired for 1-flag rollback window. Planned removal: after Monday
+    # Apr 20 2026 market-open validation of Theta Greeks parity.
     massive_api_key: str = ""
     massive_base_url: str = "https://api.massive.com"
-    use_massive_greeks: bool = True  # feature flag; False = Tradier-only fallback
+    use_massive_greeks: bool = False  # DEPRECATED; True only for emergency rollback
 
     # Discord listener — ported from Mac Mini bridge
     discord_token: str = ""          # User token (discord.py-self)

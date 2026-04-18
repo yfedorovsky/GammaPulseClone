@@ -23,6 +23,12 @@ from .cache import cache
 from .config import get_settings
 from .gex import build_signal, compute_exp_data
 from .massive import MassiveClient, enrich_contracts_with_massive
+from .thetadata import (
+    ThetaDataClient,
+    enrich_contracts_with_thetadata,
+    get_theta_spot,
+    snapshot_greeks as theta_snapshot_greeks,
+)
 from .rts import compute_rts
 from .snapshots import (
     insert_async as snapshot_insert,
@@ -338,7 +344,7 @@ async def _compute_one(
     ticker: str,
     spot: float,
     max_exp: int = 6,
-    massive: MassiveClient | None = None,
+    greeks_client: Any = None,  # ThetaDataClient | MassiveClient | None
 ) -> dict[str, Any] | None:
     # SPX/NDX/RUT auto-fallback: if index chain is empty, use ETF equivalent
     INDEX_FALLBACK = {"SPX": "SPY", "NDX": "QQQ", "RUT": "IWM"}
@@ -352,33 +358,53 @@ async def _compute_one(
     if not contracts:
         return None
 
-    # Enrich with Massive real-time Greeks (if available)
+    # Enrich with real-time Greeks (Theta preferred; Massive kept as fallback path)
     greeks_source = "tradier"
     greeks_ts = time.time()
-    if massive:
+    if greeks_client is not None:
         try:
             # Compute expiration range from the contracts we have
             all_exps = sorted(set(c.get("expiration_date", "") for c in contracts if c.get("expiration_date")))
             exp_gte = all_exps[0] if all_exps else ""
             exp_lte = all_exps[-1] if all_exps else ""
 
-            massive_greeks, m_ts = await massive.snapshot_greeks(
-                ticker, expiration_gte=exp_gte, expiration_lte=exp_lte
-            )
-            if massive_greeks:
-                contracts = enrich_contracts_with_massive(contracts, massive_greeks, m_ts)
-                greeks_source = "massive"
-                greeks_ts = m_ts
+            if isinstance(greeks_client, ThetaDataClient):
+                # Theta path (primary, Apr 17 2026+)
+                t_greeks, t_ts = await theta_snapshot_greeks(
+                    greeks_client, ticker, expiration_gte=exp_gte, expiration_lte=exp_lte
+                )
+                if t_greeks:
+                    contracts = enrich_contracts_with_thetadata(contracts, t_greeks, t_ts)
+                    greeks_source = "thetadata"
+                    greeks_ts = t_ts
 
-                # Spot-consistency check: compare Massive's underlying vs Tradier spot
-                from .massive import get_massive_spot
-                m_spot = get_massive_spot(ticker)
-                if m_spot and spot and abs(m_spot - spot) / spot > 0.003:
-                    pct_diff = abs(m_spot - spot) / spot * 100
-                    print(f"[GEX_STALE_SPOT] {ticker}: Tradier=${spot:.2f} Massive=${m_spot:.2f} ({pct_diff:.1f}% divergence)")
-                    _spot_stale_flag[ticker] = round(pct_diff, 2)
-                else:
-                    _spot_stale_flag.pop(ticker, None)
+                    # Spot-consistency check: Theta's underlying vs Tradier spot
+                    t_spot = get_theta_spot(ticker)
+                    if t_spot and spot and abs(t_spot - spot) / spot > 0.003:
+                        pct_diff = abs(t_spot - spot) / spot * 100
+                        print(f"[GEX_STALE_SPOT] {ticker}: Tradier=${spot:.2f} Theta=${t_spot:.2f} ({pct_diff:.1f}% divergence)")
+                        _spot_stale_flag[ticker] = round(pct_diff, 2)
+                    else:
+                        _spot_stale_flag.pop(ticker, None)
+
+            elif isinstance(greeks_client, MassiveClient):
+                # Massive path (retained as fallback for rollback through Apr 20)
+                massive_greeks, m_ts = await greeks_client.snapshot_greeks(
+                    ticker, expiration_gte=exp_gte, expiration_lte=exp_lte
+                )
+                if massive_greeks:
+                    contracts = enrich_contracts_with_massive(contracts, massive_greeks, m_ts)
+                    greeks_source = "massive"
+                    greeks_ts = m_ts
+
+                    from .massive import get_massive_spot
+                    m_spot = get_massive_spot(ticker)
+                    if m_spot and spot and abs(m_spot - spot) / spot > 0.003:
+                        pct_diff = abs(m_spot - spot) / spot * 100
+                        print(f"[GEX_STALE_SPOT] {ticker}: Tradier=${spot:.2f} Massive=${m_spot:.2f} ({pct_diff:.1f}% divergence)")
+                        _spot_stale_flag[ticker] = round(pct_diff, 2)
+                    else:
+                        _spot_stale_flag.pop(ticker, None)
         except Exception as e:
             # Silently fall back to Tradier Greeks
             pass
@@ -463,7 +489,7 @@ async def _compute_one(
 
 
 async def _scan_cycle(
-    tradier: TradierClient, cycle_num: int, massive: MassiveClient | None = None
+    tradier: TradierClient, cycle_num: int, greeks_client: Any = None
 ) -> None:
     settings = get_settings()
 
@@ -482,7 +508,12 @@ async def _scan_cycle(
     if is_first_cycle:
         print(f"[worker] FIRST CYCLE — scanning ALL {len(targets)} tickers (catch-up)")
 
-    source_label = "tradier+massive" if massive else "tradier"
+    if greeks_client is None:
+        source_label = "tradier"
+    elif isinstance(greeks_client, ThetaDataClient):
+        source_label = "tradier+thetadata"
+    else:
+        source_label = "tradier+massive"
     await cache.set_status(f"Running Cycle... [{source_label}] 0/{len(targets)}")
 
     # Batch spot quotes with volume data (1 API call per 50 tickers — very cheap)
@@ -495,17 +526,17 @@ async def _scan_cycle(
     sem = asyncio.Semaphore(4)
     processed = 0
 
-    # Massive Greeks: first cycle = all, then Tier 1 every cycle, Tier 2+3 every other
-    def _use_massive(t: str) -> MassiveClient | None:
-        if not massive:
+    # Greeks enrichment cadence: first cycle = all, then Tier 1 every cycle, Tier 2+3 alternate
+    def _pick_greeks_client(t: str) -> Any:
+        if not greeks_client:
             return None
         if is_first_cycle:
-            return massive  # First cycle: Massive for everything
+            return greeks_client  # First cycle: Greeks for everything
         tier = tier_of(t)
         if tier == 1:
-            return massive  # Always use Massive for majors
+            return greeks_client  # Always enrich Tier 1 majors
         if cycle_num % 2 == 0:
-            return massive  # Even cycles: Massive for all
+            return greeks_client  # Even cycles: all tiers
         return None  # Odd cycles: Tradier-only for Tier 2+3
 
     async def process(t: str) -> None:
@@ -518,7 +549,7 @@ async def _scan_cycle(
                 state = await _compute_one(
                     tradier, t, spot,
                         max_exp=12 if tier_of(t) <= 2 else 6,
-                        massive=_use_massive(t)
+                        greeks_client=_pick_greeks_client(t)
                 )
                 if state is None:
                     return
@@ -617,20 +648,25 @@ async def run_worker(stop_event: asyncio.Event) -> None:
     settings = get_settings()
     tradier = TradierClient()
 
-    # Initialize Massive client for real-time Greeks (if configured)
-    massive: MassiveClient | None = None
-    if settings.use_massive_greeks and settings.massive_api_key:
-        massive = MassiveClient()
-        print("[worker] Massive Greeks enabled — real-time delta/gamma/vega/IV")
+    # Greeks enrichment source selection.
+    # Priority: ThetaData (Apr 17, 2026+) → Massive (legacy fallback) → Tradier only.
+    # The use_thetadata_greeks flag lets us hot-rollback to Massive if Theta hiccups.
+    greeks_client: Any = None
+    if settings.use_thetadata_greeks:
+        greeks_client = ThetaDataClient()
+        print("[worker] Theta Greeks enabled — real-time delta/theta/vega/IV via OPRA, gamma synthesized via BSM")
+    elif settings.use_massive_greeks and settings.massive_api_key:
+        greeks_client = MassiveClient()
+        print("[worker] Massive Greeks enabled (legacy fallback) — real-time delta/gamma/vega/IV")
     else:
-        print("[worker] Massive not configured — using Tradier Greeks (hourly)")
+        print("[worker] No live Greeks provider — using Tradier Greeks (hourly, stale)")
 
     try:
         cycle = 0
         while not stop_event.is_set():
             cycle += 1
             try:
-                await _scan_cycle(tradier, cycle, massive)
+                await _scan_cycle(tradier, cycle, greeks_client)
                 # EOD snapshot hook — self-gates to once/day at 4:15 PM
                 await _maybe_snapshot_eod_oi()
                 # Price-watch alerts (Mir setups, etc.) — self-gates dedup
@@ -658,5 +694,5 @@ async def run_worker(stop_event: asyncio.Event) -> None:
                 pass
     finally:
         await tradier.close()
-        if massive:
-            await massive.close()
+        if greeks_client:
+            await greeks_client.close()
