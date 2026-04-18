@@ -90,6 +90,7 @@ export default function BigFlowTab({ onClickTicker }) {
   const [sortBy, setSortBy] = useState('total_notional');
   const [sortDesc, setSortDesc] = useState(true);
   const [goldenOnly, setGoldenOnly] = useState(false);
+  const [tailOnly, setTailOnly] = useState(false);
   const [hideExpired, setHideExpired] = useState(true);  // default on — show only tradeable contracts
 
   const load = useCallback(async () => {
@@ -179,20 +180,36 @@ export default function BigFlowTab({ onClickTicker }) {
         dte <= 2
       );
 
+      // TAIL FLOW — cheap far-OTM longer-dated lotto (SPY 620P 5/8 pattern).
+      // No V/OI rule (these often add to hedges, not open new positions).
+      const avgFill = vol > 0 ? total / (vol * 100) : 0;
+      const isTail = (
+        total >= 500_000 &&
+        sideOk &&
+        avgFill > 0 && avgFill <= 2.0 &&
+        otmPct >= 0.04 && otmPct <= 0.25 &&
+        dte >= 3 && dte <= 45
+      );
+
       return {
         ...r,
         sweep_share: sweepShare,
-        bought_pct: boughtPct,  // matches server definition (directional only)
+        bought_pct: boughtPct,
         dominant_side: dominantSide,
         vol_oi: volOi === Infinity ? null : volOi,
         otm_pct: otmPct,
         dte,
+        avg_fill: avgFill,
         is_golden: isGolden,
+        is_tail: isTail,
       };
     });
 
     if (goldenOnly) {
       rows = rows.filter((r) => r.is_golden);
+    }
+    if (tailOnly) {
+      rows = rows.filter((r) => r.is_tail);
     }
 
     // Hide-expired: exclude contracts whose expiration is before today.
@@ -223,7 +240,7 @@ export default function BigFlowTab({ onClickTicker }) {
     });
 
     return rows;
-  }, [flow, tickerQuery, typeFilter, sortBy, sortDesc, goldenOnly, hideExpired]);
+  }, [flow, tickerQuery, typeFilter, sortBy, sortDesc, goldenOnly, tailOnly, hideExpired]);
 
   const stats = useMemo(() => {
     const tickers = new Set();
@@ -353,6 +370,22 @@ export default function BigFlowTab({ onClickTicker }) {
           }}
         >
           ⚡ GOLDEN{goldenOnly ? ' ✓' : ''}
+        </button>
+
+        {/* TAIL FLOW filter — cheap far-OTM longer-dated insider lotto pattern */}
+        <button
+          onClick={() => setTailOnly(!tailOnly)}
+          title="Show only trades matching the TAIL FLOW pattern: ≥$500K, ≥65% directional, cheap premium (≤$2 avg fill), 4-25% OTM, 3-45 trading-day DTE. Examples: fund managers buying downside insurance, event-driven funds positioning for ~monthly-window catalysts."
+          style={{
+            background: tailOnly ? '#b388ff30' : 'transparent',
+            color: tailOnly ? '#b388ff' : 'var(--text-3)',
+            border: '1px solid ' + (tailOnly ? '#b388ff' : 'var(--border-mid)'),
+            padding: '5px 12px', fontSize: 10, fontFamily: 'var(--mono)',
+            cursor: 'pointer', borderRadius: 3,
+            fontWeight: tailOnly ? 700 : 500,
+          }}
+        >
+          🎯 TAIL{tailOnly ? ' ✓' : ''}
         </button>
 
         {/* Hide-expired toggle — default on; only show tradeable contracts */}
@@ -487,13 +520,23 @@ export default function BigFlowTab({ onClickTicker }) {
                       </a>
                       {r.is_golden && (
                         <span
-                          title="GOLDEN FLOW: matches the composite insider-pattern (≥$500K, ≥70% bought, V/OI ≥3x, ≤2.5% OTM, ≤2 DTE)"
+                          title="GOLDEN FLOW: urgent ATM insider pattern (≥$500K, ≥65% directional, V/OI ≥3x, ≤2.5% OTM, ≤2 DTE)"
                           style={{
                             marginLeft: 6, fontSize: 9, fontWeight: 700,
                             padding: '1px 4px', borderRadius: 2,
                             background: '#f4c430', color: '#1a1a1a',
                           }}
                         >⚡ GOLD</span>
+                      )}
+                      {r.is_tail && (
+                        <span
+                          title="TAIL FLOW: cheap far-OTM longer-dated insider lotto (≥$500K, ≥65% directional, ≤$2 avg fill, 4-25% OTM, 3-45 DTE)"
+                          style={{
+                            marginLeft: 4, fontSize: 9, fontWeight: 700,
+                            padding: '1px 4px', borderRadius: 2,
+                            background: '#b388ff', color: '#1a1a1a',
+                          }}
+                        >🎯 TAIL</span>
                       )}
                     </td>
                     <td style={{ padding: '6px 10px', color: 'var(--text-1)' }}>{fmtInt(r.total_volume)}</td>

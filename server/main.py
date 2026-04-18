@@ -22,7 +22,7 @@ from .cache import cache
 from .config import get_settings
 from .db import db
 from .flow_alerts import init_alert_db, get_alerts as get_flow_alerts, run_flow_scanner, get_sweep_alerts
-from .option_flow_daily import init_flow_daily_db, get_flow_daily, get_golden_flow, is_golden_flow, GOLDEN_FLOW_RULES
+from .option_flow_daily import init_flow_daily_db, get_flow_daily, get_golden_flow, is_golden_flow, GOLDEN_FLOW_RULES, get_tail_flow, is_tail_flow, TAIL_FLOW_RULES
 from .signal_outcomes import init_outcomes_db, get_hit_rate
 from .discipline import init_discipline_db, get_ticker_stats, compute_kelly_size, get_circuit_breaker, log_trade
 from .signals import init_signals_db, init_ab_db, get_signals, get_signal_stats, run_signal_engine
@@ -478,6 +478,26 @@ async def stats_hit_rate(
         min_sweep_venues=min_sweep_venues,
         lookback_days=lookback_days,
     )
+
+
+@app.get("/api/flow/tail")
+async def flow_tail(
+    since_date: str = "", ticker: str = "", limit: int = 200,
+):
+    """TAIL FLOW alerts — cheap-far-OTM-longer-dated insider pattern.
+
+    Complements GOLDEN (urgent ATM 1-2 DTE). TAIL catches lotto-style
+    puts and calls 5-20% OTM, 3-45 trading days out, cheap premium
+    (< $2 avg fill), with 65%+ directional conviction.
+
+    Signature example (SPY 620P 5/8 — 21 DTE, 13% OTM, $0.43 avg,
+    $838K notional, 82% bought): fund managers hedging a month out
+    or insiders positioning for a ~monthly window event.
+
+    Clusters of 2+ per ticker per day = strong signal.
+    """
+    rows = get_tail_flow(since_date=since_date or None, ticker=ticker or None, limit=limit)
+    return {"tail": rows, "count": len(rows), "rules": TAIL_FLOW_RULES}
 
 
 @app.get("/api/flow/golden")

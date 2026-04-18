@@ -131,6 +131,39 @@ GOLDEN_FLOW_RULES = {
 }
 
 
+# TAIL FLOW — the cheap-far-OTM-longer-dated-lottery insider pattern.
+#
+# Distinct from GOLDEN (urgent, ATM, 1-2 DTE). This pattern is:
+#   - Cheap premium (< $2 avg fill) — defining trait
+#   - Far OTM (5-20%) — not ATM, betting on significant break
+#   - Longer DTE (5-45 trading days) — weeks of runway
+#   - Directional conviction (65%+ one side)
+#
+# Real-world example (user flagged 2026-04-17):
+#   SPY 620P exp 5/8 — 21 DTE, 13% OTM, $0.43 avg, $838K notional, 82% bought
+#
+# Who trades this:
+#   - Fund managers buying downside insurance on their book
+#   - Insiders with info about an event within a ~month window but uncertain timing
+#   - Event-driven funds positioning for earnings/regulatory/M&A ruptures
+#
+# Why clusters matter:
+#   One alert = noise (hedge). Two+ on same underlying = signal (someone knows).
+TAIL_FLOW_RULES = {
+    "min_notional": 500_000,
+    "min_bought_pct": 0.65,
+    "min_sold_pct": 0.65,
+    "max_avg_fill": 2.0,          # < $2 per contract = cheap lotto
+    "min_otm_pct": 0.04,          # >4% OTM — far enough to be a bet, not a hedge-next-to-spot
+    "max_otm_pct": 0.25,          # <25% OTM — avoid out-there noise
+    "min_dte": 3,                 # >2 trading days (else it overlaps GOLDEN)
+    "max_dte": 45,                # ~2 months max — keep it focused
+    # Note: no V/OI rule. TAIL trades often ADD to existing hedges, so
+    # V/OI can be well below 1. The cheap premium + far OTM + conviction
+    # combo is the signal, not fresh-position-open bias.
+}
+
+
 def is_golden_flow(row: dict) -> tuple[bool, list[str]]:
     """Return (is_golden, list_of_failed_rules).
 
@@ -216,6 +249,86 @@ def get_golden_flow(
             r["_golden"] = True
             golden.append(r)
     return golden[:limit]
+
+
+def is_tail_flow(row: dict) -> tuple[bool, list[str]]:
+    """TAIL FLOW classifier — cheap far-OTM longer-dated insider pattern.
+
+    Returns (is_tail, failed_rules). Complements is_golden_flow which
+    catches urgent ATM 0-2 DTE. TAIL catches cheap-lotto 5-20% OTM 3-45 DTE.
+    """
+    failed: list[str] = []
+
+    notional = row.get("total_notional") or 0
+    if notional < TAIL_FLOW_RULES["min_notional"]:
+        failed.append(f"notional(${notional/1000:.0f}K<${TAIL_FLOW_RULES['min_notional']/1000:.0f}K)")
+
+    buy = row.get("buy_notional") or 0
+    sell = row.get("sell_notional") or 0
+    directional = buy + sell
+    bought_pct = (buy / directional) if directional > 0 else 0
+    sold_pct = (sell / directional) if directional > 0 else 0
+    side_ok = (
+        bought_pct >= TAIL_FLOW_RULES["min_bought_pct"]
+        or sold_pct >= TAIL_FLOW_RULES["min_sold_pct"]
+    )
+    if not side_ok:
+        failed.append(f"side_conv(B{bought_pct*100:.0f}%/S{sold_pct*100:.0f}%)")
+
+    # Avg fill price — the defining "cheap lotto" trait
+    vol = row.get("total_volume") or 0
+    avg_fill = (notional / (vol * 100)) if vol > 0 else 0
+    if avg_fill > TAIL_FLOW_RULES["max_avg_fill"] or avg_fill <= 0:
+        failed.append(f"avg_fill(${avg_fill:.2f}>${TAIL_FLOW_RULES['max_avg_fill']:.2f})")
+
+    strike = row.get("strike") or 0
+    spot = row.get("spot") or 0
+    otm_pct = abs(strike - spot) / spot if (strike > 0 and spot > 0) else 1.0
+    if otm_pct < TAIL_FLOW_RULES["min_otm_pct"]:
+        failed.append(f"OTM({otm_pct*100:.1f}%<{TAIL_FLOW_RULES['min_otm_pct']*100:.1f}%)")
+    if otm_pct > TAIL_FLOW_RULES["max_otm_pct"]:
+        failed.append(f"OTM({otm_pct*100:.1f}%>{TAIL_FLOW_RULES['max_otm_pct']*100:.1f}%)")
+
+    # Trading-day DTE — same methodology as GOLDEN
+    from datetime import date as _date, timedelta as _td
+    trade_date = row.get("date") or ""
+    exp = row.get("expiration") or ""
+    try:
+        td = _date.fromisoformat(trade_date)
+        ed = _date.fromisoformat(exp)
+        dte = 0
+        d = td
+        while d < ed:
+            d = d + _td(days=1)
+            if d.weekday() < 5:
+                dte += 1
+    except (ValueError, TypeError):
+        dte = 999
+    if dte < TAIL_FLOW_RULES["min_dte"]:
+        failed.append(f"dte({dte}td<{TAIL_FLOW_RULES['min_dte']})")
+    if dte > TAIL_FLOW_RULES["max_dte"]:
+        failed.append(f"dte({dte}td>{TAIL_FLOW_RULES['max_dte']})")
+
+    return (len(failed) == 0), failed
+
+
+def get_tail_flow(
+    since_date: str | None = None, ticker: str | None = None,
+    limit: int = 500,
+) -> list[dict]:
+    """Query flow_daily + apply TAIL classifier. Returns only matches."""
+    rows = get_flow_daily(
+        since_date=since_date, ticker=ticker,
+        min_notional=TAIL_FLOW_RULES["min_notional"],
+        limit=limit * 5,
+    )
+    out: list[dict] = []
+    for r in rows:
+        is_tail, _failed = is_tail_flow(r)
+        if is_tail:
+            r["_tail"] = True
+            out.append(r)
+    return out[:limit]
 
 
 def init_flow_daily_db() -> None:
