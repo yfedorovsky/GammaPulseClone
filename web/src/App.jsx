@@ -21,6 +21,7 @@ const EarningsTab = lazy(() => import('./tabs/EarningsTab.jsx'));
 const NewsTab = lazy(() => import('./tabs/NewsTab.jsx'));
 const PortfolioTab = lazy(() => import('./tabs/PortfolioTab.jsx'));
 const SwingsTab = lazy(() => import('./tabs/SwingsTab.jsx'));
+const SweepsTab = lazy(() => import('./tabs/SweepsTab.jsx'));
 const GuideTab = lazy(() => import('./tabs/GuideTab.jsx'));
 
 export default function App() {
@@ -139,6 +140,7 @@ export default function App() {
           {tab === 'SCANNER' && <ScannerTab />}
           {tab === 'SWINGS' && <SwingsTab />}
           {tab === 'FLOW' && <FlowTab />}
+          {tab === 'SWEEPS' && <SweepsTab />}
           {tab === 'SIGNALS' && <SignalsTab />}
           {tab === 'PORTFOLIO' && <PortfolioTab />}
           {tab === 'SECTORS' && <SectorsTab />}

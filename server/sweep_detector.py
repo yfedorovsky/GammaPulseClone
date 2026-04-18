@@ -236,7 +236,8 @@ class SweepDetector:
 
         payload = rollup.to_alert_payload()
 
-        # Pull GEX context from the async-fetched cache snapshot, if available
+        # Pull GEX context + per-contract enrichment (OI, bid/ask, delta, IV)
+        # from the async-fetched cache snapshot, if available.
         gex_info = None
         if snapshot:
             state = snapshot.get(rollup.ticker) or {}
@@ -248,6 +249,23 @@ class SweepDetector:
                 "regime": state.get("regime"),
             }
             payload["spot"] = state.get("actual_spot") or state.get("_spot")
+
+            # Find the matching contract in the cached raw chain to pull
+            # OI, bid, ask, delta, IV. Enables OI-based UI filtering.
+            raw_by_exp = state.get("_raw_contracts") or {}
+            chain = raw_by_exp.get(rollup.expiration) or []
+            for c in chain:
+                if (
+                    c.get("strike") == rollup.strike
+                    and (c.get("option_type") or "").lower() == rollup.option_type
+                ):
+                    greeks = c.get("greeks") or {}
+                    payload["oi"] = c.get("open_interest")
+                    payload["bid"] = c.get("bid")
+                    payload["ask"] = c.get("ask")
+                    payload["delta"] = greeks.get("delta")
+                    payload["iv"] = greeks.get("mid_iv") or greeks.get("smv_vol")
+                    break
 
         try:
             insert_sweep_alert(payload, gex_info)

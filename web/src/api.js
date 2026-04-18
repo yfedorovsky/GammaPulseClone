@@ -37,6 +37,11 @@ export const api = {
   earnings: (weekOffset = 0) => json('GET', `/api/earnings?week_offset=${weekOffset}`),
   earningsDates: (ticker, days = 90) => json('GET', `/api/earnings/dates/${encodeURIComponent(ticker)}?days=${days}`),
   alerts: (since = 0) => json('GET', `/api/alerts?since=${since}&limit=50`),
+  sweeps: (since = 0, limit = 200, ticker = '', minNotional = 0) =>
+    json(
+      'GET',
+      `/api/sweeps?since=${since}&limit=${limit}${ticker ? '&ticker=' + encodeURIComponent(ticker) : ''}${minNotional ? '&min_notional=' + minNotional : ''}`,
+    ),
   signals: (limit = 50, status = '', grade = '') =>
     json('GET', `/api/signals?limit=${limit}${status ? '&status=' + status : ''}${grade ? '&grade=' + grade : ''}`),
   signalStats: () => json('GET', '/api/signals/stats'),

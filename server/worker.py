@@ -378,12 +378,29 @@ async def _compute_one(
                     greeks_source = "thetadata"
                     greeks_ts = t_ts
 
-                    # Spot-consistency check: Theta's underlying vs Tradier spot
+                    # Spot-consistency check: Theta's underlying vs Tradier spot.
+                    # Threshold adapts to market hours:
+                    #  - During RTH (9:30-16:00 ET): 0.3% — catches 0DTE staleness
+                    #  - After hours / weekends: 2.0% — Theta's CTA/UTP feed is
+                    #    15-min delayed for NYSE-listed names and both feeds'
+                    #    "last print" times drift in sparse AH liquidity.
                     t_spot = get_theta_spot(ticker)
-                    if t_spot and spot and abs(t_spot - spot) / spot > 0.003:
-                        pct_diff = abs(t_spot - spot) / spot * 100
-                        print(f"[GEX_STALE_SPOT] {ticker}: Tradier=${spot:.2f} Theta=${t_spot:.2f} ({pct_diff:.1f}% divergence)")
-                        _spot_stale_flag[ticker] = round(pct_diff, 2)
+                    if t_spot and spot:
+                        import datetime as _dt
+                        now = _dt.datetime.now()
+                        # RTH = weekday & 9:30-16:00 ET (assumes server runs in ET)
+                        in_rth = (
+                            now.weekday() < 5
+                            and (now.hour, now.minute) >= (9, 30)
+                            and now.hour < 16
+                        )
+                        threshold = 0.003 if in_rth else 0.02
+                        pct_diff = abs(t_spot - spot) / spot
+                        if pct_diff > threshold:
+                            print(f"[GEX_STALE_SPOT] {ticker}: Tradier=${spot:.2f} Theta=${t_spot:.2f} ({pct_diff*100:.1f}% divergence)")
+                            _spot_stale_flag[ticker] = round(pct_diff * 100, 2)
+                        else:
+                            _spot_stale_flag.pop(ticker, None)
                     else:
                         _spot_stale_flag.pop(ticker, None)
 
