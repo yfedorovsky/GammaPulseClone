@@ -90,6 +90,7 @@ export default function BigFlowTab({ onClickTicker }) {
   const [sortBy, setSortBy] = useState('total_notional');
   const [sortDesc, setSortDesc] = useState(true);
   const [goldenOnly, setGoldenOnly] = useState(false);
+  const [hideExpired, setHideExpired] = useState(true);  // default on — show only tradeable contracts
 
   const load = useCallback(async () => {
     try {
@@ -182,6 +183,14 @@ export default function BigFlowTab({ onClickTicker }) {
       rows = rows.filter((r) => r.is_golden);
     }
 
+    // Hide-expired: exclude contracts whose expiration is before today.
+    // Default ON because expired contracts aren't actionable — they're
+    // just backfill artifacts useful for historical validation.
+    if (hideExpired) {
+      const todayISO = new Date().toISOString().slice(0, 10);
+      rows = rows.filter((r) => (r.expiration || '') >= todayISO);
+    }
+
     const q = tickerQuery.trim().toUpperCase();
     if (q) {
       rows = rows.filter((r) => (r.ticker || '').toUpperCase().includes(q));
@@ -202,7 +211,7 @@ export default function BigFlowTab({ onClickTicker }) {
     });
 
     return rows;
-  }, [flow, tickerQuery, typeFilter, sortBy, sortDesc, goldenOnly]);
+  }, [flow, tickerQuery, typeFilter, sortBy, sortDesc, goldenOnly, hideExpired]);
 
   const stats = useMemo(() => {
     const tickers = new Set();
@@ -318,10 +327,10 @@ export default function BigFlowTab({ onClickTicker }) {
           ))}
         </div>
 
-        {/* GOLDEN FLOW filter — SPY 647P pattern (≥$500K, ≥70% bought, V/OI≥3x, ≤2.5% OTM, ≤2DTE) */}
+        {/* GOLDEN FLOW filter — SPY 647P pattern (≥$500K, ≥65% directional, V/OI≥3x, ≤2.5% OTM, ≤2DTE) */}
         <button
           onClick={() => setGoldenOnly(!goldenOnly)}
-          title="Show only trades matching the composite insider-flow pattern: ≥$500K, ≥70% bought at ask, V/OI ≥3x, ≤2.5% OTM, ≤2 DTE"
+          title="Show only trades matching the composite insider-flow pattern: ≥$500K, ≥65% bought-or-sold of directional flow, V/OI ≥3x, ≤2.5% OTM, ≤2 DTE"
           style={{
             background: goldenOnly ? '#f4c43030' : 'transparent',
             color: goldenOnly ? '#f4c430' : 'var(--text-3)',
@@ -332,6 +341,24 @@ export default function BigFlowTab({ onClickTicker }) {
           }}
         >
           ⚡ GOLDEN{goldenOnly ? ' ✓' : ''}
+        </button>
+
+        {/* Hide-expired toggle — default on; only show tradeable contracts */}
+        <button
+          onClick={() => setHideExpired(!hideExpired)}
+          title={hideExpired
+            ? "Currently hiding contracts whose expiration is in the past. Click to include historical backfill matches."
+            : "Currently showing ALL rows including expired contracts. Click to filter to tradeable-only."}
+          style={{
+            background: hideExpired ? 'var(--bg-2)' : 'transparent',
+            color: hideExpired ? 'var(--text-1)' : 'var(--text-3)',
+            border: '1px solid var(--border-mid)',
+            padding: '5px 10px', fontSize: 10, fontFamily: 'var(--mono)',
+            cursor: 'pointer', borderRadius: 3,
+            fontWeight: hideExpired ? 700 : 500,
+          }}
+        >
+          {hideExpired ? 'Tradeable only ✓' : 'Include expired'}
         </button>
       </div>
 
