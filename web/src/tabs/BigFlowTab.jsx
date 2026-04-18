@@ -103,13 +103,17 @@ export default function BigFlowTab({ onClickTicker }) {
         d.setDate(d.getDate() - timeframe.days);
         sinceDate = d.toISOString().slice(0, 10);
       }
+      // Limit 5000: top-notional institutional flows (SPXW monsters) can be
+      // $100M+ and crowd out smaller-but-still-material insider-pattern trades
+      // in the $500K-5M range. 5000 gives headroom to surface them all within
+      // the current timeframe window. Server is fast (SQLite indexed).
       const resp = await api.flowDaily({
         sinceDate,
         ticker: '',
         minNotional,
         minOI: parseInt(minOI, 10) || 0,
         side: sideFilter,
-        limit: 1000,
+        limit: 10000,
       });
       setFlow(resp.flow || []);
       setError(null);
