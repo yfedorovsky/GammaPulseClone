@@ -97,10 +97,19 @@ export default function BigFlowTab({ onClickTicker }) {
     try {
       let sinceDate = '';
       if (timeframe.days === 0) {
+        // "Today" — start at midnight local today
         sinceDate = new Date().toISOString().slice(0, 10);
       } else if (typeof timeframe.days === 'number') {
+        // N trading days back — walk backwards skipping weekends. So "5d"
+        // always means 5 market sessions, regardless of whether today is
+        // Wed or Sat. (Holidays still eat into the count; minor.)
         const d = new Date();
-        d.setDate(d.getDate() - timeframe.days);
+        let remaining = timeframe.days;
+        while (remaining > 0) {
+          d.setDate(d.getDate() - 1);
+          const dow = d.getDay();  // 0=Sun, 6=Sat
+          if (dow >= 1 && dow <= 5) remaining--;
+        }
         sinceDate = d.toISOString().slice(0, 10);
       }
       // Limit 5000: top-notional institutional flows (SPXW monsters) can be
