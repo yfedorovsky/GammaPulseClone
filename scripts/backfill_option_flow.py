@@ -104,18 +104,28 @@ def resolve_date_range(args: argparse.Namespace) -> list[dt.date]:
     return [parsed]
 
 
-def expirations_after(d: dt.date, n: int) -> list[dt.date]:
+def expirations_after(d: dt.date, n: int, daily: bool = True) -> list[dt.date]:
+    """Next N expirations on or after date d.
+
+    daily=True (default): include all weekdays (SPY/QQQ/SPX have daily exps).
+    daily=False: M/W/F only (equity weeklies).
+    """
     out: list[dt.date] = []
+    allowed = range(5) if daily else (0, 2, 4)
     for i in range(0, 21):
         c = d + dt.timedelta(days=i)
-        if c.weekday() in (0, 2, 4):
+        if c.weekday() in allowed:
             out.append(c)
             if len(out) >= n:
                 break
     return out
 
 
-def infer_strike_step(spot: float) -> float:
+def infer_strike_step(spot: float, root: str = "") -> float:
+    """Strike step via root_config when root is known (SPY=$1, SPX=$5, etc.),
+    fall through to spot-heuristic otherwise."""
+    if root:
+        return get_strike_step(root, spot)
     if spot < 50: return 0.5
     if spot < 200: return 1.0
     if spot < 500: return 2.5
@@ -255,8 +265,34 @@ async def backfill_ticker_date(
     chain_lookup: dict[tuple[float, str, str], dict[str, Any]],
     spot: float,
 ) -> tuple[int, float]:
-    step = infer_strike_step(spot)
-    strikes = atm_strikes(spot, step, strikes_radius)
+    # For HISTORICAL dates, the spot passed in is today's (from chain snapshot).
+    # Look up the actual close on the trade date from snapshots.py. This gives
+    # the Golden Flow classifier the right OTM% reference for back-dated alerts.
+    today = dt.date.today()
+    historical_spot = spot
+    if date_obj < today:
+        try:
+            import sqlite3
+            from server.config import get_settings
+            s = get_settings()
+            _c = sqlite3.connect(s.snapshot_db, timeout=5)
+            row = _c.execute(
+                "SELECT spot FROM snapshots "
+                "WHERE ticker = ? AND date(ts, 'unixepoch') = ? "
+                "GROUP BY date(ts, 'unixepoch') HAVING ts = MAX(ts)",
+                (ticker, date_obj.isoformat()),
+            ).fetchone()
+            _c.close()
+            if row and row[0]:
+                historical_spot = float(row[0])
+                if verbose:
+                    print(f"[BIGFLOW] {ticker} {date_obj}: using historical close ${historical_spot:.2f} (vs current ${spot:.2f})")
+        except Exception as e:
+            if verbose:
+                print(f"[BIGFLOW] {ticker} {date_obj}: historical spot lookup failed ({e}), using current spot")
+
+    step = infer_strike_step(historical_spot, root=ticker)
+    strikes = atm_strikes(historical_spot, step, strikes_radius)
     exps = expirations_after(date_obj, expirations_n)
     if not exps:
         return 0, 0.0
@@ -279,7 +315,7 @@ async def backfill_ticker_date(
         meta = chain_lookup.get((res.strike, res.expiration, res.option_type)) or {}
         batch.append(res.to_db_tuple(
             oi=meta.get("oi"), iv=meta.get("iv"),
-            delta=meta.get("delta"), spot=spot,
+            delta=meta.get("delta"), spot=historical_spot,
         ))
         total_notional += res.total_notional
 

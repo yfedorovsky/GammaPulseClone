@@ -121,10 +121,13 @@ def _conn():
 
 GOLDEN_FLOW_RULES = {
     "min_notional": 500_000,
-    "min_bought_pct": 0.70,
+    "min_bought_pct": 0.65,     # calibrated vs UW screenshot (SPY 647P 3/23: our 65% vs UW's 76%)
     "min_vol_oi_ratio": 3.0,
     "max_otm_pct": 0.025,
     "max_dte": 2,
+    # Symmetric: for SELL-dominant (puts for upside fade, etc.), use min_sold_pct.
+    # Handled as separate threshold so bullish + bearish insider flows both catch.
+    "min_sold_pct": 0.65,
 }
 
 
@@ -142,11 +145,20 @@ def is_golden_flow(row: dict) -> tuple[bool, list[str]]:
 
     buy = row.get("buy_notional") or 0
     sell = row.get("sell_notional") or 0
-    neutral = row.get("neutral_notional") or 0
-    total = buy + sell + neutral
-    bought_pct = (buy / total) if total > 0 else 0
-    if bought_pct < GOLDEN_FLOW_RULES["min_bought_pct"]:
-        failed.append(f"bought_pct({bought_pct*100:.0f}%<{GOLDEN_FLOW_RULES['min_bought_pct']*100:.0f}%)")
+    # UW methodology: % of DIRECTIONAL flow (neutral/mid-market prints excluded).
+    # Neutral prints are mostly MM hedging + paired trades — not informational
+    # about direction — so they shouldn't dilute the conviction metric.
+    directional = buy + sell
+    bought_pct = (buy / directional) if directional > 0 else 0
+    sold_pct = (sell / directional) if directional > 0 else 0
+    # Symmetric conviction: bullish buying OR bearish selling (both possible
+    # for insider flow depending on whether they're loading puts or selling calls).
+    side_ok = (
+        bought_pct >= GOLDEN_FLOW_RULES["min_bought_pct"]
+        or sold_pct >= GOLDEN_FLOW_RULES["min_sold_pct"]
+    )
+    if not side_ok:
+        failed.append(f"side_conv(B{bought_pct*100:.0f}%/S{sold_pct*100:.0f}% both below {GOLDEN_FLOW_RULES['min_bought_pct']*100:.0f}%)")
 
     vol = row.get("total_volume") or 0
     oi = row.get("oi") or 0
