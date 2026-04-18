@@ -21,7 +21,7 @@ from sse_starlette.sse import EventSourceResponse
 from .cache import cache
 from .config import get_settings
 from .db import db
-from .flow_alerts import init_alert_db, get_alerts as get_flow_alerts, run_flow_scanner
+from .flow_alerts import init_alert_db, get_alerts as get_flow_alerts, run_flow_scanner, get_sweep_alerts
 from .discipline import init_discipline_db, get_ticker_stats, compute_kelly_size, get_circuit_breaker, log_trade
 from .signals import init_signals_db, init_ab_db, get_signals, get_signal_stats, run_signal_engine
 from .paper_trading import init_paper_db
@@ -48,6 +48,7 @@ _monitor_task: asyncio.Task | None = None
 _signal_task: asyncio.Task | None = None
 _scalp_task: asyncio.Task | None = None
 _discord_task: asyncio.Task | None = None
+_sweep_task: asyncio.Task | None = None
 
 
 @asynccontextmanager
@@ -75,7 +76,7 @@ async def lifespan(app: FastAPI):
         print(f"[STARTUP] Active basket: {basket.get('sectors')} ({len(basket.get('tickers', set()))} tickers)")
     except Exception as e:
         print(f"[STARTUP] Basket computation failed: {e} — using static fallback")
-    global _worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task
+    global _worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task
     _worker_task = asyncio.create_task(run_worker(_stop))
     _flow_task = asyncio.create_task(run_flow_scanner(_stop))
     _monitor_task = asyncio.create_task(run_position_monitor(_stop))
@@ -87,13 +88,19 @@ async def lifespan(app: FastAPI):
     if s.discord_enabled and s.discord_token:
         from .discord_listener import run_discord_listener
         _discord_task = asyncio.create_task(run_discord_listener(_stop))
+    # ThetaData ISO sweep detector (consumes OPRA condition=95 prints via WebSocket)
+    _sweep_task = None
+    if s.thetadata_sweep_enabled:
+        from .sweep_detector import run_sweep_detector
+        _sweep_task = asyncio.create_task(run_sweep_detector(_stop))
+        print("[STARTUP] Theta sweep detector enabled")
     try:
         yield
     finally:
         _stop.set()
         await streamer.stop()
         await db.stop()  # Drain write queue before shutdown
-        all_tasks = [_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task]
+        all_tasks = [_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task]
         for task in all_tasks:
             if task:
                 try:
@@ -418,6 +425,22 @@ async def alerts(since: int = 0, limit: int = 100, ticker: str = ""):
     """Get timestamped flow alerts. Use ?since=<epoch> for polling."""
     rows = get_flow_alerts(since_ts=since, limit=limit, ticker=ticker or None)
     return {"alerts": rows, "count": len(rows)}
+
+
+@app.get("/api/sweeps")
+async def sweeps(
+    since: int = 0, limit: int = 100, ticker: str = "", min_notional: float = 0
+):
+    """ISO-tagged sweep alerts only (is_sweep=1 from ThetaData stream).
+
+    Sweeps are OPRA condition code 95/126/128 — orders routed across multiple
+    exchanges simultaneously, indicating urgency + conviction. Highest-hit-rate
+    flow category per UW-style analysis.
+    """
+    rows = get_sweep_alerts(
+        since_ts=since, limit=limit, ticker=ticker or None, min_notional=min_notional
+    )
+    return {"sweeps": rows, "count": len(rows)}
 
 
 @app.get("/api/trades")

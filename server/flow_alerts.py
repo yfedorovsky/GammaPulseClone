@@ -49,11 +49,39 @@ CREATE TABLE IF NOT EXISTS flow_alerts (
   floor_level REAL,
   ceiling_level REAL,
   signal TEXT,
-  regime TEXT
+  regime TEXT,
+  -- ThetaData sweep columns (added Apr 17, 2026).
+  -- is_sweep = TRUE when OPRA tags trade(s) with condition 95/126/128.
+  -- Populated by server/sweep_detector.py from the WebSocket stream.
+  -- Existing flow alerts (vol/OI-based) leave these NULL.
+  is_sweep INTEGER DEFAULT 0,
+  sweep_side TEXT,              -- 'BUY' (above ask) | 'SELL' (below bid) | 'NEUTRAL'
+  sweep_notional REAL,          -- total $ across all ISO prints in the rollup window
+  sweep_contracts INTEGER,      -- total size summed across prints
+  sweep_venues INTEGER,         -- count of distinct exchange codes (real sweep = >1)
+  sweep_prints INTEGER,         -- number of ISO prints in the cluster
+  sweep_window_s INTEGER        -- rollup window (seconds) that produced this alert
 );
 CREATE INDEX IF NOT EXISTS idx_flow_ts ON flow_alerts(ts);
 CREATE INDEX IF NOT EXISTS idx_flow_ticker ON flow_alerts(ticker, ts);
+-- NOTE: idx_flow_sweep is created in _SWEEP_MIGRATIONS after ALTER TABLE
+-- (can't live in the base schema since existing DBs lack the is_sweep column
+--  at the time this CREATE TABLE IF NOT EXISTS is a no-op).
 """
+
+
+# Migration for existing DBs (run on startup, idempotent).
+# sqlite ALTER TABLE ADD COLUMN errors if column already exists — we ignore.
+_SWEEP_MIGRATIONS = [
+    "ALTER TABLE flow_alerts ADD COLUMN is_sweep INTEGER DEFAULT 0",
+    "ALTER TABLE flow_alerts ADD COLUMN sweep_side TEXT",
+    "ALTER TABLE flow_alerts ADD COLUMN sweep_notional REAL",
+    "ALTER TABLE flow_alerts ADD COLUMN sweep_contracts INTEGER",
+    "ALTER TABLE flow_alerts ADD COLUMN sweep_venues INTEGER",
+    "ALTER TABLE flow_alerts ADD COLUMN sweep_prints INTEGER",
+    "ALTER TABLE flow_alerts ADD COLUMN sweep_window_s INTEGER",
+    "CREATE INDEX IF NOT EXISTS idx_flow_sweep ON flow_alerts(is_sweep, ts) WHERE is_sweep = 1",
+]
 
 _seen: set[str] = set()
 
@@ -73,6 +101,90 @@ def _conn():
 def init_alert_db() -> None:
     with _conn() as c:
         c.executescript(ALERT_SCHEMA)
+        # Run idempotent migrations for existing DBs that predate the sweep columns
+        for stmt in _SWEEP_MIGRATIONS:
+            try:
+                c.execute(stmt)
+            except sqlite3.OperationalError:
+                # Column already exists or index already exists — expected
+                pass
+
+
+def insert_sweep_alert(rollup: dict[str, Any], gex_info: dict[str, Any] | None = None) -> None:
+    """Insert an ISO-sweep-flagged flow alert.
+
+    rollup contains the aggregated sweep data produced by sweep_detector.py
+    across one rollup window for one contract:
+      ticker, strike, expiration, option_type,
+      sweep_notional, sweep_contracts, sweep_venues, sweep_prints,
+      sweep_side ('BUY'/'SELL'/'NEUTRAL'), sweep_window_s,
+      spot, bid, ask, last, iv, delta, oi
+    """
+    conviction = "SWEEP"  # Highest tier — OPRA-tagged, not inferred
+    with _conn() as c:
+        c.execute(
+            """INSERT INTO flow_alerts
+            (ts, ticker, strike, expiration, option_type, volume, oi, vol_oi,
+             last_price, bid, ask, side, sentiment, iv, delta, notional, spot,
+             conviction, status, king, floor_level, ceiling_level, signal, regime,
+             is_sweep, sweep_side, sweep_notional, sweep_contracts, sweep_venues,
+             sweep_prints, sweep_window_s)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                int(time.time()),
+                rollup["ticker"],
+                rollup["strike"],
+                rollup["expiration"],
+                rollup["option_type"],
+                rollup.get("sweep_contracts"),  # use sweep contract count for volume field
+                rollup.get("oi"),
+                None,  # vol_oi — not meaningful for sweep rollup
+                rollup.get("last"),
+                rollup.get("bid"),
+                rollup.get("ask"),
+                rollup.get("sweep_side"),  # 'BUY' / 'SELL' / 'NEUTRAL'
+                rollup.get("sweep_side"),  # sentiment mirrors side for sweeps
+                rollup.get("iv"),
+                rollup.get("delta"),
+                rollup.get("sweep_notional"),
+                rollup.get("spot"),
+                conviction,
+                "OPEN",
+                gex_info.get("king") if gex_info else None,
+                gex_info.get("floor") if gex_info else None,
+                gex_info.get("ceiling") if gex_info else None,
+                gex_info.get("signal") if gex_info else None,
+                gex_info.get("regime") if gex_info else None,
+                1,  # is_sweep
+                rollup.get("sweep_side"),
+                rollup.get("sweep_notional"),
+                rollup.get("sweep_contracts"),
+                rollup.get("sweep_venues"),
+                rollup.get("sweep_prints"),
+                rollup.get("sweep_window_s"),
+            ),
+        )
+
+
+def get_sweep_alerts(
+    since_ts: int = 0, limit: int = 100, ticker: str | None = None,
+    min_notional: float = 0,
+) -> list[dict[str, Any]]:
+    """Return ISO-sweep-flagged alerts only (is_sweep=1)."""
+    with _conn() as c:
+        if ticker:
+            rows = c.execute(
+                "SELECT * FROM flow_alerts WHERE is_sweep = 1 AND ts > ? AND ticker = ? "
+                "AND COALESCE(sweep_notional, 0) >= ? ORDER BY ts DESC LIMIT ?",
+                (since_ts, ticker.upper(), min_notional, limit),
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT * FROM flow_alerts WHERE is_sweep = 1 AND ts > ? "
+                "AND COALESCE(sweep_notional, 0) >= ? ORDER BY ts DESC LIMIT ?",
+                (since_ts, min_notional, limit),
+            ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def _compute_conviction(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) -> str:
