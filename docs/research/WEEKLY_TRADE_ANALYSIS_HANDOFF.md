@@ -186,26 +186,91 @@ Realistic estimate if you export CSVs before we start:
 Copy this into the new Claude Code session:
 
 ```
-Resuming GammaPulse for weekly trade analysis.
+Resuming GammaPulse. Context: broker CSVs already imported, signal
+attribution complete. Read:
+  docs/research/WEEKLY_TRADE_ANALYSIS_HANDOFF.md (this doc)
+  docs/research/week_trade_attribution.md (the scorecard)
+  docs/research/week_signal_outcomes.md (raw signal win rates)
+  memory files
 
-Read memory files + docs/research/WEEKLY_TRADE_ANALYSIS_HANDOFF.md
-for full context.
-
-I've exported:
-- data/etrade_week_20260418.csv
-- data/fidelity_week_20260418.csv
-
-Build:
-1. scripts/import_broker_csv.py — unified import
-2. scripts/match_signals_to_trades.py — signal attribution
-3. scripts/weekly_analysis.py — cohort report
-
-Then produce docs/research/week_20260418_analysis.md with honest
-verdict on "dozens of alerts, few winners" hypothesis.
+Priorities for this session:
+  1. Fix signal time gate: change mins > 975 to mins > 960 in
+     server/signals.py (lines 840, 1453) — stops post-4PM stale fires
+  2. Extend Mir Discord parser to capture chat-relay signals
+     (currently only 2/91 trades matched to Mir because many came
+     from chat, not Discord signal messages)
+  3. Multi-week backtest — import more weekly CSVs, stability check
+     on the 70-100% WR numbers
+  4. Propose filter rules informed by per-ticker/per-time findings
 ```
 
-That single prompt restores full context, identifies the files, and scopes
-the work.
+## What Got Done In The Last Session (Apr 17)
+
+All committed + pushed to origin/main. Key deliverables:
+
+- **scripts/import_broker_csv.py** — parses E*Trade + Fidelity CSVs
+  into `broker_trades` + `broker_roundtrips` SQLite tables. FIFO-pairs
+  opens with closes. Handled both formats (E*Trade regex on description
+  field, Fidelity OSI-style symbol parsing).
+
+- **scripts/backtest_signals_week.py** — walk-forward 5-min bar
+  resolution of every SOE signal's target/stop. Outputs raw signal
+  quality independent of execution.
+
+- **scripts/attribute_trades_to_signals.py** — cross-references
+  broker_roundtrips with signal sources (SOE_A/SOE_B+/Mir_Discord/Runner).
+  Same-day ticker+strike+type+expiry matching with STRONG/MEDIUM/WEAK
+  confidence. Classifies outcomes into BIG_WIN/WIN/SCRATCH/LOSS/BIG_LOSS.
+
+### Week's actual results (4/13-4/17, 91 roundtrips)
+
+| Source | Trades | Net P&L | Win Rate |
+|---|---:|---:|---:|
+| SOE_A | 8 | +$1,279 | **100%** |
+| SOE_B+ | 53 | **+$6,328** | **70%** |
+| MANUAL | 28 | +$3,994 | 71% |
+| MIR_DISCORD | 2 | −$31 | 50% |
+| **Total** | **91** | **+$11,569** | **72.5%** |
+
+Hypothesis "dozens of alerts, few winners" — **inverted**. User took
+9% of 1,014 signals, had 72.5% WR. Filter skill is the alpha.
+
+### Open questions for next session
+
+1. **4PM gate fix** (2 lines, 60 seconds work):
+   - `server/signals.py` lines 840 + 1453: change `975` → `960`
+   - Eliminates post-close stale-cache signals (20 fired today after 4PM)
+   - User explicitly flagged this issue
+
+2. **Mir Discord coverage gap**: user's biggest Mir-sourced trades
+   (AMAT 395C, AAOI 200C, MSFT 430C trim, NFLX bullish post-ER) came
+   from CHAT messages. Our `mir_signal_cache` only captured 18 signal
+   messages. Need to extend the Discord listener to capture chat
+   relays, or accept this limitation and flag MANUAL trades as
+   "likely Mir chat" via proximity to Mir timestamps.
+
+3. **AXTI LEAPS mystery**: 3 wins totaling ~$2,300 at MANUAL
+   attribution. AXTI not in our scan universe. Pure user pattern
+   recognition on photonics theme. Consider adding LEAPS detection
+   to runner_tracker or swing_scanner if this is a repeatable alpha.
+
+4. **AMAT discipline violation**: -$814 scaled-in loss. User paid
+   $3.20/$2.70/$2.60/$2.50 despite Mir's "max $2" rule. Consider
+   adding `max_pay_override` rejection to `price_watch.py` that
+   blocks auto-paper-trades exceeding user-set ceiling per watch.
+
+5. **Multi-week stability**: one week is noisy. Import 2-3 more
+   weekly CSVs to validate the 70-100% WR numbers aren't a
+   one-week fluke.
+
+### What still works (don't touch)
+
+- SOE engine + grading — A grade is perfect, B+ is strong
+- Runner tracker (TSLA/AVGO actively tracked across the week)
+- Price watches (AMAT/AAOI/MSFT/NFLX — all fired correctly)
+- OI delta tracking (Day 2 snapshot fires today at 4:15 PM)
+- Proto_runner observation mode (no detections yet, but infrastructure solid)
+- Heatmap UI (matrix king, -king, callouts, % change badges)
 
 ## Important Honest Caveats For The Analysis
 
