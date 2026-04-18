@@ -110,7 +110,12 @@ def get_theta_spot(ticker: str) -> float | None:
 
 @dataclass
 class ThetaTrade:
-    """A single option trade print from the WebSocket stream."""
+    """A single option trade print from the WebSocket stream.
+
+    bid/ask are populated by ThetaStream from the most-recent QUOTE message
+    on the same contract — Theta's TRADE stream auto-prepends the pre-trade
+    NBBO, so classify_side() works from the stream directly.
+    """
     ticker: str           # underlying root (e.g. "SPY")
     expiration: str       # "YYYY-MM-DD"
     strike: float         # dollars (not 10ths-of-a-cent)
@@ -122,6 +127,11 @@ class ThetaTrade:
     exchange: int
     condition: int
     ext_conditions: tuple[int, int, int, int] = (255, 255, 255, 255)
+    # NBBO at trade time — populated by ThetaStream from the preceding QUOTE
+    # message (or a cached last-seen quote for the same contract). 0.0 means
+    # no quote observed yet — classify_side() returns NEUTRAL in that case.
+    bid: float = 0.0
+    ask: float = 0.0
 
     @property
     def is_sweep(self) -> bool:
@@ -138,6 +148,11 @@ class ThetaTrade:
     @property
     def notional(self) -> float:
         return self.size * self.price * 100.0
+
+    @property
+    def side(self) -> str:
+        """BUY/SELL/NEUTRAL from the NBBO attached at trade time."""
+        return classify_side(self.price, self.bid, self.ask)
 
 
 @dataclass
@@ -520,6 +535,11 @@ class ThetaStream:
         self._connected = asyncio.Event()
         self._reconnect_delay = 1.0  # exponential backoff starts here
         self.on_trade: Callable[[ThetaTrade], None] | None = None
+        # NBBO cache: (root, exp_int, strike_1000ths, right) -> (bid, ask, ts)
+        # Updated on every QUOTE message, read when attaching NBBO to trades.
+        # Theta's TRADE stream auto-prepends the pre-trade quote, so this
+        # cache is always warm by the time a matched trade arrives.
+        self._nbbo_cache: dict[tuple[str, int, int, str], tuple[float, float, float]] = {}
 
     # ── Public API ─────────────────────────────────────────────────
 
@@ -629,9 +649,15 @@ class ThetaStream:
 
             if mtype == "STATUS":
                 self._last_heartbeat = time.time()
+            elif mtype == "QUOTE":
+                self._update_nbbo(msg)
             elif mtype == "TRADE":
                 evt = self._parse_trade(msg)
                 if evt:
+                    # Attach NBBO from the last-seen quote on this contract.
+                    # Theta auto-sends the pre-trade quote before the TRADE
+                    # message, so the cache is almost always warm.
+                    self._attach_nbbo(evt, msg)
                     # Invoke direct callback (for sync-ish consumers like logging)
                     if self.on_trade:
                         try:
@@ -652,6 +678,66 @@ class ThetaStream:
                 resp = header.get("response")
                 if resp and resp != "SUBSCRIBED":
                     print(f"[THETA_STREAM] req response: {resp} id={header.get('req_id')}")
+
+    def _update_nbbo(self, msg: dict) -> None:
+        """Cache the latest NBBO for a contract from an incoming QUOTE message."""
+        try:
+            c = msg.get("contract") or {}
+            q = msg.get("quote") or {}
+            if not c or not q:
+                return
+            key = (
+                c.get("root", ""),
+                int(c.get("expiration") or 0),
+                int(c.get("strike") or 0),
+                (c.get("right") or "").upper(),
+            )
+            if not key[0]:
+                return
+            bid = float(q.get("bid") or 0)
+            ask = float(q.get("ask") or 0)
+            if bid > 0 and ask > 0 and ask >= bid:
+                self._nbbo_cache[key] = (bid, ask, time.time())
+        except (ValueError, TypeError, KeyError):
+            pass
+
+    def _attach_nbbo(self, evt: ThetaTrade, msg: dict) -> None:
+        """Attach the latest-known NBBO to a trade event.
+
+        Three paths, in priority order:
+          1. The TRADE message itself has a quote object (some Theta variants)
+          2. The cached NBBO from the most recent QUOTE for this contract
+          3. Leave bid=ask=0 (classify_side will return NEUTRAL)
+        """
+        # Path 1 — inline quote on the trade message
+        inline_q = msg.get("quote") or {}
+        if inline_q:
+            try:
+                b = float(inline_q.get("bid") or 0)
+                a = float(inline_q.get("ask") or 0)
+                if b > 0 and a > 0 and a >= b:
+                    evt.bid = b
+                    evt.ask = a
+                    return
+            except (ValueError, TypeError):
+                pass
+
+        # Path 2 — NBBO cache lookup
+        c = msg.get("contract") or {}
+        try:
+            key = (
+                c.get("root", ""),
+                int(c.get("expiration") or 0),
+                int(c.get("strike") or 0),
+                (c.get("right") or "").upper(),
+            )
+            cached = self._nbbo_cache.get(key)
+            if cached:
+                b, a, _ts = cached
+                evt.bid = b
+                evt.ask = a
+        except (ValueError, TypeError, KeyError):
+            pass
 
     def _parse_trade(self, msg: dict) -> ThetaTrade | None:
         """Convert raw Theta TRADE message to ThetaTrade dataclass.

@@ -41,6 +41,10 @@ from typing import Any
 from .cache import cache
 from .config import get_settings
 from .flow_alerts import insert_sweep_alert
+from .live_flow_aggregator import (
+    LiveFlowAggregator,
+    run_golden_transition_loop,
+)
 from .thetadata import (
     EXCLUDE_CONDITIONS,
     NON_ISO_AUCTION_CONDITIONS,
@@ -162,26 +166,35 @@ async def _build_subscription_plan(
 ) -> list[SubscribeSpec]:
     """Plan which contracts to subscribe to on startup.
 
-    For MVP: for each watchlist root, build ATM ±10 strikes across the next 3
-    expirations, both calls and puts. Uses cached spot from the worker cache
-    so we don't spam extra API calls.
+    Strike grid per root uses server.root_config.get_strike_step() so SPY
+    gets $1 steps (every strike) and SPX gets $5 steps (index-appropriate).
+    Radius widened to 40 strikes each side so the 2.5% OTM Golden-Flow rule
+    has headroom — on SPY at $660, radius 40 × $1 = $620-$700 (±6%), which
+    comfortably encloses the whole 2.5% zone where insider-pattern trades
+    cluster.
+
+    Budget check (all MVP roots at radius 40):
+      19 tickers × ~80 strikes × 2 rights × 3 exps ≈ 9,120 subs
+    Under the Standard-tier 15K-trade-stream cap with headroom.
     """
+    from .root_config import get_strike_step
+
     snapshot = await cache.snapshot()
     specs: list[SubscribeSpec] = []
     expirations = _next_expirations(n=3)
+
+    RADIUS = 40  # strikes each side of ATM
 
     for root in MVP_WATCHLIST_ROOTS:
         state = snapshot.get(root) or {}
         spot = state.get("actual_spot") or state.get("_spot") or 0
         if not spot:
-            # Worker hasn't populated this ticker yet — skip, will retry next restart.
             continue
 
-        # Choose strike step by spot price — SPY at $700 has $1 strikes, NVDA
-        # $150 has $1 or $2.5, AAPL $200 has $2.5. Conservative: step = max(1, round(spot*0.005))
-        step = max(1.0, round(spot * 0.005))
+        # Per-root strike step (SPY=$1, SPX=$5, NDX=$25, etc.) via root_config
+        step = get_strike_step(root, spot)
         atm = round(spot / step) * step
-        strikes = [atm + i * step for i in range(-10, 11)]
+        strikes = [atm + i * step for i in range(-RADIUS, RADIUS + 1)]
 
         for exp in expirations:
             for k in strikes:
@@ -200,10 +213,19 @@ async def _build_subscription_plan(
 
 
 class SweepDetector:
-    """Owns the rollup state and the consumer loop."""
+    """Owns the rollup state and the consumer loop.
 
-    def __init__(self, stream: ThetaStream | None = None):
+    Also forwards every non-filtered trade to an attached LiveFlowAggregator
+    so broader Golden Flow detection runs in parallel with narrow ISO sweep
+    rollups. Both detectors share the same stream subscription budget.
+    """
+
+    def __init__(
+        self, stream: ThetaStream | None = None,
+        flow_aggregator: LiveFlowAggregator | None = None,
+    ):
         self.stream = stream or get_stream()
+        self.flow_aggregator = flow_aggregator  # optional — None = sweep-only mode
         # Rollup bucket: key = (ticker, strike, exp_str, otype), value = SweepRollup
         self._buckets: dict[tuple[str, float, str, str], SweepRollup] = {}
         # Stats counters
@@ -348,12 +370,25 @@ class SweepDetector:
                     break
                 self.trades_seen += 1
 
-                # Drop cancellations & non-ISO auctions at ingest
+                # Drop cancellations & non-ISO auctions at ingest — these don't
+                # belong in EITHER detector (canceled = voided; non-ISO auctions
+                # are crossed trades with no directional signal).
                 if trade.is_excluded:
                     continue
                 if trade.condition in NON_ISO_AUCTION_CONDITIONS:
                     continue
-                # Only process ISO sweeps (95, 126, 128)
+
+                # FORK 1: every qualifying trade feeds the live flow aggregator
+                # (broader Golden Flow detection — catches non-ISO at-ask prints
+                # that UW's "Bought" total also includes).
+                if self.flow_aggregator is not None:
+                    try:
+                        self.flow_aggregator.add_trade(trade)
+                    except Exception as e:
+                        print(f"[SWEEP] flow_aggregator error: {e}")
+
+                # FORK 2: ISO-only sweep rollup (existing narrow path, produces
+                # flow_alerts.SWEEP conviction rows with 30s time-bucketing).
                 if not trade.is_sweep:
                     continue
 
@@ -382,14 +417,21 @@ class SweepDetector:
 
 
 async def run_sweep_detector(stop_event: asyncio.Event) -> None:
-    """Top-level background task: start stream, subscribe, consume."""
+    """Top-level background task: start stream, subscribe, consume.
+
+    Launches TWO detectors that share one stream subscription:
+      - SweepDetector: narrow ISO-only rollups -> flow_alerts.SWEEP
+      - LiveFlowAggregator: broader all-flow aggregation + Golden Flow
+        transitions (fires Telegram + upserts to option_flow_daily)
+    """
     settings = get_settings()
     if not settings.thetadata_sweep_enabled:
         print("[SWEEP] disabled via thetadata_sweep_enabled=False")
         return
 
     stream = get_stream()
-    detector = SweepDetector(stream=stream)
+    flow_aggregator = LiveFlowAggregator()
+    detector = SweepDetector(stream=stream, flow_aggregator=flow_aggregator)
 
     # Start the WebSocket connection loop in its own task
     await stream.start()
@@ -411,12 +453,24 @@ async def run_sweep_detector(stop_event: asyncio.Event) -> None:
         # Trickle the sub requests so we don't overwhelm the Terminal
         await asyncio.sleep(0.005)
 
+    # Launch the Golden Flow transition loop as a sibling task — runs in
+    # parallel with the trade consumer, re-evaluates aggregates every 30s.
+    golden_task = asyncio.create_task(
+        run_golden_transition_loop(flow_aggregator, stop_event)
+    )
+
     # Consume loop — runs until stop_event
     try:
         await detector.consume(stop_event)
     finally:
+        golden_task.cancel()
+        try:
+            await asyncio.wait_for(golden_task, timeout=10)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
         await stream.stop()
         print(
-            f"[SWEEP] shutdown — trades_seen={detector.trades_seen} "
-            f"sweeps_seen={detector.sweeps_seen} alerts_fired={detector.alerts_fired}"
+            f"[SWEEP] shutdown — sweep: seen={detector.trades_seen} "
+            f"iso={detector.sweeps_seen} rollups={detector.alerts_fired} | "
+            f"flow: {flow_aggregator.stats()}"
         )
