@@ -48,6 +48,7 @@ const TIMEFRAMES = [
 ];
 
 const SORT_COLUMNS = [
+  { key: 'grade_score',    label: 'Grade' },
   { key: 'date',           label: 'Date' },
   { key: 'ticker',         label: 'Ticker' },
   { key: 'total_volume',   label: 'Volume' },
@@ -57,6 +58,94 @@ const SORT_COLUMNS = [
   { key: 'bought_pct',     label: 'Bought%' },
   { key: 'largest_print_size', label: 'Biggest' },
 ];
+
+
+// Client-side grader mirroring server/option_flow_daily.score_golden_flow.
+// Returns { grade, score, max_score, factors: {...} }.
+function _tierScore(value, ladder) {
+  for (const [thresh, pts] of ladder) {
+    if (value >= thresh) return pts;
+  }
+  return 0;
+}
+function _gradeFromScore(score, maxScore) {
+  if (maxScore <= 0) return '—';
+  const pct = score / maxScore;
+  if (pct >= 0.80) return 'A+';
+  if (pct >= 0.60) return 'A';
+  if (pct >= 0.40) return 'B';
+  if (pct >= 0.25) return 'C';
+  return 'D';
+}
+
+function scoreGolden(row, clusterSize) {
+  const notional = row.total_notional || 0;
+  const buy = row.buy_notional || 0;
+  const sell = row.sell_notional || 0;
+  const dir_ = buy + sell;
+  const bp = dir_ > 0 ? buy / dir_ : 0;
+  const sp = dir_ > 0 ? sell / dir_ : 0;
+  const sidePct = Math.max(bp, sp);
+  const vol = row.total_volume || 0;
+  const oi = row.oi || 0;
+  const volOi = oi > 0 ? vol / oi : 999;
+  const sweepShare = notional > 0 ? (row.sweep_notional || 0) / notional : 0;
+
+  const notionalPts = _tierScore(notional, [[25e6,4],[10e6,3],[5e6,2],[1e6,1],[500e3,0]]);
+  const convictionPts = _tierScore(sidePct, [[0.95,4],[0.85,3],[0.75,2],[0.70,1],[0.65,0]]);
+  const voiPts = _tierScore(volOi, [[20,4],[10,3],[5,2],[3,1],[0,0]]);
+  const sweepPts = _tierScore(sweepShare, [[0.30,4],[0.20,3],[0.10,2],[0.05,1],[0,0]]);
+  const clusterPts = _tierScore(clusterSize, [[5,4],[3,3],[2,2],[1.5,1],[1,0]]);
+  const score = notionalPts + convictionPts + voiPts + sweepPts + clusterPts;
+  return {
+    grade: _gradeFromScore(score, 20), score, maxScore: 20,
+    factors: {
+      notional: notionalPts, conviction: convictionPts, vol_oi: voiPts,
+      sweep: sweepPts, cluster: clusterPts,
+    },
+    side: bp >= sp ? 'BUY' : 'SELL',
+    sidePct, volOi, sweepShare,
+  };
+}
+
+function scoreTail(row, clusterSize) {
+  const notional = row.total_notional || 0;
+  const buy = row.buy_notional || 0;
+  const sell = row.sell_notional || 0;
+  const dir_ = buy + sell;
+  const bp = dir_ > 0 ? buy / dir_ : 0;
+  const sp = dir_ > 0 ? sell / dir_ : 0;
+  const sidePct = Math.max(bp, sp);
+  const vol = row.total_volume || 0;
+  const avgFill = vol > 0 ? notional / (vol * 100) : 0;
+  const strike = row.strike || 0;
+  const spot = row.spot || 0;
+  const otmPct = (strike > 0 && spot > 0) ? Math.abs(strike - spot) / spot : 0;
+
+  const notionalPts = _tierScore(notional, [[10e6,4],[5e6,3],[2e6,2],[1e6,1],[500e3,0]]);
+  const convictionPts = _tierScore(sidePct, [[0.95,4],[0.85,3],[0.75,2],[0.70,1],[0.65,0]]);
+  const cheapnessPts = avgFill > 0 ? _tierScore(-avgFill, [[-0.30,4],[-0.60,3],[-1.00,2],[-1.50,1],[-2.00,0]]) : 0;
+  const otmPts = _tierScore(otmPct, [[0.15,4],[0.10,3],[0.07,2],[0.05,1],[0.04,0]]);
+  const clusterPts = _tierScore(clusterSize, [[5,4],[3,3],[2,2],[1.5,1],[1,0]]);
+  const score = notionalPts + convictionPts + cheapnessPts + otmPts + clusterPts;
+  return {
+    grade: _gradeFromScore(score, 20), score, maxScore: 20,
+    factors: {
+      notional: notionalPts, conviction: convictionPts, cheapness: cheapnessPts,
+      otm: otmPts, cluster: clusterPts,
+    },
+    side: bp >= sp ? 'BUY' : 'SELL',
+    sidePct, avgFill, otmPct,
+  };
+}
+
+const GRADE_COLORS = {
+  'A+': '#f4c430',
+  'A':  '#10dc9a',
+  'B':  '#7cf0c3',
+  'C':  'var(--text-2)',
+  'D':  'var(--text-3)',
+};
 
 
 function fmtNotional(n) {
@@ -144,6 +233,17 @@ export default function BigFlowTab({ onClickTicker }) {
   const filtered = useMemo(() => {
     let rows = [...flow];
 
+    // First pass: count matches per (date, ticker) for cluster sizing.
+    // Cluster size = how many GOLDEN or TAIL matches exist on same underlying
+    // in the same trading session. Used by the grader as a confluence factor.
+    const clusterCounts = new Map();
+    for (const r of rows) {
+      // Cheap pre-check: min notional must be met before a row can be golden/tail
+      if ((r.total_notional || 0) < 500_000) continue;
+      const key = `${r.date}|${r.ticker}`;
+      clusterCounts.set(key, (clusterCounts.get(key) || 0) + 1);
+    }
+
     // Derive fields server doesn't return pre-computed — including GOLDEN FLOW tag.
     // Classifier mirrors server.option_flow_daily.is_golden_flow exactly:
     //   - bought/sold% computed from DIRECTIONAL notional only (excluding neutral)
@@ -204,6 +304,13 @@ export default function BigFlowTab({ onClickTicker }) {
         dte >= 3 && dte <= 45
       );
 
+      // Grade the row using whichever classifier matches (prefer GOLDEN when
+      // both match, since they're mutually exclusive by DTE range anyway).
+      const clusterSize = clusterCounts.get(`${r.date}|${r.ticker}`) || 1;
+      let gradeInfo = null;
+      if (isGolden) gradeInfo = scoreGolden(r, clusterSize);
+      else if (isTail) gradeInfo = scoreTail(r, clusterSize);
+
       return {
         ...r,
         sweep_share: sweepShare,
@@ -215,6 +322,10 @@ export default function BigFlowTab({ onClickTicker }) {
         avg_fill: avgFill,
         is_golden: isGolden,
         is_tail: isTail,
+        cluster_size: clusterSize,
+        grade: gradeInfo ? gradeInfo.grade : null,
+        grade_score: gradeInfo ? gradeInfo.score : -1,
+        grade_factors: gradeInfo ? gradeInfo.factors : null,
       };
     });
 
@@ -522,6 +633,13 @@ export default function BigFlowTab({ onClickTicker }) {
                     borderBottom: '1px solid var(--border-faint)',
                     background: rowBg,
                   }}>
+                    <td style={{ padding: '6px 10px', fontWeight: 700, fontSize: 11, color: GRADE_COLORS[r.grade] || 'var(--text-3)' }}>
+                      {r.grade ? (
+                        <span title={`Score: ${r.grade_score}/20 — N=notional, C=conviction, V=V/OI (or cheapness for TAIL), S=sweep (or OTM for TAIL), X=cluster\nNotional ${r.grade_factors?.notional}/4  Conviction ${r.grade_factors?.conviction}/4  ${r.is_golden ? 'V/OI' : 'Cheapness'} ${r.grade_factors?.vol_oi ?? r.grade_factors?.cheapness}/4  ${r.is_golden ? 'Sweep' : 'OTM'} ${r.grade_factors?.sweep ?? r.grade_factors?.otm}/4  Cluster ${r.grade_factors?.cluster}/4`}>
+                          {r.grade}
+                        </span>
+                      ) : <span style={{ color: 'var(--text-3)' }}>—</span>}
+                    </td>
                     <td style={{ padding: '6px 10px', color: 'var(--text-3)' }}>{r.date}</td>
                     <td style={{ padding: '6px 10px' }}>
                       <a onClick={(e) => { e.preventDefault(); if (onClickTicker) onClickTicker(r.ticker); }}

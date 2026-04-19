@@ -47,6 +47,7 @@ from .option_flow_daily import (
     DailyFlowAggregate,
     GOLDEN_FLOW_RULES,
     is_golden_flow,
+    score_golden_flow,
     upsert_flow_daily_batch,
 )
 from .thetadata import (
@@ -234,13 +235,23 @@ class LiveFlowAggregator:
 # ── Alerting ───────────────────────────────────────────────────────
 
 
-async def send_golden_telegram(agg: DailyFlowAggregate, oi: int | None, spot: float) -> None:
+def _factor_bar(pts: int, width: int = 5) -> str:
+    """Render a unicode bar for N/4 points. Used in Telegram messages."""
+    filled = "█" * pts
+    empty = "░" * (4 - pts)
+    return f"{filled}{empty}"
+
+
+async def send_golden_telegram(
+    agg: DailyFlowAggregate, oi: int | None, spot: float,
+    cluster_size: int = 1,
+) -> None:
     """Telegram push when a contract first crosses the Golden Flow threshold.
 
-    Explicit force=True so this bypasses the standard rate-limiter — Golden
-    Flow alerts are high-conviction + time-sensitive, meant to hit phone
-    within seconds of the trigger. Per-contract dedup via the _golden_fired
-    set upstream ensures we never fire more than once per contract-day.
+    Includes A+/A/B/C/D grade from score_golden_flow() so the user knows at
+    a glance whether this is a top-tier alert vs barely-scraping-threshold.
+    Hit-rate context (forward returns on similar prior setups) appended when
+    available. force=True bypasses rate-limiter — Golden is time-sensitive.
     """
     try:
         from .telegram import send
@@ -259,23 +270,68 @@ async def send_golden_telegram(agg: DailyFlowAggregate, oi: int | None, spot: fl
     right_label = "CALL" if agg.option_type == "call" else "PUT"
     emoji = "🟢" if agg.option_type == "call" else "🔴"
 
-    # DTE
+    # Trading-day DTE
     try:
         td = dt.date.fromisoformat(agg.date)
         ed = dt.date.fromisoformat(agg.expiration)
-        dte = (ed - td).days
+        dte = 0
+        d = td
+        while d < ed:
+            d = d + dt.timedelta(days=1)
+            if d.weekday() < 5:
+                dte += 1
     except Exception:
         dte = "?"
 
+    # Compute grade
+    row = {
+        "total_notional": agg.total_notional,
+        "buy_notional": agg.buy_notional,
+        "sell_notional": agg.sell_notional,
+        "total_volume": agg.total_volume,
+        "oi": oi,
+        "sweep_notional": agg.sweep_notional,
+    }
+    g = score_golden_flow(row, cluster_size=cluster_size)
+    factors = g["factors"]
+
+    # Hit-rate context — look up similar historical setups
+    hit_rate_line = ""
+    try:
+        from .signal_outcomes import get_hit_rate
+        hr = get_hit_rate(
+            source_type="sweep",  # sweeps are our closest historical proxy
+            direction=side,
+            ticker=agg.ticker,
+            min_notional=500_000,
+            lookback_days=90,
+        )
+        if hr["cohort_size"] >= 5:  # only show if meaningful sample
+            h1d = hr["horizons"]["1d"]
+            h3d = hr["horizons"]["3d"]
+            if h1d["rate"] is not None:
+                hit_rate_line = (
+                    f"\nSimilar setups (n={hr['cohort_size']}): "
+                    f"1d {h1d['rate']*100:.0f}% · "
+                    f"3d {(h3d['rate'] or 0)*100:.0f}%"
+                )
+    except Exception:
+        pass
+
     text = (
-        f"⚡ GOLDEN FLOW: {agg.ticker}\n"
+        f"⚡ GOLDEN {g['grade']}  {agg.ticker}  ({g['score']}/{g['max_score']})\n"
         f"{emoji} ${agg.strike:.0f} {right_label} {agg.expiration} (DTE={dte})\n"
-        f"Side: {side} {side_pct:.0f}%\n"
-        f"Notional: ${agg.total_notional:,.0f}\n"
-        f"Volume: {agg.total_volume:,} / OI: {oi or '—'} (V/OI={vol_oi if isinstance(vol_oi, str) else f'{vol_oi:.1f}x'})\n"
-        f"Sweep share: {(agg.sweep_notional / agg.total_notional * 100) if agg.total_notional else 0:.0f}% ({agg.sweep_prints} sweep prints)\n"
-        f"Largest print: {agg.largest_print_size:,} @ ${agg.largest_print_price:.2f}\n"
+        f"\n"
+        f"{side} {side_pct:.0f}%       {_factor_bar(factors['conviction']['pts'])}  {factors['conviction']['pts']}/4\n"
+        f"Notional ${agg.total_notional/1e6:.2f}M  {_factor_bar(factors['notional']['pts'])}  {factors['notional']['pts']}/4\n"
+        f"V/OI {vol_oi if isinstance(vol_oi, str) else f'{vol_oi:.1f}'}x          {_factor_bar(factors['vol_oi']['pts'])}  {factors['vol_oi']['pts']}/4\n"
+        f"Sweep {(agg.sweep_notional / agg.total_notional * 100) if agg.total_notional else 0:.0f}%        {_factor_bar(factors['sweep_share']['pts'])}  {factors['sweep_share']['pts']}/4\n"
+        f"Cluster {cluster_size}x        {_factor_bar(factors['cluster']['pts'])}  {factors['cluster']['pts']}/4\n"
+        f"\n"
+        f"Volume: {agg.total_volume:,} / OI: {oi or '—'}\n"
+        f"Largest: {agg.largest_print_size:,} @ ${agg.largest_print_price:.2f}\n"
         f"Spot: ${spot:.2f} | OTM: {otm:.1f}%"
+        f"{hit_rate_line}"
     )
     try:
         await send(text, ticker=agg.ticker, force=True)
@@ -304,18 +360,27 @@ async def run_golden_transition_loop(
             continue
 
         if newly_golden:
+            # Compute cluster size per (date, ticker) across all golden-fired
+            # contracts so we can pass confluence context to the grader. One
+            # alert = solo. 2+ on same underlying same session = cluster tell.
+            cluster_counter: dict[tuple[str, str], int] = {}
+            for key in aggregator._golden_fired:
+                dt_, ticker, _strike, _exp, _right = key
+                cluster_counter[(dt_, ticker)] = cluster_counter.get((dt_, ticker), 0) + 1
+
             for key, agg, oi, spot in newly_golden:
                 aggregator.golden_alerts_fired += 1
+                cluster_size = cluster_counter.get((agg.date, agg.ticker), 1)
                 print(
                     f"[GOLDEN] {agg.ticker} ${agg.strike:.0f}{agg.option_type[0].upper()} "
                     f"{agg.expiration} — ${agg.total_notional:,.0f} notional "
                     f"(buy={agg.buy_notional/agg.total_notional*100:.0f}%, "
                     f"sweep={agg.sweep_notional/agg.total_notional*100:.0f}%, "
-                    f"OI={oi or '—'})",
+                    f"OI={oi or '—'}, cluster={cluster_size}x)",
                     flush=True,
                 )
                 # Fire telegram asynchronously so loop doesn't block
-                asyncio.create_task(send_golden_telegram(agg, oi, spot))
+                asyncio.create_task(send_golden_telegram(agg, oi, spot, cluster_size=cluster_size))
 
         # Also flush to DB on each cycle so the UI sees near-real-time data
         try:

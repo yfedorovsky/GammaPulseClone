@@ -331,6 +331,141 @@ def get_tail_flow(
     return out[:limit]
 
 
+# ── GRADING ────────────────────────────────────────────────────────
+#
+# Each alert gets an A+/A/B/C/D grade from a 0-20 composite score.
+# Grading is cohort-aware: cluster_size is passed in (how many other
+# GOLDEN/TAIL alerts fired on the same ticker in the same session).
+# More confluence = higher grade.
+
+
+def _tier_score(value: float, ladder: list[tuple[float, int]]) -> int:
+    """Return first matching tier's points. Ladder is [(threshold, points), ...]
+    sorted by threshold DESC — the first threshold the value meets/exceeds wins."""
+    for thresh, pts in ladder:
+        if value >= thresh:
+            return pts
+    return 0
+
+
+def _grade_from_score(score: int, max_score: int = 20) -> str:
+    """Map 0-max score to A+/A/B/C/D grade."""
+    if max_score <= 0:
+        return "—"
+    pct = score / max_score
+    if pct >= 0.80: return "A+"
+    if pct >= 0.60: return "A"
+    if pct >= 0.40: return "B"
+    if pct >= 0.25: return "C"
+    return "D"
+
+
+def score_golden_flow(row: dict, cluster_size: int = 1) -> dict:
+    """Grade a GOLDEN FLOW match on 5 factors, each 0-4 points, total 0-20.
+
+    cluster_size: how many other GOLDEN/TAIL alerts fired on this ticker
+    in this session (1 = solo, 2+ = confluence tell).
+    """
+    notional = row.get("total_notional") or 0
+    buy = row.get("buy_notional") or 0
+    sell = row.get("sell_notional") or 0
+    directional = buy + sell
+    bought_pct = (buy / directional) if directional > 0 else 0
+    sold_pct = (sell / directional) if directional > 0 else 0
+    side_pct = max(bought_pct, sold_pct)  # symmetric — BUY or SELL conviction
+
+    vol = row.get("total_volume") or 0
+    oi = row.get("oi") or 0
+    vol_oi = (vol / oi) if oi > 0 else 999  # no OI = treat as maxed-out opening position
+    sweep_share = ((row.get("sweep_notional") or 0) / notional) if notional > 0 else 0
+
+    notional_pts = _tier_score(notional, [
+        (25_000_000, 4), (10_000_000, 3), (5_000_000, 2), (1_000_000, 1), (500_000, 0),
+    ])
+    conviction_pts = _tier_score(side_pct, [
+        (0.95, 4), (0.85, 3), (0.75, 2), (0.70, 1), (0.65, 0),
+    ])
+    voi_pts = _tier_score(vol_oi, [
+        (20.0, 4), (10.0, 3), (5.0, 2), (3.0, 1), (0.0, 0),
+    ])
+    sweep_pts = _tier_score(sweep_share, [
+        (0.30, 4), (0.20, 3), (0.10, 2), (0.05, 1), (0.0, 0),
+    ])
+    cluster_pts = _tier_score(float(cluster_size), [
+        (5.0, 4), (3.0, 3), (2.0, 2), (1.5, 1), (1.0, 0),
+    ])
+
+    score = notional_pts + conviction_pts + voi_pts + sweep_pts + cluster_pts
+    return {
+        "grade": _grade_from_score(score),
+        "score": score,
+        "max_score": 20,
+        "factors": {
+            "notional": {"pts": notional_pts, "value": notional},
+            "conviction": {"pts": conviction_pts, "value": side_pct, "side": "BUY" if bought_pct >= sold_pct else "SELL"},
+            "vol_oi": {"pts": voi_pts, "value": vol_oi},
+            "sweep_share": {"pts": sweep_pts, "value": sweep_share},
+            "cluster": {"pts": cluster_pts, "value": cluster_size},
+        },
+    }
+
+
+def score_tail_flow(row: dict, cluster_size: int = 1) -> dict:
+    """Grade a TAIL FLOW match. Same 5-factor template as GOLDEN but with
+    TAIL-appropriate ladders:
+      - V/OI is less important for TAIL (hedges add to existing OI)
+      - Sweep share less relevant (TAIL trades often aren't sweeps)
+      - Cheapness of premium swaps in as the 5th factor instead of cluster
+        — but we keep cluster since it's the primary "they know something" tell
+
+    For TAIL, V/OI is weaker signal, so we score it more generously.
+    """
+    notional = row.get("total_notional") or 0
+    buy = row.get("buy_notional") or 0
+    sell = row.get("sell_notional") or 0
+    directional = buy + sell
+    bought_pct = (buy / directional) if directional > 0 else 0
+    sold_pct = (sell / directional) if directional > 0 else 0
+    side_pct = max(bought_pct, sold_pct)
+    vol = row.get("total_volume") or 0
+    avg_fill = (notional / (vol * 100)) if vol > 0 else 0
+    strike = row.get("strike") or 0
+    spot = row.get("spot") or 0
+    otm_pct = abs(strike - spot) / spot if (strike > 0 and spot > 0) else 0
+
+    notional_pts = _tier_score(notional, [
+        (10_000_000, 4), (5_000_000, 3), (2_000_000, 2), (1_000_000, 1), (500_000, 0),
+    ])
+    conviction_pts = _tier_score(side_pct, [
+        (0.95, 4), (0.85, 3), (0.75, 2), (0.70, 1), (0.65, 0),
+    ])
+    # Cheaper premium = stronger lotto signal (closer to pure optionality)
+    cheapness_pts = _tier_score(-avg_fill, [
+        (-0.30, 4), (-0.60, 3), (-1.00, 2), (-1.50, 1), (-2.00, 0),
+    ]) if avg_fill > 0 else 0
+    # Deeper OTM within range = stronger black-swan signal (up to a point)
+    otm_pts = _tier_score(otm_pct, [
+        (0.15, 4), (0.10, 3), (0.07, 2), (0.05, 1), (0.04, 0),
+    ])
+    cluster_pts = _tier_score(float(cluster_size), [
+        (5.0, 4), (3.0, 3), (2.0, 2), (1.5, 1), (1.0, 0),
+    ])
+
+    score = notional_pts + conviction_pts + cheapness_pts + otm_pts + cluster_pts
+    return {
+        "grade": _grade_from_score(score),
+        "score": score,
+        "max_score": 20,
+        "factors": {
+            "notional": {"pts": notional_pts, "value": notional},
+            "conviction": {"pts": conviction_pts, "value": side_pct, "side": "BUY" if bought_pct >= sold_pct else "SELL"},
+            "cheapness": {"pts": cheapness_pts, "value": avg_fill},
+            "otm": {"pts": otm_pts, "value": otm_pct},
+            "cluster": {"pts": cluster_pts, "value": cluster_size},
+        },
+    }
+
+
 def init_flow_daily_db() -> None:
     with _conn() as c:
         c.executescript(FLOW_DAILY_SCHEMA)
