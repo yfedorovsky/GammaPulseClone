@@ -88,7 +88,7 @@ TIER_3 = [
     # Biotech / pharma
     "XBI", "MRNA", "BNTX", "NVAX", "BIIB", "ILMN", "ZTS", "SYK", "EW", "BSX", "BDX",
     "BAX", "RMD", "DXCM", "IDXX", "A",
-    # Crypto-related
+    # Crypto-related (MSTR = BTC proxy, Qullamaggie + Stockbee momentum leader)
     "MARA", "RIOT", "MSTR", "CLSK", "HUT", "BITF",
     # Speculatives / meme
     "GME", "AMC", "RDDT", "BB", "SOFI", "WISH", "CLOV", "PTON", "BYND", "FUBO",
