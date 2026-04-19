@@ -31,6 +31,8 @@ TIER_2 = [
     "STX",   # Seagate — IBD Group #2 Data Storage
     # Gemini weekend research (Apr 19) — data center power thesis
     "GEV",   # GE Vernova — grid, turbines, nuclear, wind; "power is the new real estate"
+    # Sovereign silicon / specialty foundry (Apr 19 @Venu_7_ diagram)
+    "GFS",   # GlobalFoundries — SiPh roadmap + CHIPS Act + auto + capital return
     # Financials
     "WFC", "C", "GS", "MS", "SCHW", "AXP", "BLK", "SPGI", "BRK.B", "ICE",
     "CME", "PNC", "USB", "COF", "TFC",
