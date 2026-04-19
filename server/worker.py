@@ -30,6 +30,8 @@ from .thetadata import (
     snapshot_greeks as theta_snapshot_greeks,
 )
 from .rts import compute_rts
+from .ibd_groups import get_ibd_group_info as _ibd_group_info
+from .ibd_sector_leaders import is_sector_leader as _is_sector_leader
 from .snapshots import (
     insert_async as snapshot_insert,
     compute_ivp,
@@ -495,6 +497,12 @@ async def _compute_one(
         "_trend_day": _detect_trend_day(ticker, spot),
         "_greeks_spot_stale": ticker in _spot_stale_flag,
         "_greeks_spot_divergence": _spot_stale_flag.get(ticker, 0),
+        # IBD industry group rotation layer (Apr 19 addition)
+        # Static table in server/ibd_groups.py; null when ticker not mapped.
+        "_ibd_group": _ibd_group_info(ticker),
+        # IBD Sector Leaders — O'Neil's ≤16 curated list (Apr 20 addition).
+        # Binary: in or out. Membership = full CAN-SLIM pass.
+        "_ibd_sector_leader": _is_sector_leader(ticker),
     }
 
     # Compute Mir momentum signal for approved sector tickers

@@ -28,12 +28,21 @@ Discord role tags (already resolved from IDs):
 
 Signal types:
   ENTRY      — buy now: "$AVGO 31mar 242.5c @ 4.88 x2", "NVDA 200C @ 5.8"
+  ADD       — adding to existing: "adding more $XYZ calls", "sized up NVDA"
   WATCH      — conditional entry: "if we can get it close to $3.2 I like it"
   EXIT       — exit now: "EXIT NVDA 3.3", "out @ 8.23"
   PARTIAL_EXIT — partial: "QBTS OUT 5 OF 10 AT 0.3", "sell half at 100%"
   STOP_LEVEL — risk management: "150 absolute stop on $XOM", "stop is $3.00"
-  STATUS     — update, no action: "up 40% on NVDA", "watching support here"
-  NOISE      — irrelevant: "gm", commentary
+  CHAT_RELAY — casual trade mention with specific contract but no explicit
+               buy/sell directive: "I'm in AMAT 395c at 2.50", "NFLX 100c
+               is getting juicy post-ER", "grabbed some AAOI 200c", "holding
+               MSFT 430c through earnings". Must contain a TICKER plus at
+               least one of: strike, option_type (c/p/calls/puts), or the
+               phrase "calls"/"puts"/"options". Directional but not an
+               explicit entry call — lower conviction than ENTRY.
+  STATUS     — update/commentary, no new action and no specific contract:
+               "up 40% on NVDA", "watching support here", "tape looks soft"
+  NOISE      — irrelevant: "gm", pure chat without ticker reference
 
 CRITICAL PARSING RULES:
 1. EXIT format "TICKER STRIKE PRICE": last small number is the price.
@@ -46,8 +55,12 @@ CRITICAL PARSING RULES:
 7. STOP_LEVEL: "150 stop on $XOM" = underlying, "stop is $3.00" = option.
 8. CONTEXT: use only for resolving missing ticker/expiry/strike from follow-ups.
    NEVER inherit audience/tags from context.
-9. WATCH vs STATUS: WATCH = actionable conditional entry with a level.
-   STATUS = commentary. When in doubt, choose STATUS.
+9. WATCH vs STATUS vs CHAT_RELAY: WATCH = actionable conditional entry
+   with a level ("if we get it at $3.20 I like it"). CHAT_RELAY = mention
+   of a specific contract ("I like NFLX 100c", "in AMAT 395c at 2.50")
+   without a conditional level. STATUS = pure commentary with no contract.
+   When in doubt between CHAT_RELAY and STATUS, prefer CHAT_RELAY if a
+   specific strike OR option_type is mentioned.
 10. Negative signals ("don't chase", "wouldn't go for puts") = STATUS/NOISE.
 
 Return ONLY valid JSON, no markdown."""
@@ -60,7 +73,7 @@ Timestamp: {timestamp}
 
 Return this exact JSON:
 {{
-  "signal_type": "ENTRY|WATCH|EXIT|PARTIAL_EXIT|STOP_LEVEL|STATUS|NOISE",
+  "signal_type": "ENTRY|ADD|WATCH|EXIT|PARTIAL_EXIT|STOP_LEVEL|CHAT_RELAY|STATUS|NOISE",
   "audience": "CHALLENGE|DAY_TRADES|BOTH|UNKNOWN",
   "is_trade_idea": false,
   "ticker": "XOM" or null,

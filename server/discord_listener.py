@@ -351,6 +351,104 @@ class MirDiscordClient:
         if sig_type in ("ENTRY", "WATCH", "ADD"):
             await self._route_entry(parsed, author_type, message.channel.id,
                                     display_name, content, channel)
+            return
+
+        if sig_type == "CHAT_RELAY":
+            await self._handle_chat_relay(parsed, display_name, channel)
+            return
+
+    async def _handle_chat_relay(self, parsed: dict[str, Any],
+                                 display_name: str, channel_name: str) -> None:
+        """Store casual Mir chat mentions (CHAT_RELAY) as LOW-conviction
+        signals. Lower bar than ENTRY — captures "I like NFLX 100c post-ER"
+        style posts that would otherwise be dropped as STATUS.
+
+        Policy:
+          - Store in mir_signal_cache with conviction=LOW, source=chat_relay
+          - Send soft Telegram alert (respects rate limits; not forced)
+          - No auto-paper-trade (low conviction by design)
+          - Feeds attribution pipeline as MIR_CHAT source
+        """
+        ticker = parsed.get("ticker")
+        if not ticker:
+            return
+
+        # Must have SOME contract spec — ticker alone is just commentary
+        has_contract = (
+            parsed.get("strike") is not None
+            or parsed.get("option_type") is not None
+        )
+        if not has_contract:
+            print(f"[DISCORD]   -> CHAT_RELAY {ticker} skipped (no strike/type)")
+            return
+
+        state = await cache.get(ticker)
+        gex_context: dict[str, Any] = {}
+        if state:
+            gex_context = {
+                "king": state.get("king"),
+                "floor": state.get("floor"),
+                "ceiling": state.get("ceiling"),
+                "regime": state.get("regime"),
+                "iv": state.get("iv"),
+                "spot": state.get("actual_spot") or state.get("_spot"),
+            }
+
+        mir_signal = {
+            "ticker": ticker,
+            "signal_type": "CHAT_RELAY",
+            "option_type": (parsed.get("option_type") or "").upper().replace(
+                "C", "CALL").replace("P", "PUT"),
+            "strike": parsed.get("strike"),
+            "price": parsed.get("price"),
+            "expiry": parsed.get("expiry_raw"),
+            "conviction": "LOW",
+            "channel": channel_name,
+            "author": display_name,
+            "raw": parsed.get("raw_content", ""),
+            "source": "discord_listener",
+            "agreement": "CHAT_RELAY",
+            "timestamp": parsed.get("timestamp", ""),
+            "gex_context": gex_context,
+            "_received_ts": time.time(),
+        }
+
+        await cache.set_mir_signal(ticker, mir_signal)
+        print(f"[DISCORD]   -> CHAT_RELAY {ticker} "
+              f"{parsed.get('strike')}{parsed.get('option_type')} stored (LOW)")
+
+        # Soft Telegram push — not forced, respects per-ticker cooldown.
+        # Rationale: chat relays are informational, not actionable, so
+        # they shouldn't elbow out higher-conviction signals.
+        try:
+            strike = parsed.get("strike")
+            otype = (parsed.get("option_type") or "").upper()
+            price = parsed.get("price")
+            spot = gex_context.get("spot")
+
+            lines = [f"💬 <b>MIR CHAT</b>: {ticker}"]
+            if strike and otype:
+                lines.append(f"Contract: ${strike}{otype}")
+            elif strike:
+                lines.append(f"Strike: ${strike}")
+            elif otype:
+                lines.append(f"Type: {otype}")
+            if price:
+                lines.append(f"Price mentioned: ${price}")
+            if spot:
+                lines.append(f"Spot: ${spot:.2f}")
+            lines.append(f"Channel: {channel_name}")
+            lines.append("")
+            raw = parsed.get("raw_content", "")
+            if raw:
+                lines.append(f"<i>{raw[:250]}</i>")
+            lines.append("")
+            lines.append("<i>LOW conviction — no auto-paper-trade.</i>")
+
+            from .telegram import send
+            await send("\n".join(lines), ticker=ticker)
+        except Exception as e:
+            print(f"[DISCORD] CHAT_RELAY telegram error: {e}")
 
     async def _route_entry(self, parsed: dict[str, Any], author_type: str,
                            channel_id: int, display_name: str,

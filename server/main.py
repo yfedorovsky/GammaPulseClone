@@ -339,6 +339,13 @@ async def scanner():
             # Trend day detection (gap-and-go vs pullback mode)
             "_trend_mode": (state.get("_trend_day") or {}).get("trend_mode"),
             "_gap_pct": (state.get("_trend_day") or {}).get("gap_pct"),
+            # IBD industry group rank (Apr 19 — rotation overlay)
+            "_ibd_group_rank": (state.get("_ibd_group") or {}).get("rank"),
+            "_ibd_group_name": (state.get("_ibd_group") or {}).get("name"),
+            "_ibd_group_ytd": (state.get("_ibd_group") or {}).get("ytd_pct"),
+            "_ibd_group_leader_rank": (state.get("_ibd_group") or {}).get("leader_rank_in_group"),
+            # IBD Sector Leader flag (Apr 20 — O'Neil's top-16 curated)
+            "_ibd_sector_leader": state.get("_ibd_sector_leader", False),
             # exp_data excluded from scanner list (too heavy for 300+ tickers)
             # Use /api/chains for full exp_data per ticker
             "exps": state.get("exps"),
@@ -907,6 +914,23 @@ async def ab_results():
     c.close()
     return {"total": total, "summary": summary, "gex_contribution": gex_contribution,
             "by_conviction": by_conviction, "daily": daily}
+
+
+@app.get("/api/ibd-groups")
+async def ibd_groups_info():
+    """IBD industry group rotation layer — top groups + members + weekend date.
+    Static table in server/ibd_groups.py; refreshed manually each weekend."""
+    from .ibd_groups import summary
+    return summary()
+
+
+@app.get("/api/ibd-sector-leaders")
+async def ibd_sector_leaders_info():
+    """IBD Sector Leaders — O'Neil's curated ≤16 CAN-SLIM pass list.
+    Also exposes list cardinality as market regime gauge
+    (16=STRONG_BULL / <7=CORRECTION). Refreshed weekly from the paper."""
+    from .ibd_sector_leaders import summary
+    return summary()
 
 
 @app.get("/api/basket")

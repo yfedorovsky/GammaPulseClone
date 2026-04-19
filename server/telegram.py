@@ -180,6 +180,16 @@ def format_soe_signal(sig: dict[str, Any]) -> str:
     is_0dte = dte is not None and dte == 0
     emoji = "🔥" if grade == "A+" else "⚡" if grade == "A" else "📊"
     dte_badge = "🔥 0DTE HIGH RISK" if is_0dte else f"{dte}d" if dte else ""
+    # Rule #3b — contract-drift warning for B+ alerts.
+    # Last week's attribution: SOE_B+ MEDIUM matches (same ticker+type,
+    # different strike/exp) = 10 trades, 30% WR, -$777. STRONG matches
+    # (exact contract) = 14 trades, 86% WR, +$4,386. The contract IS
+    # the signal — drifting to a nearby strike kills the thesis.
+    drift_warning = (
+        "⚠️ TRADE THIS EXACT CONTRACT — drift = -$777 last wk (30% WR)"
+        if grade == "B+" else None
+    )
+
     lines = [
         f"{emoji} <b>SOE {grade}</b>: {direction} {ticker}",
         f"<b>{signal_type}</b>",
@@ -192,6 +202,7 @@ def format_soe_signal(sig: dict[str, Any]) -> str:
         f"Mid: ${mid:.2f}" if mid else None,
         f"Size: {kelly}%" if kelly else None,
         f"Greeks: {source.upper()}",
+        drift_warning,
     ]
     return "\n".join(l for l in lines if l is not None)
 

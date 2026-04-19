@@ -835,7 +835,8 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
     now = datetime.datetime.now()
     if now.weekday() >= 5:
         return []
-    # Market hours only: 9:30 AM - 4:15 PM (pre-market signals are noise)
+    # Market hours only: 9:30 AM - 4:15 PM (indexes trade 15 min late; single
+    # names are cut at 4:00 inside the per-ticker loop).
     mins = now.hour * 60 + now.minute
     if mins < 570 or mins > 975:  # before 9:30 or after 4:15
         return []
@@ -849,6 +850,15 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
 
     snapshot = await cache.snapshot()
     new_signals: list[dict[str, Any]] = []
+
+    # Regime flag for put-direction block (rule #1).
+    # This week's cohort analysis: 10 put trades, 30% WR, -$1,376 in a bull
+    # tape. SPY 20d > 0 → block BEAR-direction signals. Let the user wait
+    # for regime flip or take puts manually with eyes open.
+    _spy_state = snapshot.get("SPY", {})
+    _spy_rts = _spy_state.get("_rts") or {}
+    _spy_20d = _spy_rts.get("rs_20d", 0) if isinstance(_spy_rts, dict) else 0
+    _block_puts = _spy_20d >= 0  # >=0 → bull/flat → block puts
 
     # Fetch breadth context (NYMO/NAMO) — cached 30 min
     breadth_data = None
@@ -865,7 +875,15 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
         if ticker_iv and ticker_iv > 0:
             iv_universe.append(ticker_iv)
 
+    # Indexes keep signalling until 4:15 (15-min late-session); single
+    # names stop at 4:00 sharp so stale-cache fires don't slip through.
+    _INDEX_TICKERS = {"SPY", "QQQ", "IWM", "SPX", "NDX", "RUT", "DIA"}
+    cutoff_mins = now.hour * 60 + now.minute
+
     for ticker, state in snapshot.items():
+        if ticker not in _INDEX_TICKERS and cutoff_mins > 960:
+            continue
+
         # Earnings blackout: skip tickers with upcoming earnings (both books)
         if ticker in blackout_set:
             continue
@@ -894,6 +912,18 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
             is_mir_originated = True
 
         if direction is None:
+            continue
+
+        # Rule #1 — block puts in non-bear regime.
+        # SPY/QQQ/IWM are the exception: index puts on a red day are a
+        # valid hedge/scalp and their put trades last week were winners
+        # (QQQ $645P, TSLA $380P in the simulator's block list). Single-
+        # name puts in a bull tape are the bleed.
+        if (
+            _block_puts
+            and direction == "BEAR"
+            and ticker not in ("SPY", "QQQ", "IWM", "SPX", "NDX", "RUT", "DIA")
+        ):
             continue
 
         # Trend day context (used by both pathways)
@@ -1448,9 +1478,9 @@ async def scan_setups() -> list[dict[str, Any]]:
     now = datetime.datetime.now()
     if now.weekday() >= 5:
         return []
-    # Market hours only: 9:30 AM - 4:15 PM (pre-market spot is stale)
+    # Market hours only: 9:30 AM - 4:00 PM (pre-market spot is stale, post-close fires stale)
     mins = now.hour * 60 + now.minute
-    if mins < 570 or mins > 975:
+    if mins < 570 or mins > 960:
         return []
     # Skip Mondays (backtest: worse performance)
     is_monday = now.weekday() == 0

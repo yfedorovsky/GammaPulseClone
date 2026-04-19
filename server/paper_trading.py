@@ -200,6 +200,62 @@ def open_position(signal_id: int, contracts: int | None = None) -> dict[str, Any
         entry_price = entry_ask if entry_ask > 0 else (sig.get("entry_price") or sig.get("mid_price") or 0)
         if not entry_price or entry_price <= 0:
             return {"error": "No valid entry price on signal"}
+
+        # Rule #2 — minimum DTE gate for auto-paper-trade.
+        # This week's cohort: 0-2DTE buckets were net-negative (0DTE -$378,
+        # 1-2DTE -$276) despite 60%+ hit rate. Theta crushed partial winners.
+        # 8-14DTE had 89% WR, zero big losses, +$5,730. Require DTE >= 3.
+        # Scalp alerts bypass — they have their own time/VIX/VRP guards and
+        # their 1DTE PM / 0DTE power-hour windows are where short-DTE can work.
+        sig_type = sig.get("signal_type") or ""
+        dte = sig.get("dte")
+        if dte is None:
+            # Compute from expiration if not stored
+            try:
+                import datetime as _dt
+                exp_d = _dt.date.fromisoformat(sig.get("expiration") or "")
+                dte = (exp_d - _dt.date.today()).days
+            except (ValueError, TypeError):
+                dte = 99  # can't parse → don't block on this check
+        is_scalp = sig_type.startswith("SCALP_") or (sig.get("grade") == "SCALP")
+        if dte < 3 and not is_scalp:
+            return {
+                "error": (
+                    f"Blocked: DTE={dte} < 3 (rule #2 — short-DTE auto-opens "
+                    f"were net-negative last week). Scalp signals bypass; this "
+                    f"signal_type={sig_type!r} is not a scalp."
+                ),
+                "dte": dte,
+                "reason": "DTE_TOO_SHORT",
+            }
+
+        # Max-pay discipline gate (Mir rule enforcement).
+        # If an active BUY-side watch exists for this exact contract AND
+        # the entry price exceeds the declared cap, reject the open. This
+        # is the AMAT $395C 4/17 failure mode codified: Mir said "max $2",
+        # fills were $2.50-$3.20, lost -$814. Never again.
+        try:
+            from .price_watch import get_max_pay_for_contract
+            max_pay = get_max_pay_for_contract(
+                sig.get("ticker", ""),
+                float(sig.get("strike") or 0),
+                str(sig.get("option_type", "")),
+                str(sig.get("expiration", "")),
+            )
+            if max_pay is not None and entry_price > max_pay:
+                return {
+                    "error": (
+                        f"Blocked: entry ${entry_price:.2f} > max_pay ${max_pay:.2f} "
+                        f"per active watch. Mir discipline: do not chase."
+                    ),
+                    "entry_price": entry_price,
+                    "max_pay": max_pay,
+                    "reason": "MAX_PAY_EXCEEDED",
+                }
+        except Exception as e:
+            # Fail open — discipline gate must not break auto-paper-trade
+            # for unrelated reasons (watch table lookup etc.).
+            print(f"[paper_trading] max_pay check skipped: {e}")
         # Slippage = (ask - mid) / mid — the cost of crossing the spread
         entry_spread_pct = round((entry_ask - entry_bid) / entry_mid * 100, 2) if entry_mid > 0 else 0
         entry_slippage_pct = round((entry_price - entry_mid) / entry_mid * 100, 2) if entry_mid > 0 else 0

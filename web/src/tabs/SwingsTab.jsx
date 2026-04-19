@@ -10,6 +10,8 @@ const TAG_COLORS = {
   MIR_BASKET: '#e040fb',
   EXTENDED: '#ff5656',
   EARNINGS_SOON: '#ff5656',
+  GROUP_STRENGTH: '#4fc3f7',  // IBD rotation: ≥3 members of same top-5 group qualifying
+  SECTOR_LEADER:  '#ffd700',  // IBD Sector Leader — O'Neil CAN-SLIM pass (premier tier, gold)
 };
 
 const RUNNER_STATES = {

@@ -79,6 +79,17 @@ async def check_watches(snapshot: dict[str, dict[str, Any]]) -> None:
     we hit on first market-open cycle this morning.
     """
     import time as _time
+    # Market-hours gate — the worker loop keeps running after close and
+    # Tradier chains still return live AH bids on post-ER names. Without
+    # this gate, a tier threshold gets crossed hours after close (e.g.
+    # NFLX $100C DEEP_DISCOUNT fired at 5:38 PM post-ER).
+    now_dt = datetime.datetime.now()
+    if now_dt.weekday() >= 5:
+        return
+    mins = now_dt.hour * 60 + now_dt.minute
+    if mins < 570 or mins > 960:  # before 9:30 or after 4:00
+        return
+
     today = _today_iso()
     _prune_old_state()
     now_ts = _time.time()
@@ -320,6 +331,49 @@ def stats() -> dict:
             for w in active
         ],
     }
+
+
+def get_max_pay_for_contract(
+    ticker: str, strike: float, option_type: str, expiration: str,
+) -> float | None:
+    """Return the max acceptable entry price for a contract matching an
+    active BUY-side watch. Used to block auto-paper-trades that would
+    violate Mir's "max pay" discipline (e.g. AMAT $395C 4/17 capped at $2,
+    paid $2.50-$3.20 → −$814 loss on the week).
+
+    Priority:
+      1. Explicit `max_pay` field on the watch
+      2. ENTRY-labeled tier threshold (BUY-side watches always have one)
+      3. None (no cap found → no gating applied)
+
+    SELL-side watches (direction='above') are ignored — their thresholds
+    are trim levels, not entry caps.
+    """
+    today = _today_iso()
+    otype_lc = option_type.lower()
+    for w in _WATCHES:
+        if w.get("direction", "below") == "above":
+            continue
+        if w["ticker"] != ticker:
+            continue
+        if w["option_type"].lower() != otype_lc:
+            continue
+        if abs(float(w["strike"]) - float(strike)) > 0.01:
+            continue
+        if w["expiration"] != expiration:
+            continue
+        if not _watch_active_today(w, today):
+            continue
+        if not _expiration_still_valid(w):
+            continue
+
+        if "max_pay" in w:
+            return float(w["max_pay"])
+        for tier in w.get("tiers", []):
+            if tier.get("label", "").upper() == "ENTRY":
+                return float(tier["threshold"])
+        return None
+    return None
 
 
 def reset_watch(watch_id: str) -> bool:

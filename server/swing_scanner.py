@@ -382,6 +382,16 @@ async def compute_swing_watchlist(mode: str = "standard") -> tuple[list[dict], d
         # SMA100 for extra context
         sma100 = _sma(closes, 100) if len(closes) >= 100 else 0
 
+        # IBD industry group — pulled from worker state (Apr 19 addition).
+        # GROUP_STRENGTH tag added in second pass after all qualifiers collected.
+        ibd_group = state.get("_ibd_group") or {}
+
+        # IBD Sector Leader flag — O'Neil's curated ≤16 list (Apr 20 addition).
+        # Promotes conviction above GROUP_STRENGTH — a qualifier that is also a
+        # Sector Leader passes BOTH the group rotation AND the full CAN-SLIM bar.
+        if state.get("_ibd_sector_leader"):
+            tags.append("SECTOR_LEADER")
+
         results.append({
             "ticker": ticker,
             "swing_score": swing_score,
@@ -410,7 +420,29 @@ async def compute_swing_watchlist(mode: str = "standard") -> tuple[list[dict], d
             "high_20d": round(high_20d, 2),
             "dist_to_high_pct": round(dist_to_high, 1),
             "extension": rts_data.get("extension", ""),
+            # IBD group overlay
+            "ibd_group_rank": ibd_group.get("rank"),
+            "ibd_group_name": ibd_group.get("name"),
+            "ibd_group_ytd": ibd_group.get("ytd_pct"),
+            "ibd_leader_rank": ibd_group.get("leader_rank_in_group"),
+            "ibd_sector_leader": bool(state.get("_ibd_sector_leader")),
         })
+
+    # ── GROUP_STRENGTH confluence (Apr 19 addition) ────────────────
+    # If ≥3 tickers from the same top-5 IBD group pass all gates, tag
+    # each of them. This is the "rotation is real" signal — multiple
+    # names in the #1-5 groups qualifying simultaneously beats any one
+    # of them in isolation.
+    from collections import Counter as _Counter
+    _group_counts = _Counter(
+        r["ibd_group_rank"] for r in results
+        if r.get("ibd_group_rank") is not None and r["ibd_group_rank"] <= 5
+    )
+    _strong_groups = {rank for rank, n in _group_counts.items() if n >= 3}
+    if _strong_groups:
+        for r in results:
+            if r.get("ibd_group_rank") in _strong_groups:
+                r["tags"].append("GROUP_STRENGTH")
 
     # ── Sort by SwingScore descending ──────────────────────────────
     results.sort(key=lambda x: x["swing_score"], reverse=True)

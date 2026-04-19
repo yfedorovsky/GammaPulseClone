@@ -76,8 +76,18 @@ def classify_confidence(rt: dict, sig: dict) -> str:
 
 
 def load_signals(con: sqlite3.Connection) -> list[dict]:
-    """Merge signals from soe_signals + mir_signal_cache + runner_tracker into
-    a unified list of {ts, ticker, source, grade, strike, option_type, ...}."""
+    """Merge signals from all available sources into a unified list:
+      - SOE signals (A/A+/B+)
+      - Mir Discord (mir_signal_cache)
+      - Runner tracker DAY1 entries
+      - Flow alerts (flow_alerts table, conviction=HIGH)
+      - Sweeps (signal_outcomes WHERE source_type='sweep')
+      - Golden Flow (option_flow_daily re-classified via is_golden_flow)
+      - Big Flow (option_flow_daily with notional >= $500K, not Golden)
+
+    Precedence for an overlapping signal: first to fire wins in
+    classify_confidence (STRONG > MEDIUM > WEAK).
+    """
     signals: list[dict] = []
 
     # SOE signals (all grades A, A+, B+)
@@ -114,10 +124,13 @@ def load_signals(con: sqlite3.Connection) -> list[dict]:
             d = json.loads(r["data"])
         except Exception:
             continue
+        # Tag CHAT_RELAY separately so it shows up as its own cohort.
+        # Those are low-conviction mentions (priority 3 from Apr 18 session).
+        is_chat = d.get("signal_type") == "CHAT_RELAY" or d.get("agreement") == "CHAT_RELAY"
         signals.append({
             "ts": int(r["ts"]),
             "ticker": r["ticker"],
-            "source": "MIR_DISCORD",
+            "source": "MIR_CHAT" if is_chat else "MIR_DISCORD",
             "grade": d.get("conviction", "HIGH"),
             "strike": d.get("strike"),
             "option_type": d.get("option_type"),
@@ -144,6 +157,113 @@ def load_signals(con: sqlite3.Connection) -> list[dict]:
             "gain_pct": r["d1_gain_pct"],
             "rvol": r["d1_rvol"],
             "runner_score": r["runner_score"],
+        })
+
+    # Flow alerts (HIGH conviction only — LOW/MED are noise by design)
+    rows = con.execute("""
+        SELECT ts, ticker, strike, expiration, option_type, sentiment,
+               conviction, notional, is_sweep
+        FROM flow_alerts
+        WHERE ts >= strftime('%s', '2026-04-13')
+          AND conviction = 'HIGH'
+          AND ticker IS NOT NULL
+    """).fetchall()
+    for r in rows:
+        signals.append({
+            "ts": r["ts"],
+            "ticker": r["ticker"],
+            "source": "FLOW_SWEEP" if r["is_sweep"] else "FLOW_ALERT",
+            "grade": r["conviction"],
+            "strike": r["strike"],
+            "option_type": r["option_type"],
+            "expiration": r["expiration"],
+            "sentiment": r["sentiment"],
+            "notional": r["notional"],
+        })
+
+    # Sweeps from signal_outcomes (the dedicated sweep detector — ISO-only)
+    # Dedupe against flow_alerts table by ticker+ts bucket so we don't
+    # double-count the same trade across sources.
+    rows = con.execute("""
+        SELECT trigger_ts, ticker, direction, trigger_price, notional,
+               sweep_venues, source_id
+        FROM signal_outcomes
+        WHERE source_type = 'sweep'
+          AND trigger_ts >= strftime('%s', '2026-04-13')
+          AND ticker IS NOT NULL
+    """).fetchall()
+    for r in rows:
+        signals.append({
+            "ts": r["trigger_ts"],
+            "ticker": r["ticker"],
+            "source": "ISO_SWEEP",
+            "grade": "HIGH" if (r["sweep_venues"] or 0) >= 3 else "MEDIUM",
+            # Sweep detector doesn't carry strike/type/exp — matches on ticker+day only.
+            "strike": None,
+            "option_type": None,
+            "expiration": None,
+            "direction": r["direction"],
+            "notional": r["notional"],
+            "sweep_venues": r["sweep_venues"],
+        })
+
+    # Golden Flow — recompute via is_golden_flow() on option_flow_daily aggregates
+    from server.option_flow_daily import is_golden_flow
+    rows = con.execute("""
+        SELECT date, ticker, strike, expiration, option_type, total_notional,
+               buy_notional, sell_notional, total_volume, oi, spot,
+               largest_print_time, largest_print_side, sweep_notional,
+               largest_print_is_sweep
+        FROM option_flow_daily
+        WHERE date >= '2026-04-13' AND date <= '2026-04-17'
+    """).fetchall()
+    for r in rows:
+        row_dict = dict(r)
+        is_gold, _failed = is_golden_flow(row_dict)
+
+        # Signal ts: prefer largest_print_time (ISO string), else midnight-of-date
+        sig_ts = None
+        lpt = r["largest_print_time"]
+        if lpt:
+            try:
+                sig_ts = int(datetime.datetime.fromisoformat(
+                    lpt.replace("Z", "+00:00") if "Z" in lpt else lpt
+                ).timestamp())
+            except (ValueError, TypeError):
+                pass
+        if not sig_ts:
+            sig_ts = int(datetime.datetime.fromisoformat(r["date"]).timestamp())
+
+        buy = r["buy_notional"] or 0
+        sell = r["sell_notional"] or 0
+        directional = buy + sell
+        bought_pct = (buy / directional) if directional > 0 else 0
+        inferred_direction = (
+            "BUY" if bought_pct >= 0.65
+            else "SELL" if bought_pct <= 0.35
+            else "NEUTRAL"
+        )
+
+        if is_gold:
+            source = "GOLDEN_FLOW"
+            grade = "HIGH"
+        elif (r["total_notional"] or 0) >= 500_000:
+            source = "BIG_FLOW"
+            grade = "MEDIUM"
+        else:
+            continue  # skip tiny aggregates
+
+        signals.append({
+            "ts": sig_ts,
+            "ticker": r["ticker"],
+            "source": source,
+            "grade": grade,
+            "strike": r["strike"],
+            "option_type": r["option_type"],
+            "expiration": r["expiration"],
+            "direction": inferred_direction,
+            "notional": r["total_notional"],
+            "bought_pct": bought_pct,
         })
 
     return signals

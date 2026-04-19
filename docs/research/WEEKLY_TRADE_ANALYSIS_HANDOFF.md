@@ -1,4 +1,13 @@
-# Weekly Trade Analysis — Session Handoff
+# Weekly Trade Analysis — Session Handoff [SUPERSEDED]
+
+> **Status as of 2026-04-18: fully worked through.** See
+> [SESSION_APR18_INDEX.md](SESSION_APR18_INDEX.md) for the completed research
+> narrative and shipped rules. This doc is kept for historical context —
+> the priorities listed below have all been addressed:
+> - ✅ 4PM signal gate fix (+ 4:15 index extension, + price_watch AH gate)
+> - ✅ Mir Discord chat-relay parser (CHAT_RELAY signal_type)
+> - ✅ Multi-week WR stability (internal bootstrap + Theta 3-week OOS replay)
+> - ✅ Per-ticker/per-time/per-regime filters (rules #1, #2, #3b, #4 shipped)
 
 **Context:** User wants to analyze this week's trades (Apr 14-18, 2026) across
 all sources to answer the core question: **"Are our dozens of daily alerts

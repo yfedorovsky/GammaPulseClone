@@ -79,11 +79,15 @@ export default function ScannerTab() {
       r = r.filter((x) => x._ticker?.includes(s));
     }
     r.sort((a, b) => {
+      // IBD rank sorts lowest-first (#1 is strongest); unmapped tickers
+      // sort last regardless of direction via 999 sentinel.
       const av = sortKey === '_rts_score' ? (a._rts?.score ?? 0)
         : sortKey === '_mir_score' ? (a._mir_score ?? 0)
+        : sortKey === '_ibd_group_rank' ? (a._ibd_group_rank ?? 999)
         : (a[sortKey] ?? 0);
       const bv = sortKey === '_rts_score' ? (b._rts?.score ?? 0)
         : sortKey === '_mir_score' ? (b._mir_score ?? 0)
+        : sortKey === '_ibd_group_rank' ? (b._ibd_group_rank ?? 999)
         : (b[sortKey] ?? 0);
       if (typeof av === 'string')
         return sortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
@@ -329,6 +333,7 @@ export default function ScannerTab() {
                 </th>
                 <th onClick={() => toggleSort('_rts_score')}>RS</th>
                 <th onClick={() => toggleSort('_mir_score')}>Mir</th>
+                <th onClick={() => toggleSort('_ibd_group_rank')} title="IBD industry group rank (1=strongest YTD). Hover a cell to see group name + YTD%.">IBD</th>
                 <th>Mode</th>
                 <th onClick={() => toggleSort('iv')}>IV</th>
                 <th onClick={() => toggleSort('_ivp')}>IVP</th>
@@ -420,6 +425,52 @@ export default function ScannerTab() {
                               {r._mir_conviction === 'HIGH' ? 'H' : 'M'}
                             </span>
                           )}
+                        </span>
+                      ) : <span style={{ color: 'var(--text-3)' }}>-</span>}
+                    </td>
+                    <td>
+                      {r._ibd_sector_leader && (
+                        <span
+                          title="IBD Sector Leader — passes O'Neil's full CAN-SLIM screen. Highest conviction tier."
+                          style={{
+                            fontWeight: 800, fontSize: 10, marginRight: 3,
+                            color: '#ffd700',  // gold — Sector Leader is the premier tier
+                          }}
+                        >
+                          ★★
+                        </span>
+                      )}
+                      {r._ibd_group_rank != null ? (
+                        <span
+                          title={`#${r._ibd_group_rank} ${r._ibd_group_name} — YTD ${r._ibd_group_ytd}% — leader rank ${r._ibd_group_leader_rank} in group${r._ibd_sector_leader ? ' · IBD Sector Leader' : ''}`}
+                          style={{
+                            fontWeight: 800,
+                            fontSize: 11,
+                            padding: '1px 4px',
+                            borderRadius: 3,
+                            background: r._ibd_group_rank <= 3
+                              ? 'rgba(16,220,154,0.18)'
+                              : r._ibd_group_rank <= 5
+                              ? 'rgba(244,196,48,0.15)'
+                              : 'rgba(160,160,160,0.10)',
+                            color: r._ibd_group_rank <= 3
+                              ? '#10dc9a'
+                              : r._ibd_group_rank <= 5
+                              ? '#f4c430'
+                              : 'var(--text-2)',
+                          }}
+                        >
+                          #{r._ibd_group_rank}
+                          {r._ibd_group_leader_rank === 1 && (
+                            <span style={{ fontSize: 8, marginLeft: 2 }}>★</span>
+                          )}
+                        </span>
+                      ) : r._ibd_sector_leader ? (
+                        <span
+                          title="IBD Sector Leader (not in a mapped industry group)"
+                          style={{ fontSize: 11, color: '#ffd700', fontWeight: 700 }}
+                        >
+                          LEADER
                         </span>
                       ) : <span style={{ color: 'var(--text-3)' }}>-</span>}
                     </td>
