@@ -177,13 +177,24 @@ async def _build_subscription_plan(
       19 tickers × ~80 strikes × 2 rights × 3 exps ≈ 9,120 subs
     Under the Standard-tier 15K-trade-stream cap with headroom.
     """
-    from .root_config import get_strike_step
+    from .root_config import get_strike_step, is_index_root
 
     snapshot = await cache.snapshot()
     specs: list[SubscribeSpec] = []
     expirations = _next_expirations(n=3)
 
-    RADIUS = 40  # strikes each side of ATM
+    # Per-root strike radius. Equities get ±40 (covers ±6% at $1 step for SPY-sized
+    # names). Index products need wider radius in STRIKE count to cover same OTM %
+    # because their step is 5-25x larger. SPX/SPXW at ±200 × $5 = ±$1000 = ±14% at
+    # $7100 spot, which covers the full TAIL-FLOW OTM range (4-25%).
+    #
+    # Budget check:
+    #   Equities:  15 tickers × 80 strikes × 2 rights × 3 exps ≈ 7,200
+    #   SPX/SPXW:  2 roots × 400 strikes × 2 rights × 3 exps ≈ 4,800
+    #   NDX/RUT:   2 roots × 80 strikes × 2 rights × 3 exps ≈ 960
+    #   Total ≈ 12,960 / 15,000 cap
+    RADIUS_EQUITY = 40
+    RADIUS_INDEX = 200  # wider strike count for $5+ step index products
 
     for root in MVP_WATCHLIST_ROOTS:
         state = snapshot.get(root) or {}
@@ -194,7 +205,10 @@ async def _build_subscription_plan(
         # Per-root strike step (SPY=$1, SPX=$5, NDX=$25, etc.) via root_config
         step = get_strike_step(root, spot)
         atm = round(spot / step) * step
-        strikes = [atm + i * step for i in range(-RADIUS, RADIUS + 1)]
+        # SPX/SPXW specifically need wider strike count for full TAIL coverage.
+        # NDX/RUT have fewer TAIL candidates — keep equity radius there.
+        radius = RADIUS_INDEX if root in ("SPX", "SPXW") else RADIUS_EQUITY
+        strikes = [atm + i * step for i in range(-radius, radius + 1)]
 
         for exp in expirations:
             for k in strikes:
