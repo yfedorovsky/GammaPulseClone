@@ -77,10 +77,13 @@ TIER_3 = [
     # AI / Momentum
     "NBIS", "OKLO", "IREN",
     "CRWV",  # CoreWeave — #1 neocloud, NVDA-reference customer (Apr 19 Gemini research)
+    "APLD",  # Applied Digital — data center / AI hosting REIT; Neocloud thematic
     # Edge AI / Robotics vision (Apr 19 — China humanoid theme +94% YoY)
     "AMBA",  # Ambarella — edge AI vision silicon, robotics/autonomous/security cam
-    # Quantum (added 2026-04-16 — NVDA Ising model catalyst, IONQ most liquid)
-    "IONQ", "RGTI",
+    # Quantum Computing (theme heating up Apr 19 — IONQ significant qubits progress)
+    "IONQ",   # IonQ — trapped-ion, most liquid pure-play quantum
+    "RGTI",   # Rigetti — superconducting, NVDA partnership
+    "QBTS",   # D-Wave Quantum — annealing, was in Stockbee scan 20%+ week
     # Nuclear / SMR (added 2026-04-16 — White House space nuclear directive Apr 14)
     "SMR", "NNE", "UUUU",
     # EVs & clean energy

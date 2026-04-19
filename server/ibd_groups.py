@@ -106,6 +106,27 @@ IBD_GROUPS: list[dict[str, Any]] = [
         "ytd_pct": 61.8,
         "members": ["ASTS", "RKLB"],  # space/satellite adjacent
     },
+    # ── Thematic overlays (GammaPulse additions, not IBD official top-25) ──
+    # Ranks 90+ indicate "not on the IBD paper but tracked for rotation context".
+    # Scanner UI shows these as gray (rank > 5), so they're clearly differentiated
+    # from real IBD top-3 (green) / top-5 (yellow) groups. They still feed the
+    # GROUP_STRENGTH confluence logic if ≥3 members qualify, but won't trigger
+    # the top-5 bull tailwind badge.
+    {
+        "rank": 99,
+        "name": "Quantum Computing [thematic]",
+        "ytd_pct": 0.0,  # unknown — not an IBD-reported group
+        "members": ["IONQ", "RGTI", "QBTS"],  # Apr 19: IONQ qubits progress catalyst
+    },
+    {
+        "rank": 98,
+        "name": "Neocloud / AI Compute Hosting [thematic]",
+        "ytd_pct": 0.0,
+        # Neoclouds gaining ground on hyperscalers through 2027 per Diligence
+        # Stack weekend synthesis. Different from IBD #2 Data Storage (memory)
+        # and from hyperscaler software plays (MSFT/AMZN/GOOGL).
+        "members": ["IREN", "CRWV", "NBIS", "APLD"],
+    },
 ]
 
 
