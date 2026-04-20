@@ -33,6 +33,10 @@ TIER_2 = [
     "GEV",   # GE Vernova — grid, turbines, nuclear, wind; "power is the new real estate"
     # Sovereign silicon / specialty foundry (Apr 19 @Venu_7_ diagram)
     "GFS",   # GlobalFoundries — SiPh roadmap + CHIPS Act + auto + capital return
+    # IBD "best of the best" leaders screen (Apr 20, Comp 96+ AND RS 96+)
+    "AMKR",  # Amkor Technology — packaging, CoWoS adjacent, Group #7
+    "KEYS",  # Keysight — measurement/test, Group #9 Scientific
+    "MPWR",  # Monolithic Power — power mgmt for data centers, Group #38
     # Financials
     "WFC", "C", "GS", "MS", "SCHW", "AXP", "BLK", "SPGI", "BRK.B", "ICE",
     "CME", "PNC", "USB", "COF", "TFC",
@@ -61,6 +65,7 @@ TIER_3 = [
     # Photonics / Fiber / AI Infra (Mir's top themes 2026)
     "AAOI", "COHR", "GLW", "CIEN", "ANET", "VRT", "AXTI", "LITE",
     "VIAV",  # Apr 20 IBD add — Fiber Optics Group #1 (144% YTD)
+    "LASR",  # nLIGHT — lasers/photonics, Group #6 Electronic-Parts leader
     # Semi Equipment (Mir's basket + Apr 20 IBD Group #3 expansion)
     "AEHR", "TER",
     "ICHR",  # Ichor Holdings — 222% YTD, IBD Group #3 top-3 member
@@ -72,6 +77,7 @@ TIER_3 = [
     "NVMI",  # Nova — 52% YTD
     "ENTG",  # Entegris — 63% YTD
     "PLAB",  # Photronics — 45% YTD
+    "AEIS",  # Advanced Energy Industries — semi equipment power, Group #3
     # Space (SpaceX IPO catalyst)
     "ASTS", "RKLB",
     # AI / Momentum
@@ -124,6 +130,11 @@ TIER_3 = [
     "ROAD",  # Construction Partners — 16% YTD, IBD Group #15 heavy construction
     "FUTU",  # Futu — 2% YTD, finance-investment banking
     "MRX",   # Marex — 34% YTD, finance-investment banking
+    # IBD leaders screen Apr 20 — power + thermal + EMS (AI infra beneficiaries)
+    "MOD",   # Modine Manufacturing — thermal mgmt for AI racks, Group #20 HVAC
+    "VICR",  # Vicor — power conversion / 800VDC thesis, Group #6 Elec-Parts
+    "CLS",   # Celestica — EMS for hyperscalers, Group #13 Contract Mfg
+    "BE",    # Bloom Energy — fuel cells for data center power, Group #22 Alt
 ]
 
 

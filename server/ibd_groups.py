@@ -47,33 +47,32 @@ IBD_GROUPS: list[dict[str, Any]] = [
         "members": [
             "AEHR", "ICHR", "UCTT", "FORM", "TER", "MKSI", "KLIC",
             "ONTO", "NVMI", "AMAT", "LRCX", "KLAC", "ASML", "ENTG",
-            "PLAB", "AESI",
+            "PLAB", "AESI", "AEIS",
         ],
     },
     {
         "rank": 6,
         "name": "Electronic-Parts",
         "ytd_pct": 53.0,
-        # Not pulled from screenshot directly — conservative universe subset
-        "members": ["GLW", "ANET", "VRT"],
+        "members": ["GLW", "ANET", "VRT", "LASR", "VICR"],
     },
     {
         "rank": 7,
         "name": "Elec-Semiconductor Mfg",
         "ytd_pct": 44.6,
-        "members": ["NVDA", "AVGO", "AMD", "TSM", "MRVL", "INTC", "SMH"],
+        "members": ["NVDA", "AVGO", "AMD", "TSM", "MRVL", "INTC", "SMH", "AMKR"],
     },
     {
         "rank": 9,
         "name": "Elec-Scientific/Mrsng",
         "ytd_pct": 42.2,
-        "members": ["AXTI", "COHR"],  # photonics/measurement
+        "members": ["AXTI", "COHR", "KEYS"],
     },
     {
         "rank": 13,
         "name": "Elec-Contract Mfg",
         "ytd_pct": 40.3,
-        "members": [],  # no core universe overlap
+        "members": ["CLS"],  # Celestica — EMS for hyperscalers
     },
     {
         "rank": 19,
@@ -91,7 +90,14 @@ IBD_GROUPS: list[dict[str, Any]] = [
         "rank": 20,
         "name": "Bldg-A/C & Heating",
         "ytd_pct": 35.1,
-        "members": ["FIX"],  # Comfort Systems — Sector Leader
+        "members": ["FIX", "MOD"],  # FIX Sector Leader, MOD thermal mgmt for AI racks
+    },
+    {
+        "rank": 22,
+        "name": "Energy-Alternative",
+        "ytd_pct": 21.3,
+        # GEV (data center power) + BE (fuel cells for DCs). Apr 20 IBD paper.
+        "members": ["GEV", "BE"],
     },
     {
         "rank": 21,
@@ -105,6 +111,13 @@ IBD_GROUPS: list[dict[str, Any]] = [
         "name": "Telecom-Infrastructure",
         "ytd_pct": 61.8,
         "members": ["ASTS", "RKLB"],  # space/satellite adjacent
+    },
+    {
+        "rank": 38,
+        "name": "Elec-Semiconductor Specialty",
+        "ytd_pct": 35.0,  # estimated from leaders screen
+        # Power mgmt + timing + specialty semi; Apr 20 leaders screen
+        "members": ["MPWR"],  # Monolithic Power — data center power mgmt
     },
     # ── Thematic overlays (GammaPulse additions, not IBD official top-25) ──
     # Ranks 90+ indicate "not on the IBD paper but tracked for rotation context".
