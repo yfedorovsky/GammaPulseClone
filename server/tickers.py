@@ -135,6 +135,13 @@ TIER_3 = [
     "VICR",  # Vicor — power conversion / 800VDC thesis, Group #6 Elec-Parts
     "CLS",   # Celestica — EMS for hyperscalers, Group #13 Contract Mfg
     "BE",    # Bloom Energy — fuel cells for data center power, Group #22 Alt
+    # Mir's focus list Apr 19 — filling gaps
+    "ALAB",  # Astera Labs — AI connectivity/CXL silicon, Group #38 specialty
+    "PL",    # Planet Labs — earth observation satellites, space adjacent
+    "FLY",   # Firefly Aerospace — space launch, momentum (Stockbee scan)
+    "POWL",  # Powell Industries — DC electrical distribution, Group #29
+    "TTMI",  # TTM Technologies — PCBs/EMS, Group #13 Contract Mfg
+    "LWLG",  # Lightwave Logic — polymer photonics/modulators, optical speculative
 ]
 
 

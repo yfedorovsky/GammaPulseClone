@@ -72,7 +72,7 @@ IBD_GROUPS: list[dict[str, Any]] = [
         "rank": 13,
         "name": "Elec-Contract Mfg",
         "ytd_pct": 40.3,
-        "members": ["CLS"],  # Celestica — EMS for hyperscalers
+        "members": ["CLS", "TTMI"],  # EMS/PCBs for hyperscalers
     },
     {
         "rank": 19,
@@ -117,7 +117,13 @@ IBD_GROUPS: list[dict[str, Any]] = [
         "name": "Elec-Semiconductor Specialty",
         "ytd_pct": 35.0,  # estimated from leaders screen
         # Power mgmt + timing + specialty semi; Apr 20 leaders screen
-        "members": ["MPWR"],  # Monolithic Power — data center power mgmt
+        "members": ["MPWR", "ALAB"],  # MPWR=DC power, ALAB=CXL/AI connectivity
+    },
+    {
+        "rank": 29,
+        "name": "Bldg-Power Infrastructure",
+        "ytd_pct": 55.0,  # estimated from leaders screen
+        "members": ["POWL"],  # Powell Industries — DC electrical distribution
     },
     # ── Thematic overlays (GammaPulse additions, not IBD official top-25) ──
     # Ranks 90+ indicate "not on the IBD paper but tracked for rotation context".
