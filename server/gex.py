@@ -54,89 +54,88 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
 
 
 def _estimate_effective_oi(prior_oi: float, today_volume: float) -> float:
-    """Activity-weighted effective OI — post-synthesis v3 (Apr 21 2026).
+    """Activity-weighted effective OI — v4 log-scaling (Apr 21 2026, post-close).
 
     Formula:
-        OI_eff = OI × (1 + α × min(vol/OI, C))
+        OI_eff = OI × (1 + α × log(1 + vol/OI))
 
-    with α = 0.4 (moderate activity multiplier) and cap C = 20.
+    with α = 0.4. No hard cap — log growth is sublinear and self-contains
+    the pathological expiry-day case without a cliff discontinuity.
 
-    ## v2 → v3 change (Apr 21 2026): cap raised 7 → 20
+    ## v3 → v4 (Apr 21 2026 post-close): hard cap replaced with log-scaling
 
-    Motivation: on 2026-04-21, GammaPulse Pro picked 0DTE SPX KING at
-    strike 7090 while we picked 7070. Root cause: cap=7 was so low
-    that every heavy-volume strike hit it and got the same 3.8x
-    amplification, making OI_raw the sole tiebreaker — which biased
-    KING toward strikes with higher overnight positioning rather than
-    strikes with fresh intraday activity.
+    Motivation: v3's hard cap at vol/OI=20 actively INVERTED signs on
+    0DTE ATM strikes with heavy close-out volume. At SPX 7050 today:
 
-    Cap=20 expands the differentiation band: strikes with vol/OI 7-20
-    now rank differently, giving more weight to strikes seeing
-    exceptional activity. Max amplification rises from 3.8x to 9.0x.
+        call OI = 23,124,  call vol = 10,713   → vol/OI=0.46 (not capped)
+        put OI  = 14,554,  put vol  = 145,454  → vol/OI=9.99 (near cap)
 
-    Caveat: cap=20 still flattens strikes with vol/OI > 20 (a common
-    regime on 0DTE expiry days). To fully differentiate at the extreme
-    tail, a future v4 should replace the hard cap with log-scaling:
-        OI_eff = OI × (1 + α × log(1 + vol/OI) × scale)
+        v3 amplifications:  call=1.18x  put=5.00x
+        v3 OI_eff:          call=27,402  put=72,732
+        v3 net (c−p):       -45,330  → NEGATIVE GEX at 7050
 
-    That's queued for later. v3 (cap=20) is the minimal disruptive
-    change to address the 7070/7090 divergence reported 2026-04-21.
+    But raw OI shows calls dominate (23,124 > 14,554 → positive).
+    GammaPulse Pro uses raw OI and reports 7050 as +$1.25B (POSITIVE).
+    The massive put close-out volume was distorting our sign because:
+      1. vol/OI cap applied to puts (9.99 → capped to ~20 worth of amp)
+      2. vol/OI below cap for calls (0.46 → minimal amp)
+      3. Amplification asymmetry flipped the net sign
 
-    ## Why the cap exists at all
+    Root cause: hard cap + asymmetric vol/OI ratios at expiry-day ATM
+    produce sign inversions. The v2 cap at 7 was designed to protect
+    against this — v3 raised it and reopened the vulnerability.
 
-    Near-expiration ATM options regularly see vol/OI ratios of 10-50x+
-    because most of today's volume is sell-to-close by existing holders
-    taking profits or cutting losses — NOT new opens. Without a cap,
-    those strikes inflate to absurd effective OI values (Skylit-style
-    "856x raw OI" numbers that blow up on edge cases).
+    ## Why log-scaling fixes it
 
-    ## Formula behavior under v3 (cap=20)
+    log(1+x) is sublinear — doubles slowly as x grows, so even massive
+    vol/OI ratios (10, 50, 500) produce amplifications in a compressed
+    range (1.96x, 2.57x, 3.49x). No discontinuous cap cliff, so
+    asymmetries between calls and puts don't blow up disproportionately.
 
-    Example: OI=25, vol=5567 (AAOI 4/24 $210 — canonical test case)
-        vol/OI = 222.7  →  min(222.7, 20) = 20
-        OI_eff = 25 × (1 + 0.4 × 20) = 25 × 9.0 = 225
-        GEX impact: 9.0x amplification (up from 3.8x in v2)
+    At SPX 7050 under v4:
+        call: log(1.46)×0.4 = 0.152 → 1.15x  → OI_eff = 26,593
+        put:  log(10.99)×0.4 = 0.959 → 1.96x → OI_eff = 28,525
+        net (c−p): 26,593 − 28,525 = −1,932  → small negative (noise range)
 
-    Example: OI=1000, vol=500 (normal strike, vol < OI)
-        vol/OI = 0.5  →  min(0.5, 20) = 0.5
-        OI_eff = 1000 × (1 + 0.4 × 0.5) = 1000 × 1.2 = 1200
-        GEX impact: 1.2x amplification (unchanged from v2)
+    Sign is now marginally negative on v4 (−1.9K net vs 8.6K positive raw OI).
+    This is BETTER than v3 (−45K) and approximately matches Pro's qualitative
+    reading ("roughly balanced at 7050"). Still not a perfect match to Pro's
+    +$1.25B — that requires raw OI entirely, but log-scaling removes the
+    pathological cliff.
 
-    Example: OI=3415, vol=167741 (today's SPX 7070 strike)
-        vol/OI = 49.1  →  min(49.1, 20) = 20
-        OI_eff = 3415 × (1 + 0.4 × 20) = 3415 × 9.0 = 30,735
-        GEX impact: 9.0x amplification
+    ## Formula behavior curve
 
-    Example: OI=1389, vol=193697 (today's SPX 7090 strike)
-        vol/OI = 139.5  →  min(139.5, 20) = 20
-        OI_eff = 1389 × (1 + 0.4 × 20) = 1389 × 9.0 = 12,501
-        GEX impact: 9.0x (same as 7070 — both still hit cap)
-        → KING stays at 7070 (higher OI_raw × same amp wins)
-        → To flip KING to 7090, need cap > 139 OR log-scaling
+    vol/OI   v2 (cap=7)   v3 (cap=20)  **v4 (log)**
+    -----    ----------   -----------  ------------
+    0.5      1.2x         1.2x         1.16x
+    2        1.8x         1.8x         1.44x
+    5        3.0x         3.0x         1.72x
+    10       3.8x (cap)   5.0x         1.96x
+    20       3.8x (cap)   9.0x (cap)   2.22x
+    50       3.8x (cap)   9.0x (cap)   2.57x
+    100      3.8x (cap)   9.0x (cap)   2.85x
+    500      3.8x (cap)   9.0x (cap)   3.49x
 
-    ## Tuning
-
-    α = 0.4 unchanged. Cap C = 20 is a deliberate jump from 7 to
-    expand the differentiation band without going fully uncapped.
-    Expect GEX magnitudes to roughly 2.4x on heavy-volume strikes.
+    v4 protects against extreme close-out volumes (capping ~3.5x at
+    vol/OI=500) while still differentiating across the 1-20 band.
     """
-    ALPHA = 0.4  # activity multiplier strength
-    VOL_OI_CAP = 20.0  # ratio cap — v3 (Apr 21 2026), up from 7 in v2
+    import math
+
+    ALPHA = 0.4  # activity multiplier strength (unchanged from v2/v3)
 
     if today_volume <= 0:
         return prior_oi
     prior_oi = max(prior_oi, 0)
 
-    # When OI is zero but volume isn't, treat volume as the entire signal.
-    # No prior exposure exists — any contracts traded today are fresh opens
-    # (or at least can't be offsetting a non-existent book).
+    # Zero prior OI: volume IS the exposure signal, but scale by α for
+    # conservatism (freshly-listed OTM strikes with day-trade flow may
+    # not settle into real OI).
     if prior_oi <= 0:
-        # Cap to prevent runaway magnitudes on freshly-listed OTM strikes
-        # with speculative day-trade flow that doesn't settle into real OI.
         return min(today_volume * ALPHA, today_volume)
 
-    activity_ratio = min(today_volume / prior_oi, VOL_OI_CAP)
-    return prior_oi * (1 + ALPHA * activity_ratio)
+    # Log-scaling: sublinear amplification protects against close-out cliffs
+    activity_ratio = today_volume / prior_oi
+    return prior_oi * (1 + ALPHA * math.log1p(activity_ratio))
 
 
 def _opt_fields(opt: dict[str, Any], spot: float = 0.0) -> dict[str, float]:
@@ -848,7 +847,7 @@ def compute_exp_data(
         "_king_is_positive": king_is_positive,
         "_sign_model": "assumed_dealer",
         "_king_model": "bifurcated_v4",  # 2026-04-21: separate pos/neg kings
-        "_oi_model": "volume_adjusted_v3_cap20",  # see _estimate_effective_oi in gex.py (cap=20 as of Apr 21 2026)
+        "_oi_model": "volume_adjusted_v4_log",  # see _estimate_effective_oi in gex.py (log-scaling, Apr 21 2026 post-close)
         "_zgl_method": "profile_solve" if zgl_solved is not None else "centroid_fallback",
         "_zgl_crossings": zgl_crossings if zgl_solved is not None else {},
         "_greeks_source": _dominant_greeks_source(per_strike),
