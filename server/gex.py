@@ -575,6 +575,17 @@ def compute_exp_data(
     king_gex_abs = abs(per_strike[king_strike]["net_gex"]) or 1
     significance_threshold = king_gex_abs * 0.03  # 3% of king
 
+    # Sanity cap on ceiling/floor distance from spot (added 2026-04-20).
+    # AVGO had ceiling $510 when trading $397-406 (28% above spot) because
+    # a far-OTM +GEX cluster exceeded the significance threshold. Ceilings
+    # that far from spot are not tradeable intraday levels — they act as
+    # "blue sky" zones, making SELL_POP signals impossible to ever fire.
+    # Cap search window at 10% above/below spot for primary selection.
+    MAX_CEILING_DIST_PCT = 0.10   # 10% above spot
+    MAX_FLOOR_DIST_PCT = 0.10     # 10% below spot
+    ceiling_max = spot * (1.0 + MAX_CEILING_DIST_PCT)
+    floor_min = spot * (1.0 - MAX_FLOOR_DIST_PCT)
+
     floor_strike = None
     ceiling_strike = None
     best_below = 0.0
@@ -584,24 +595,32 @@ def compute_exp_data(
         g = per_strike[s]["net_gex"]
         if g <= 0:
             continue
-        if s < spot and g > best_below:
+        if s < spot and s >= floor_min and g > best_below:
             best_below = g
             floor_strike = s
-        elif s > spot and g >= significance_threshold:
-            # Track the HIGHEST significant +GEX (not the strongest)
+        elif s > spot and s <= ceiling_max and g >= significance_threshold:
+            # Track the HIGHEST significant +GEX within window
             ceiling_strike = s  # keeps updating to higher strikes
 
-    # Fallbacks if nothing found
+    # Fallbacks if nothing found within window
     if ceiling_strike is None:
-        # Fall back to strongest +GEX above spot
+        # Fall back to strongest +GEX above spot, still within 15% cap
+        # (relaxed fallback window since no signif. level exists in 10%)
+        ceiling_max_fallback = spot * 1.15
         best_above = 0.0
         for s in strikes_sorted:
-            if s > spot and s != king_strike and per_strike[s]["net_gex"] > best_above:
+            if (s > spot and s <= ceiling_max_fallback
+                    and s != king_strike
+                    and per_strike[s]["net_gex"] > best_above):
                 best_above = per_strike[s]["net_gex"]
                 ceiling_strike = s
     if floor_strike is None and king_strike < spot:
+        # Relaxed floor fallback: allow 15% below spot if nothing within 10%
+        floor_min_fallback = spot * 0.85
         for s in sorted(per_strike.keys(), reverse=True):
-            if s < spot and s != king_strike and per_strike[s]["net_gex"] > 0:
+            if (s < spot and s >= floor_min_fallback
+                    and s != king_strike
+                    and per_strike[s]["net_gex"] > 0):
                 floor_strike = s
                 break
 

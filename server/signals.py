@@ -761,6 +761,117 @@ def _determine_direction(state: dict[str, Any]) -> str | None:
     return None
 
 
+# ── Intraday momentum verification gate ───────────────────────────────
+# Added 2026-04-20 after AVGO false-positive case:
+#   GEX "MAGNET UP" signal stayed bullish while AVGO price faded $406 → $397.
+#   Two A-grade BUY CALLS alerts fired on a stock clearly rolling over.
+# The gate checks recent price trajectory and blocks direction-mismatched
+# signals. GEX tells us STRUCTURE; momentum tells us what ACTUALLY happened.
+
+_momentum_cache: dict[str, tuple[float, dict | None]] = {}  # ticker → (ts, stats)
+_MOMENTUM_CACHE_TTL_S = 60.0
+
+# Thresholds calibrated against AVGO 2026-04-20 false positive:
+#   AVGO opened $406.54, faded to $399 by 10:00, $397 by 12:35
+#   Two A-grade BULL alerts fired at 10:28 and 12:35 — both wrong
+#   15m lookback missed it (fade was OLDER than 15m). Using open + day-high.
+_BULL_BLOCK_BELOW_DAY_HIGH_PCT = -1.5  # Block BULL if spot > 1.5% below day-high
+_BULL_BLOCK_BELOW_OPEN_PCT = -0.5      # Block BULL if spot > 0.5% below open
+_BEAR_BLOCK_ABOVE_DAY_LOW_PCT = 1.5    # Block BEAR if spot > 1.5% above day-low
+_BEAR_BLOCK_ABOVE_OPEN_PCT = 0.5       # Block BEAR if spot > 0.5% above open
+
+
+def _intraday_momentum_stats(ticker: str) -> dict | None:
+    """Return today's intraday momentum picture: open, high, low, current, and
+    derived percent changes. None if insufficient data.
+
+    Structure:
+      {
+        "open": float,           # first snapshot of day (proxy for open)
+        "high": float,           # intraday high so far
+        "low": float,            # intraday low so far
+        "current": float,        # latest snapshot
+        "vs_open_pct": float,    # (current / open - 1) * 100
+        "vs_high_pct": float,    # (current / high - 1) * 100 (always <= 0)
+        "vs_low_pct": float,     # (current / low - 1) * 100  (always >= 0)
+      }
+    """
+    import datetime as _dt
+    now_ts = time.time()
+
+    cached = _momentum_cache.get(ticker)
+    if cached and (now_ts - cached[0]) < _MOMENTUM_CACHE_TTL_S:
+        return cached[1]
+
+    # Today's session window (08:00 local, generous pre-market coverage)
+    today_start = _dt.datetime.now().replace(hour=8, minute=0, second=0, microsecond=0)
+    today_start_ts = int(today_start.timestamp())
+
+    result: dict | None = None
+    try:
+        con = sqlite3.connect("snapshots.db")
+        row = con.execute(
+            "SELECT MIN(spot) AS low, MAX(spot) AS high, "
+            "(SELECT spot FROM snapshots WHERE ticker=? AND spot>0 AND ts>=? "
+            "  ORDER BY ts ASC LIMIT 1) AS open_spot, "
+            "(SELECT spot FROM snapshots WHERE ticker=? AND spot>0 "
+            "  ORDER BY ts DESC LIMIT 1) AS current_spot "
+            "FROM snapshots WHERE ticker=? AND spot>0 AND ts>=?",
+            (ticker, today_start_ts, ticker, ticker, today_start_ts),
+        ).fetchone()
+        con.close()
+        if row and row[0] and row[2] and row[3]:
+            low, high, open_spot, current = row
+            if open_spot > 0 and high > 0 and low > 0:
+                result = {
+                    "open": open_spot,
+                    "high": high,
+                    "low": low,
+                    "current": current,
+                    "vs_open_pct": (current / open_spot - 1.0) * 100,
+                    "vs_high_pct": (current / high - 1.0) * 100,
+                    "vs_low_pct": (current / low - 1.0) * 100,
+                }
+    except Exception:
+        result = None
+
+    _momentum_cache[ticker] = (now_ts, result)
+    return result
+
+
+def _momentum_gate_blocks(
+    ticker: str, direction: str,
+) -> tuple[bool, dict | None, str]:
+    """Return (blocked, stats, reason_str).
+
+    BULL is blocked when the stock is meaningfully fading intraday:
+      - Current is >1.5% below today's high (clear rejection off highs), OR
+      - Current is >0.5% below today's open (red day)
+
+    BEAR is blocked when the stock is meaningfully rallying intraday:
+      - Current is >1.5% above today's low, OR
+      - Current is >0.5% above today's open
+
+    None stats (insufficient data) never blocks — fail-open.
+    """
+    stats = _intraday_momentum_stats(ticker)
+    if stats is None:
+        return False, None, ""
+
+    if direction == "BULL":
+        if stats["vs_high_pct"] < _BULL_BLOCK_BELOW_DAY_HIGH_PCT:
+            return True, stats, f"spot {stats['vs_high_pct']:+.2f}% vs day-high (>1.5% reject)"
+        if stats["vs_open_pct"] < _BULL_BLOCK_BELOW_OPEN_PCT:
+            return True, stats, f"spot {stats['vs_open_pct']:+.2f}% vs open (red day)"
+    elif direction == "BEAR":
+        if stats["vs_low_pct"] > _BEAR_BLOCK_ABOVE_DAY_LOW_PCT:
+            return True, stats, f"spot {stats['vs_low_pct']:+.2f}% vs day-low (>1.5% bounced)"
+        if stats["vs_open_pct"] > _BEAR_BLOCK_ABOVE_OPEN_PCT:
+            return True, stats, f"spot {stats['vs_open_pct']:+.2f}% vs open (green day)"
+
+    return False, stats, ""
+
+
 def _determine_signal_type(state: dict[str, Any], direction: str) -> str:
     """Determine the signal type name based on GEX structure."""
     signal = state.get("signal", "")
@@ -913,6 +1024,19 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
 
         if direction is None:
             continue
+
+        # Intraday momentum gate (added 2026-04-20 after AVGO false positive)
+        # Don't fire BULL if stock is red or rejected off day-high by >1.5%.
+        # Don't fire BEAR if stock is green or bounced off day-low by >1.5%.
+        # Indexes excluded — they're benchmarks; we WANT signals on counter-moves.
+        if ticker not in _INDEX_TICKERS:
+            blocked, _stats, reason = _momentum_gate_blocks(ticker, direction)
+            if blocked:
+                print(
+                    f"[SOE-MOMENTUM-BLOCK] {ticker} dir={direction} {reason}",
+                    flush=True,
+                )
+                continue
 
         # Rule #1 — block puts in non-bear regime.
         # SPY/QQQ/IWM are the exception: index puts on a red day are a

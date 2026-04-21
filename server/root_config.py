@@ -132,6 +132,41 @@ _REGISTRY: dict[str, RootConfig] = {
         european_exercise=True,
         strike_step_rules=((float("inf"), 1.0),),
     ),
+
+    # ── Tier 2 thematic roots with non-standard strike grids (Apr 20) ──
+    # Added because FSLR 192.5C 4/24 was missed: FSLR has $2.50 strikes in
+    # the $150-250 range (not $1 like the generic heuristic assumes).
+    # Without these, the subscription grid generates integer strikes and
+    # misses half-dollar strikes where institutional flow lives.
+    "FSLR": RootConfig(
+        root="FSLR", family="equity",
+        dividend_yield=0.0,
+        contract_multiplier=100,
+        strike_step_rules=(
+            (300.0, 2.5),               # ATM ~$192, real strikes are $2.50 apart
+            (float("inf"), 5.0),
+        ),
+    ),
+    "SNDK": RootConfig(
+        # Post-spinoff SNDK trades $900+ with $10 strikes typically
+        root="SNDK", family="equity",
+        dividend_yield=0.0,
+        contract_multiplier=100,
+        strike_step_rules=(
+            (500.0, 5.0),
+            (float("inf"), 10.0),
+        ),
+    ),
+    "GEV": RootConfig(
+        # GE Vernova $990+ with $10 strikes typical
+        root="GEV", family="equity",
+        dividend_yield=0.003,
+        contract_multiplier=100,
+        strike_step_rules=(
+            (500.0, 5.0),
+            (float("inf"), 10.0),
+        ),
+    ),
 }
 
 

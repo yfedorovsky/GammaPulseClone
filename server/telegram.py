@@ -130,18 +130,51 @@ def format_flow_alert(alert: dict[str, Any]) -> str:
         call_strike = strike_val
         put_strike = strike_val
 
+    # Signal quality tiers based on V/OI (volume vs open interest ratio):
+    #   V/OI < 1.0x   → existing OI dominates (weakest — mostly OI noise)
+    #   V/OI 1.0-1.5x → moderate new positioning (confirm with other signals)
+    #   V/OI >= 1.5x  → strong new positioning (prescribe trade)
+    # Extreme notional ($10M+) bypasses V/OI — meaningful regardless.
+    vol_oi = alert.get('vol_oi', 0) or 0
+    notional = alert.get('notional', 0) or 0
+    strong_signal = vol_oi >= 1.5 or notional >= 10_000_000
+    moderate_signal = (1.0 <= vol_oi < 1.5) and not strong_signal
+
+    def _tier_suffix() -> str:
+        if strong_signal:
+            return ""
+        if moderate_signal:
+            return " — moderate new positioning (confirm)"
+        return " — existing OI dominates (weak signal)"
+
     if otype == "CALL" and side == "ASK":
-        action = "🟢 BUY CALLS — big money buying"
-        trade = f">> {ticker} ${call_strike}C {exp}"
+        action = "🟢 BUY CALLS — big money buying" if strong_signal else f"🟢 CALL BUYING{_tier_suffix()}"
+        trade = f">> {ticker} ${call_strike}C {exp}" if strong_signal else ""
     elif otype == "CALL" and side == "BID":
-        action = "🔴 BUY PUTS — big money dumping calls"
-        trade = f">> {ticker} ${put_strike}P {exp}"
+        # CALL + BID is ambiguous: bearish shorting OR covered-call income OR rolling.
+        if strong_signal:
+            action = "🔴 BEARISH CALL SELLING — new positioning (verify vs. put flow)"
+            trade = f">> {ticker} ${put_strike}P {exp}"
+        elif moderate_signal:
+            action = "🔴 CALL SELLING — moderate new positioning (may be bearish OR covered-call)"
+            trade = ""
+        else:
+            action = "🔴 CALL SELLING — existing OI dominates; likely covered-call / roll"
+            trade = ""
     elif otype == "PUT" and side == "ASK":
-        action = "🔴 BUY PUTS — big money buying protection"
-        trade = f">> {ticker} ${put_strike}P {exp}"
+        action = "🔴 BUY PUTS — big money buying protection" if strong_signal else f"🔴 PUT BUYING{_tier_suffix()}"
+        trade = f">> {ticker} ${put_strike}P {exp}" if strong_signal else ""
     elif otype == "PUT" and side == "BID":
-        action = "🟢 BUY CALLS — big money selling puts (bullish)"
-        trade = f">> {ticker} ${call_strike}C {exp}"
+        # PUT + BID: bullish cash-secured OR hedge unwind.
+        if strong_signal:
+            action = "🟢 BUY CALLS — big money selling puts (bullish)"
+            trade = f">> {ticker} ${call_strike}C {exp}"
+        elif moderate_signal:
+            action = "🟢 PUT SELLING — moderate new positioning (bullish cash-secured or hedge unwind)"
+            trade = ""
+        else:
+            action = "🟢 PUT SELLING — existing OI dominates; likely hedge unwind"
+            trade = ""
     else:
         action = f"🟡 NEUTRAL — {side}"
         trade = ""

@@ -528,6 +528,70 @@ async def _check_scalp_alerts() -> list[dict[str, Any]]:
                 })
                 _record_alert(ticker, "SELL_POP")
 
+        # ── FAILED_RALLY: intraday fade short (includes gap-and-fade) ──
+        # Added 2026-04-20 after AVGO case:
+        #   AVGO opened $406.54, faded to $397 all day (gap-and-fade pattern).
+        #   SELL_POP couldn't fire (ceiling was far-OTM at $510).
+        #
+        # Catches TWO patterns SELL_POP misses:
+        #   A) Intraday reversal — stock rallied, then rejected day-high
+        #   B) Gap-and-fade — stock gapped up at open, never rallied, pure drift down
+        # Both show up as: current meaningfully below day-high AND below open.
+        #
+        # Criteria:
+        #   - Current spot ≥ 1.5% below today's HIGH
+        #   - Current spot ≥ 0.5% below today's OPEN
+        #   - Past 10:15 AM local (let intraday pattern develop, skip opening noise)
+        #   - Normal mode only (skip trend-up days per SELL_POP lesson)
+        #   - Stock ≥ $10 (avoid thin small caps)
+        mins_into_session = now.hour * 60 + now.minute
+        if (trend_mode == "NORMAL" and spot >= 10
+                and mins_into_session >= 615):  # 10:15 AM
+            try:
+                from .signals import _intraday_momentum_stats
+                stats = _intraday_momentum_stats(ticker)
+            except Exception:
+                stats = None
+
+            if stats:
+                open_spot = stats.get("open", 0)
+                day_high = stats.get("high", 0)
+                vs_open_pct = stats.get("vs_open_pct", 0)
+                vs_high_pct = stats.get("vs_high_pct", 0)
+
+                rejected_from_high = vs_high_pct <= -1.5
+                below_open = vs_open_pct <= -0.5
+
+                if (rejected_from_high and below_open and open_spot > 0 and day_high > 0
+                        and _can_alert(ticker, "FAILED_RALLY")):
+                    contract = _suggest_contract(ticker, spot, "PUTS")
+                    target = floor_val if floor_val and floor_val < spot else spot * 0.98
+                    stop = day_high * 1.003
+                    range_from_open_pct = (day_high / open_spot - 1.0) * 100
+                    # Characterize the pattern for the alert text
+                    pattern = "gap-and-fade" if range_from_open_pct < 0.5 else "failed intraday rally"
+
+                    alerts.append({
+                        "ticker": ticker,
+                        "type": "FAILED_RALLY",
+                        "emoji": "📉",
+                        "headline": f"FAILED RALLY — {pattern.title()}",
+                        "detail": (
+                            f"Open ${open_spot:.2f} → High ${day_high:.2f} → "
+                            f"Now ${spot:.2f}\n"
+                            f"{vs_high_pct:+.2f}% from day-high, "
+                            f"{vs_open_pct:+.2f}% from open\n"
+                            f"Pattern: {pattern} — dealers fading the ramp\n"
+                            f"Target: ${target:.2f} | Stop above day-high ${day_high:.2f}"
+                        ),
+                        "contract": contract,
+                        "direction": "PUTS",
+                        "spot": spot,
+                        "target": target,
+                        "stop": stop,
+                    })
+                    _record_alert(ticker, "FAILED_RALLY")
+
         # ── FLOOR BREAK: breakdown below support ──────────────────
         if floor_val and spot < floor_val and prev_spot and prev_spot >= floor_val:
             if _can_alert(ticker, "FLOOR_BREAK"):

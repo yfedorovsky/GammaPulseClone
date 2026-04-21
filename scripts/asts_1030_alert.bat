@@ -18,9 +18,9 @@ setlocal
 cd /d C:\Dev\GammaPulse
 call .venv\Scripts\activate.bat
 
-REM Load .env for TELEGRAM credentials
-for /f "usebackq tokens=1,* delims==" %%a in (".env") do (
-    if not "%%a"=="" if not "%%a:~0,1%"=="#" set "%%a=%%b"
+REM Load .env for TELEGRAM credentials (skip comment and blank lines via findstr)
+for /f "usebackq tokens=1,* delims==" %%a in (`findstr /b /v "#" ".env" 2^>nul`) do (
+    if not "%%a"=="" set "%%a=%%b"
 )
 
 python -X utf8 -m scripts.asts_1030_alert

@@ -80,6 +80,33 @@ TIER_3 = [
     "AEIS",  # Advanced Energy Industries — semi equipment power, Group #3
     # Space (SpaceX IPO catalyst)
     "ASTS", "RKLB",
+    "SATS",  # EchoStar — spectrum/satellite/Boost Mobile, RS 93, liquid leader
+    "VSAT",  # Viasat — defense/gov satcom + multi-orbit connectivity (GPT Apr 19)
+    "GSAT",  # Globalstar — AMZN deal catalyst, 52w high, satellite operator
+    # Signal integrity / comms semis breakout (GPT Apr 19)
+    "SMTC",  # Semtech — data center interconnect, comms infra, +36% 1M
+    # Aerospace & defense specialty metals
+    "ATI",   # ATI Inc — titanium/Ni alloys for jet engines + DoD, RS 99
+    # Drone / electronic warfare / autonomous defense (Grok Apr 19 gap analysis)
+    "AVAV",  # AeroVironment — Switchblade loitering munitions, drone warfare pure-play
+    "KTOS",  # Kratos Defense — unmanned aerial, tactical drones, hypersonics
+    # Power transmission infrastructure (the real gap — we had generation, not transmission)
+    "PWR",   # Quanta Services — grid/transmission onshoring, AI data center power backbone
+    "MYRG",  # MYR Group — mid-cap T&D pure-play, higher-beta PWR alternative
+    "FLR",   # Fluor — diversified EPC, $25.5B backlog, TeraWulf 480MW DC contract
+    # Rare earth / critical minerals onshoring (Pentagon stockpile thesis)
+    "MP",    # MP Materials — US rare earth miner, only scaled domestic NdPr producer
+    "USAR",  # USA Rare Earth — Oklahoma magnet plant, DoD-adjacent (Perplexity Apr 19)
+    # Drone defense — Army Program of Record pure-play
+    "RCAT",  # Red Cat Holdings — Short Range Reconnaissance PoR, drone pure-play
+    # ADAS / autonomous silicon (beyond NVDA)
+    "MBLY",  # Mobileye — EyeQ6/Chauffeur ramp, dominant global ADAS supplier
+    # Stablecoin / crypto infrastructure (beyond MSTR/COIN)
+    "CRCL",  # Circle Internet Group — USDC issuer, pure stablecoin rail
+    # Warehouse robotics / industrial automation
+    "SYM",   # Symbotic — warehouse automation at scale, Walmart backlog
+    # Cyber data resilience (fastest-growing post-IPO cyber)
+    "RBRK",  # Rubrik — data security / backup, AI-era cyber pure-play
     # AI / Momentum
     "NBIS", "OKLO", "IREN",
     "CRWV",  # CoreWeave — #1 neocloud, NVDA-reference customer (Apr 19 Gemini research)
@@ -94,11 +121,13 @@ TIER_3 = [
     "SMR", "NNE", "UUUU",
     # EVs & clean energy
     "FSLR", "ENPH", "SEDG", "RUN", "PLUG", "CHPT", "BLNK",
+    "AMPX",  # Amprius Technologies — silicon anode batteries (Airbus, DoD, eVTOL)
     # Biotech / pharma
     "XBI", "MRNA", "BNTX", "NVAX", "BIIB", "ILMN", "ZTS", "SYK", "EW", "BSX", "BDX",
     "BAX", "RMD", "DXCM", "IDXX", "A",
     # Crypto-related (MSTR = BTC proxy, Qullamaggie + Stockbee momentum leader)
     "MARA", "RIOT", "MSTR", "CLSK", "HUT", "BITF",
+    "CIFR",  # Cipher Mining — BTC miner pivoted to AI hosting (Fluidstack/Google deal)
     # Speculatives / meme
     "GME", "AMC", "RDDT", "BB", "SOFI", "WISH", "CLOV", "PTON", "BYND", "FUBO",
     # Cyclicals / other
@@ -125,6 +154,8 @@ TIER_3 = [
     "TFPM",  # Triple Flag Precious — 9% YTD, Sector Leader
     "WPM",   # Wheaton Precious — 30% YTD, Sector Leader
     "PAAS",  # Pan American Silver — major silver miner, IBD Mining-Gold/Silver
+    # Event-trade / FDA catalyst (specific binary: July 23-24 peptide advisory mtg)
+    "HIMS",  # Hims & Hers — peptide facility + 35% SI + FDA July 23-24 committee
     # IBD Sector Leaders — Industrials + Financials
     "FIX",   # Comfort Systems — 77% YTD, IBD Group #20 HVAC
     "ROAD",  # Construction Partners — 16% YTD, IBD Group #15 heavy construction
@@ -137,11 +168,15 @@ TIER_3 = [
     "BE",    # Bloom Energy — fuel cells for data center power, Group #22 Alt
     # Mir's focus list Apr 19 — filling gaps
     "ALAB",  # Astera Labs — AI connectivity/CXL silicon, Group #38 specialty
+    "CRDO",  # Credo Technology — AEC/retimer silicon for AI racks, ALAB peer (@SRxTrades Apr 19)
     "PL",    # Planet Labs — earth observation satellites, space adjacent
     "FLY",   # Firefly Aerospace — space launch, momentum (Stockbee scan)
     "POWL",  # Powell Industries — DC electrical distribution, Group #29
     "TTMI",  # TTM Technologies — PCBs/EMS, Group #13 Contract Mfg
     "LWLG",  # Lightwave Logic — polymer photonics/modulators, optical speculative
+    # Mir Monis top-20 "trade without looking at anything else" list (Apr 19)
+    # 19/20 already covered — TSEM was the only gap
+    "TSEM",  # Tower Semiconductor — Israeli specialty foundry, RF/analog/SiGe, 86% YTD
 ]
 
 
