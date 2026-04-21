@@ -51,6 +51,7 @@ _signal_task: asyncio.Task | None = None
 _scalp_task: asyncio.Task | None = None
 _discord_task: asyncio.Task | None = None
 _sweep_task: asyncio.Task | None = None
+_priority_task: asyncio.Task | None = None
 
 
 @asynccontextmanager
@@ -80,12 +81,17 @@ async def lifespan(app: FastAPI):
         print(f"[STARTUP] Active basket: {basket.get('sectors')} ({len(basket.get('tickers', set()))} tickers)")
     except Exception as e:
         print(f"[STARTUP] Basket computation failed: {e} — using static fallback")
-    global _worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task
+    global _worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task, _priority_task
     _worker_task = asyncio.create_task(run_worker(_stop))
     _flow_task = asyncio.create_task(run_flow_scanner(_stop))
     _monitor_task = asyncio.create_task(run_position_monitor(_stop))
     _signal_task = asyncio.create_task(run_signal_engine(_stop))
     _scalp_task = asyncio.create_task(run_scalp_scanner(_stop))
+    # Priority refresh: SPX every 5s for intraday heatmap / KING tracking.
+    # Feature-flagged inside priority_refresh.py (PRIORITY_REFRESH_ENABLED).
+    # If the flag is False, the task returns immediately (no-op).
+    from .priority_refresh import run_priority_refresh
+    _priority_task = asyncio.create_task(run_priority_refresh(_stop))
     # Discord listener: opt-in via DISCORD_ENABLED=true in .env
     _discord_task = None
     s = get_settings()
@@ -104,7 +110,7 @@ async def lifespan(app: FastAPI):
         _stop.set()
         await streamer.stop()
         await db.stop()  # Drain write queue before shutdown
-        all_tasks = [_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task]
+        all_tasks = [_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task, _priority_task]
         for task in all_tasks:
             if task:
                 try:
@@ -1435,6 +1441,63 @@ async def debug_raw_contracts(ticker: str):
         "raw_contracts_keys": list(raw.keys()),
         "raw_contracts_total": sum(len(v) for v in raw.values()),
         "sample_atm": _debug_atm_contracts(raw, state.get("actual_spot") or state.get("_spot") or 0),
+    }
+
+
+@app.get("/api/debug/cache-meta/{ticker}")
+async def debug_cache_meta(ticker: str):
+    """DEBUG: Expose internal/underscore-prefixed cache fields for a ticker.
+
+    Used to verify priority_refresh loop activity, OI model version, KING
+    model version, etc. — fields that the public /api/chains endpoint
+    filters out for client-facing responses.
+    """
+    import time as _time
+    state = await cache.get(ticker.upper())
+    if not state:
+        return {"error": f"{ticker} not in cache"}
+
+    priority_ts = state.get("_priority_refresh_ts")
+    now = _time.time()
+    priority_age_seconds = (now - priority_ts) if priority_ts else None
+
+    # Pick an expiration panel's meta markers (they're stored per-exp inside
+    # exp_data, not at top level, because compute_exp_data sets them).
+    # Look at MACRO as the canonical one; fall back to first available.
+    ed = state.get("exp_data") or {}
+    sample_exp_key = "MACRO (ALL 200D)" if "MACRO (ALL 200D)" in ed else (
+        next(iter(ed)) if ed else None
+    )
+    sample_exp = ed.get(sample_exp_key, {}) if sample_exp_key else {}
+
+    return {
+        "ticker": ticker.upper(),
+        "cache_timestamp": state.get("timestamp"),
+        "spot": state.get("spot") or state.get("actual_spot"),
+        # Priority refresh loop markers (set by priority_refresh.run_priority_refresh)
+        "_priority_refresh": state.get("_priority_refresh"),
+        "_priority_refresh_ts": priority_ts,
+        "_priority_refresh_age_seconds": (
+            round(priority_age_seconds, 1) if priority_age_seconds is not None else None
+        ),
+        "_priority_refresh_status": (
+            "fresh" if priority_age_seconds is not None and priority_age_seconds < 30
+            else "stale" if priority_age_seconds is not None
+            else "never_written"
+        ),
+        # Methodology version markers (set by compute_exp_data)
+        "exp_panel_sampled": sample_exp_key,
+        "_oi_model": sample_exp.get("_oi_model"),
+        "_king_model": sample_exp.get("_king_model"),
+        "_sign_model": sample_exp.get("_sign_model"),
+        "_zgl_method": sample_exp.get("_zgl_method"),
+        "_greeks_source": sample_exp.get("_greeks_source"),
+        "_greeks_age_seconds": sample_exp.get("_greeks_age_seconds"),
+        # Bifurcated king fields (v4)
+        "king_pos": sample_exp.get("king_pos"),
+        "king_pos_gex": sample_exp.get("king_pos_gex"),
+        "king_neg": sample_exp.get("king_neg"),
+        "king_neg_gex": sample_exp.get("king_neg_gex"),
     }
 
 

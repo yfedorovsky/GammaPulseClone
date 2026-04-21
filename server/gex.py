@@ -54,67 +54,74 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
 
 
 def _estimate_effective_oi(prior_oi: float, today_volume: float) -> float:
-    """Activity-weighted effective OI — post-synthesis v2 (Apr 16 2026).
+    """Activity-weighted effective OI — post-synthesis v3 (Apr 21 2026).
 
-    Formula from 4-LLM consensus (Perplexity + Gemini recommendations):
-
+    Formula:
         OI_eff = OI × (1 + α × min(vol/OI, C))
 
-    with α = 0.4 (moderate activity multiplier) and cap C = 7.
+    with α = 0.4 (moderate activity multiplier) and cap C = 20.
 
-    ## Why the cap matters (Perplexity's "ATM discount anomaly" finding)
+    ## v2 → v3 change (Apr 21 2026): cap raised 7 → 20
 
-    Near-expiration ATM options regularly see vol/OI ratios of 10-50x
+    Motivation: on 2026-04-21, GammaPulse Pro picked 0DTE SPX KING at
+    strike 7090 while we picked 7070. Root cause: cap=7 was so low
+    that every heavy-volume strike hit it and got the same 3.8x
+    amplification, making OI_raw the sole tiebreaker — which biased
+    KING toward strikes with higher overnight positioning rather than
+    strikes with fresh intraday activity.
+
+    Cap=20 expands the differentiation band: strikes with vol/OI 7-20
+    now rank differently, giving more weight to strikes seeing
+    exceptional activity. Max amplification rises from 3.8x to 9.0x.
+
+    Caveat: cap=20 still flattens strikes with vol/OI > 20 (a common
+    regime on 0DTE expiry days). To fully differentiate at the extreme
+    tail, a future v4 should replace the hard cap with log-scaling:
+        OI_eff = OI × (1 + α × log(1 + vol/OI) × scale)
+
+    That's queued for later. v3 (cap=20) is the minimal disruptive
+    change to address the 7070/7090 divergence reported 2026-04-21.
+
+    ## Why the cap exists at all
+
+    Near-expiration ATM options regularly see vol/OI ratios of 10-50x+
     because most of today's volume is sell-to-close by existing holders
-    taking profits or cutting losses — NOT new opens. Our previous
-    volume-add model inflated these cells when they should have
-    DEFLATED (Skylit's implied OI at expiry-day ATM strikes is actually
-    LOWER than both raw OI and today's volume).
+    taking profits or cutting losses — NOT new opens. Without a cap,
+    those strikes inflate to absurd effective OI values (Skylit-style
+    "856x raw OI" numbers that blow up on edge cases).
 
-    The cap at vol/OI = 7 prevents close-out volume from blowing up
-    effective OI. Above that ratio, the additional volume is assumed to
-    be churn/close-outs, not new exposure.
+    ## Formula behavior under v3 (cap=20)
 
-    ## Formula behavior
-
-    Example: OI=25, vol=5567 (AAOI 4/24 $210 — our canonical test case)
-        vol/OI = 222.7  →  min(222.7, 7) = 7
-        OI_eff = 25 × (1 + 0.4 × 7) = 25 × 3.8 = 95
-        GEX impact: 95/25 = 3.8x amplification
+    Example: OI=25, vol=5567 (AAOI 4/24 $210 — canonical test case)
+        vol/OI = 222.7  →  min(222.7, 20) = 20
+        OI_eff = 25 × (1 + 0.4 × 20) = 25 × 9.0 = 225
+        GEX impact: 9.0x amplification (up from 3.8x in v2)
 
     Example: OI=1000, vol=500 (normal strike, vol < OI)
-        vol/OI = 0.5  →  min(0.5, 7) = 0.5
+        vol/OI = 0.5  →  min(0.5, 20) = 0.5
         OI_eff = 1000 × (1 + 0.4 × 0.5) = 1000 × 1.2 = 1200
-        GEX impact: 1.2x amplification (modest)
+        GEX impact: 1.2x amplification (unchanged from v2)
 
-    Example: OI=100, vol=8000 (expiring-day ATM close-outs)
-        vol/OI = 80  →  min(80, 7) = 7 (capped)
-        OI_eff = 100 × (1 + 0.4 × 7) = 100 × 3.8 = 380
-        GEX impact: 3.8x amplification (NOT 80x — the cap protects us)
+    Example: OI=3415, vol=167741 (today's SPX 7070 strike)
+        vol/OI = 49.1  →  min(49.1, 20) = 20
+        OI_eff = 3415 × (1 + 0.4 × 20) = 3415 × 9.0 = 30,735
+        GEX impact: 9.0x amplification
 
-    The prior model (OI + 0.7×(vol-OI) for vol > 2×OI) produced
-    amplifications that scaled linearly with volume/OI ratio, blowing
-    up on expiry-day ATM cells. This capped multiplicative version is
-    more conservative AND more accurate.
+    Example: OI=1389, vol=193697 (today's SPX 7090 strike)
+        vol/OI = 139.5  →  min(139.5, 20) = 20
+        OI_eff = 1389 × (1 + 0.4 × 20) = 1389 × 9.0 = 12,501
+        GEX impact: 9.0x (same as 7070 — both still hit cap)
+        → KING stays at 7070 (higher OI_raw × same amp wins)
+        → To flip KING to 7090, need cap > 139 OR log-scaling
 
     ## Tuning
 
-    α = 0.4 and C = 7 are Perplexity's recommended midpoint of their
-    suggested ranges (α 0.3-0.5, C 5-10). No principled way to pick
-    exact values without forward-testing against actual OI next-day
-    settlements — this is a research item.
-
-    ## Intentionally NOT matching Skylit
-
-    Skylit's numbers at AAOI 4/24 $210 are ~856x our OI. This model
-    gives ~4x. We are DELIBERATELY conservative per Option A of the
-    synthesis: "retail-honest with clear methodology labeling." Users
-    understand our numbers won't match dramatic professional dashboards,
-    but they're reproducible, auditable, and won't blow up on edge
-    cases like expiry-day close-outs.
+    α = 0.4 unchanged. Cap C = 20 is a deliberate jump from 7 to
+    expand the differentiation band without going fully uncapped.
+    Expect GEX magnitudes to roughly 2.4x on heavy-volume strikes.
     """
     ALPHA = 0.4  # activity multiplier strength
-    VOL_OI_CAP = 7.0  # ratio cap — prevents expiry-day close-out inflation
+    VOL_OI_CAP = 20.0  # ratio cap — v3 (Apr 21 2026), up from 7 in v2
 
     if today_volume <= 0:
         return prior_oi
@@ -299,11 +306,41 @@ def _classify_strike(
 
 
 def _compute_signal(
-    spot: float, king: float, king_is_positive: bool, floor: float, ceiling: float
+    spot: float, king: float, king_is_positive: bool, floor: float, ceiling: float,
+    neg_king: float | None = None,
 ) -> tuple[str, bool]:
-    """Return (signal, king_pos_bool)."""
+    """Return (signal, king_pos_bool).
+
+    Updated 2026-04-21 for KING bifurcation: neg_king (strongest -GEX strike)
+    drives the DANGER signal when it's in proximity to spot, independent of
+    where the (positive) king sits. Previously DANGER only fired when our
+    single king was negative AND near spot, causing us to miss "price testing
+    a -GEX wall while a larger +GEX wall exists elsewhere" scenarios.
+
+    Signal precedence:
+      1. DANGER: spot is within 0.3% of a meaningful neg_king (acceleration zone)
+      2. PINNING: spot is within 0.3% of the (positive) king (magnet)
+      3. MAGNET UP: positive king above spot (price pulled toward king)
+      4. SUPPORT: positive king below spot (king provides bid)
+      5. AIR POCKET / RESISTANCE: fallback for pure-negative-regime edge case
+    """
     if spot <= 0 or king <= 0:
         return "PINNING", king_is_positive
+
+    # DANGER: proximity to negative-gamma acceleration zone.
+    # Checked BEFORE king-based signals because hitting a neg-king is the
+    # more urgent risk signal — the positive king magnet still matters but
+    # doesn't activate until price escapes the danger zone.
+    #
+    # Threshold: 0.15% (was 0.3% pre-2026-04-21-restart). Tightened to match
+    # GammaPulse Pro's apparent threshold. A 0.3% window flagged DANGER on
+    # spots that had already bounced OFF the -GEX wall — useful for warning
+    # but too trigger-happy for the live signal. 0.15% means DANGER only when
+    # price is within immediate-test-range of the acceleration zone.
+    if neg_king and neg_king > 0:
+        neg_dist_pct = abs(spot - neg_king) / spot
+        if neg_dist_pct < 0.0015:
+            return "DANGER", king_is_positive
 
     dist_pct = abs(spot - king) / spot
 
@@ -317,7 +354,7 @@ def _compute_signal(
             return "MAGNET UP", True
         return "SUPPORT", True
 
-    # king is negative (-GEX)
+    # Pure-negative-regime fallback (no positive gamma anywhere in chain)
     if king < spot:
         return "AIR POCKET", False
     return "RESISTANCE", False
@@ -544,26 +581,58 @@ def compute_exp_data(
     # Intensity
     max_intensity = max((abs(b["net_gex"]) for b in per_strike.values()), default=1.0) or 1.0
 
-    # King = strike with greatest |net_gex|
-    king_strike = max(per_strike.keys(), key=lambda s: abs(per_strike[s]["net_gex"]))
-    king_val = per_strike[king_strike]["net_gex"]
-    king_is_positive = king_val >= 0
+    # KING bifurcation (2026-04-21 — v4 methodology).
+    #
+    # Prior behavior (deprecated): picked the strike with the biggest |net_gex|
+    # as "the king," whether positive or negative. This conflated two different
+    # concepts that have OPPOSITE dealer-flow mechanics:
+    #
+    #   POSITIVE-gamma king: dealer LONG gamma → buys dips / sells rips → "magnet"
+    #   NEGATIVE-gamma king: dealer SHORT gamma → amplifies moves  → "danger zone"
+    #
+    # Treating them as one concept caused signal flips (MAGNET UP vs DANGER) that
+    # depended purely on which side of zero had the biggest absolute GEX on a
+    # given day. Today's SPX MACRO exposed this: our king (7050, -$8.57B) flagged
+    # DANGER while GammaPulse Pro's king (7200, +$4.86B) flagged MAGNET UP on the
+    # same tape — Pro's read matched actual price behavior (bounce at 7000 zone).
+    #
+    # New behavior: always compute BOTH independently, and treat the positive
+    # king as the PRIMARY magnet level. The negative king is tracked separately
+    # as a danger marker consumed by signal/callout logic.
+    pos_buckets = [(s, b["net_gex"]) for s, b in per_strike.items() if b["net_gex"] > 0]
+    neg_buckets = [(s, b["net_gex"]) for s, b in per_strike.items() if b["net_gex"] < 0]
 
-    # -King = strongest NEGATIVE GEX strike (whipsaw/rejection risk zone).
-    # OG GammaPulse convention (4/16 update): separate concept from +King.
-    # Only populate if king itself is POSITIVE (otherwise king IS the neg-king).
-    # Require the strike to be meaningfully negative — at least 15% of king's
-    # magnitude — otherwise a tiny noise strike would flag as neg_king.
+    king_pos_strike: float | None = None
+    king_pos_val = 0.0
+    if pos_buckets:
+        king_pos_strike, king_pos_val = max(pos_buckets, key=lambda x: x[1])
+
+    king_neg_strike: float | None = None
+    king_neg_val = 0.0
+    if neg_buckets:
+        king_neg_strike, king_neg_val = min(neg_buckets, key=lambda x: x[1])
+
+    # Primary king = positive king (the magnet), with fallback to negative king
+    # when no positive gamma exists (extreme-regime edge case — rare on liquid
+    # underlyings, possible on expiry-day OTM-only books).
+    if king_pos_strike is not None:
+        king_strike = king_pos_strike
+        king_val = king_pos_val
+        king_is_positive = True
+    else:
+        king_strike = king_neg_strike if king_neg_strike is not None else (strikes_sorted[0] if strikes_sorted else 0.0)
+        king_val = king_neg_val
+        king_is_positive = False
+
+    # neg_king_strike is exposed to signal/callout logic as the "danger zone"
+    # marker. Only populated if meaningfully negative vs the positive king
+    # (>15% of king_pos magnitude) to avoid flagging tiny noise strikes.
+    # When there's no positive king (pure-negative regime), skip this —
+    # king itself IS the danger marker in that case.
     neg_king_strike: float | None = None
-    if king_is_positive:
-        neg_candidates = [
-            (s, b["net_gex"]) for s, b in per_strike.items()
-            if b["net_gex"] < 0
-        ]
-        if neg_candidates:
-            most_negative = min(neg_candidates, key=lambda x: x[1])
-            if abs(most_negative[1]) >= 0.15 * abs(king_val):
-                neg_king_strike = most_negative[0]
+    if king_is_positive and king_neg_strike is not None:
+        if abs(king_neg_val) >= 0.15 * abs(king_pos_val):
+            neg_king_strike = king_neg_strike
 
     # Floor = strongest +GEX BELOW spot (excluding king).
     # Ceiling = HIGHEST strike above spot with significant +GEX.
@@ -586,21 +655,42 @@ def compute_exp_data(
     ceiling_max = spot * (1.0 + MAX_CEILING_DIST_PCT)
     floor_min = spot * (1.0 - MAX_FLOOR_DIST_PCT)
 
+    # Ceiling / floor are "next significant wall BEYOND the king" semantically:
+    #   - If king > spot: CEIL = biggest +GEX ABOVE king (next resistance past magnet)
+    #                     FLOOR = biggest +GEX below spot (support, king isn't in the way)
+    #   - If king < spot: FLOOR = biggest +GEX BELOW king (next support past magnet)
+    #                     CEIL = biggest +GEX above spot (resistance, king isn't in the way)
+    #   - If king ≈ spot: both walls measured from spot directly
+    #
+    # Rationale: Ceiling/floor are "what's the next wall if price moves past the king."
+    # Without this king-relative framing, a big wall between spot and king (like today's
+    # SPX 4/22 7140 @ $906M, with king at 7150) would incorrectly become CEIL even
+    # though it's conceptually INSIDE the king's magnet range, not beyond it.
+    #
+    # Matches GammaPulse Pro behavior (verified 2026-04-21 vs SPX 4/22).
+    king_above_spot = king_strike > spot
+    king_below_spot = king_strike < spot
+    ceil_search_floor = max(spot, king_strike) if king_above_spot else spot
+    floor_search_ceil = min(spot, king_strike) if king_below_spot else spot
+
     floor_strike = None
     ceiling_strike = None
     best_below = 0.0
+    best_above = 0.0
     for s in strikes_sorted:
         if s == king_strike:
             continue
         g = per_strike[s]["net_gex"]
         if g <= 0:
             continue
-        if s < spot and s >= floor_min and g > best_below:
+        # Floor: biggest +GEX strictly below floor_search_ceil, within window
+        if s < floor_search_ceil and s >= floor_min and g > best_below:
             best_below = g
             floor_strike = s
-        elif s > spot and s <= ceiling_max and g >= significance_threshold:
-            # Track the HIGHEST significant +GEX within window
-            ceiling_strike = s  # keeps updating to higher strikes
+        # Ceiling: biggest +GEX strictly above ceil_search_floor, within window
+        elif s > ceil_search_floor and s <= ceiling_max and g > best_above:
+            best_above = g
+            ceiling_strike = s
 
     # Fallbacks if nothing found within window
     if ceiling_strike is None:
@@ -732,8 +822,18 @@ def compute_exp_data(
 
     return {
         "strikes": strikes_out,
+        # Primary king (kept for backward compat with UI/signal consumers).
+        # Post-v4 bifurcation: always the positive king unless no +GEX exists
+        # anywhere in the chain (rare — extreme-negative-regime edge case).
         "king": king_strike,
         "neg_king": neg_king_strike or 0,  # 0 when no significant neg-king
+        # Explicit bifurcated fields — what the UI should render separately.
+        # Frontend can show POS king as gold "KING" marker, NEG king as red
+        # "-GEX KING" / "DANGER ZONE" marker.
+        "king_pos": king_pos_strike or 0,
+        "king_pos_gex": king_pos_val,
+        "king_neg": king_neg_strike or 0,
+        "king_neg_gex": king_neg_val,
         "zgl": zgl,
         "iv": iv_avg,
         "net_delta": total_delta,
@@ -747,7 +847,8 @@ def compute_exp_data(
         "callout": callout,  # v3: actionable trader-facing signal text
         "_king_is_positive": king_is_positive,
         "_sign_model": "assumed_dealer",
-        "_oi_model": "volume_adjusted",  # see _estimate_effective_oi in gex.py
+        "_king_model": "bifurcated_v4",  # 2026-04-21: separate pos/neg kings
+        "_oi_model": "volume_adjusted_v3_cap20",  # see _estimate_effective_oi in gex.py (cap=20 as of Apr 21 2026)
         "_zgl_method": "profile_solve" if zgl_solved is not None else "centroid_fallback",
         "_zgl_crossings": zgl_crossings if zgl_solved is not None else {},
         "_greeks_source": _dominant_greeks_source(per_strike),
@@ -760,12 +861,18 @@ def build_signal(exp_data: dict[str, Any], spot: float) -> tuple[str, str, bool]
     king = exp_data.get("king") or 0
     floor = exp_data.get("floor") or 0
     ceiling = exp_data.get("ceiling") or 0
+    neg_king = exp_data.get("neg_king") or 0
     king_pos = exp_data.get("_king_is_positive", True)
     pos_gex = exp_data.get("pos_gex") or 0
     neg_gex = exp_data.get("neg_gex") or 0
     # Regime: POS if total positive > |total negative|, otherwise NEG
     regime = "POS" if pos_gex > abs(neg_gex) else "NEG"
-    signal, _ = _compute_signal(spot, king, king_pos, floor, ceiling)
+    # Pass neg_king so DANGER fires when spot is near the -GEX acceleration zone,
+    # even if the primary (positive) king is elsewhere.
+    signal, _ = _compute_signal(
+        spot, king, king_pos, floor, ceiling,
+        neg_king=neg_king if neg_king else None,
+    )
     return signal, regime, king_pos
 
 
