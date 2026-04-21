@@ -6,6 +6,37 @@ import TooltipPopup, { useTooltip } from './Tooltip.jsx';
 
 const MACRO_KEY = 'MACRO (ALL 200D)';
 
+// Helpers for the MACRO-view hint (directs user to near-dated expirations
+// for tactical reads). Both functions operate on the exp list returned by
+// the backend, which is ordered chronologically with MACRO sentinel keys
+// possibly appearing alongside real YYYY-MM-DD expirations.
+
+function isRealExpiration(e) {
+  return typeof e === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(e);
+}
+
+function exps_list_has_near_dated(expList) {
+  return Array.isArray(expList) && expList.some(isRealExpiration);
+}
+
+function findNearestExpiration(expList) {
+  if (!Array.isArray(expList)) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  let best = null;
+  let bestDist = Infinity;
+  for (const e of expList) {
+    if (!isRealExpiration(e)) continue;
+    const d = new Date(e + 'T00:00:00');
+    const dist = Math.abs(d - today);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = e;
+    }
+  }
+  return best;
+}
+
 function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
   const {
     chains,
@@ -39,6 +70,14 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
   // User choice MUST beat expLabelOverride, otherwise the dropdown in FOCUS
   // mode appears dead (store updates but this derived value ignores it).
   const currentExp = todayExp || exps[expKey] || expLabelOverride || MACRO_KEY;
+
+  // Nearest real (YYYY-MM-DD) expiration — used by the MACRO hint to offer
+  // a one-click jump to a tactical view. Null if the chain only has the
+  // MACRO sentinel (edge case during initial load).
+  const nearestExpiration = useMemo(
+    () => findNearestExpiration(expList),
+    [expList]
+  );
   const spot = spotPrices[ticker] ?? data?.spot;
   const prev = prevSpotPrices[ticker];
   const dir =
@@ -197,6 +236,29 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
         </select>
       </div>
 
+      {/* MACRO-view hint — nudges users toward tactical (near-dated) expirations
+         for day-trading decisions. MACRO aggregates 200 days of positioning and
+         is best for structural reads, not intraday scalps. Validated by OG
+         GammaPulse dev feedback 2026-04-21: "For a tactical read on today
+         specifically, switching to a near-dated expiration in the dropdown
+         usually gives sharper signal than macro." */}
+      {currentExp.startsWith('MACRO') && nearestExpiration && (
+        <div className="macro-hint">
+          <span className="macro-hint-icon">ⓘ</span>
+          MACRO aggregates 200D positioning — great for structural reads.
+          For <strong>today's tactical levels</strong>, switch to a
+          near-dated expiration
+          <button
+            type="button"
+            className="macro-hint-jump"
+            onClick={() => setExp(expKey, nearestExpiration)}
+            title={`Jump to ${nearestExpiration}`}
+          >
+            → {nearestExpiration}
+          </button>
+        </div>
+      )}
+
       {/* Stats block: compact one-line format matching original */}
       <div className="panel-stats">
         <div className="panel-stat-row panel-top-row">
@@ -237,14 +299,20 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
           {ticker} · {stripText || '\u00a0'}
           <span
             title={
-              "GEX methodology: γ × activity-weighted OI × 100 × S² × 0.01.\n" +
-              "Effective OI = raw_OI × (1 + 0.4 × min(vol/OI, 7)).\n" +
-              "Data source: Tradier (OCC settlement OI, live Greeks).\n\n" +
-              "We do NOT replicate professional dashboards (SpotGamma, Skylit):\n" +
-              "those use OPRA tick-level data with trade classification +\n" +
-              "continuous dealer inventory state. Magnitudes will differ,\n" +
-              "sometimes by 10-100x on high-flow strikes. Our model is\n" +
-              "conservative, reproducible, and auditable by design."
+              "GEX methodology (v4, Apr 21 2026):\n" +
+              "  GEX = γ × activity-weighted OI × 100 × S² × 0.01\n" +
+              "  Effective OI = raw_OI × (1 + 0.4 × log(1 + vol/OI))\n" +
+              "  Log-scaling replaces hard cap (was min(vol/OI, 20) in v3)\n" +
+              "  to prevent sign inversions on 0DTE ATM close-out volume.\n\n" +
+              "KING bifurcation (v4):\n" +
+              "  king_pos = biggest POSITIVE GEX (the magnet)\n" +
+              "  king_neg = biggest NEGATIVE GEX (danger / acceleration zone)\n" +
+              "  Primary KING label = king_pos; −KING pill marks king_neg.\n\n" +
+              "Data: Tradier chain + ThetaData greeks, OCC settlement OI.\n" +
+              "SPX updated every 15s via priority-refresh task.\n\n" +
+              "Our magnitudes may differ from SpotGamma/Skylit (which use\n" +
+              "OPRA tick-level trade classification). We're conservative,\n" +
+              "reproducible, and bifurcate positive vs negative walls."
             }
             style={{
               marginLeft: 6, cursor: 'help', color: 'var(--text-3)',
@@ -264,6 +332,7 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
             {visibleStrikes.map((s, idx) => {
               const showSpotAbove = idx === spotIdx;
               const isKing = s.node_type === 'king';
+              const isNegKing = s.node_type === 'neg_king';
               const isMatrixKing = matrixKing && Math.abs(s.strike - matrixKing.strike) < 0.01;
               return (
                 <React.Fragment key={s.strike}>
@@ -277,9 +346,10 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
                     </div>
                   )}
                   <div
-                    className={`row ${rowClass(s, spot)}${isKing ? ' king-row' : ''}${isMatrixKing ? ' matrix-king-row' : ''}${s.node_type === 'gatekeeper' ? ' gatekeeper-row' : ''}`}
+                    className={`row ${rowClass(s, spot)}${isKing ? ' king-row' : ''}${isNegKing ? ' neg-king-row' : ''}${isMatrixKing ? ' matrix-king-row' : ''}${s.node_type === 'gatekeeper' ? ' gatekeeper-row' : ''}`}
                     style={{
-                      backgroundColor: rowBackground(s, spot),
+                      // neg-king-row class provides background via CSS (pink) — skip inline rowBackground override for it
+                      backgroundColor: isNegKing ? undefined : rowBackground(s, spot),
                       ...(isMatrixKing ? {
                         boxShadow: 'inset 0 0 0 2px #f4c430',
                       } : {}),
@@ -288,6 +358,12 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
                     onMouseLeave={hideTip}
                   >
                     <span className="strike">
+                      {isNegKing && (
+                        <span
+                          title="-GEX acceleration zone · whipsaw risk"
+                          style={{ color: '#ff69b4', fontWeight: 800, marginRight: 3 }}
+                        >◄</span>
+                      )}
                       {fmtStrike(s.strike)}
                       {s.confluence && <span className="confl-icon"> ⚡</span>}
                       {s.net_vex !== 0 && (
@@ -300,14 +376,8 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
                       {fmtBigPrecise(s.net_gex)}
                       {s.open_change_pct != null && (
                         <span
+                          className={`change-badge change-badge--${s.open_change_pct >= 0 ? 'pos' : 'neg'}`}
                           title={`Change since 9:30 AM ET open: ${s.open_change_pct > 0 ? '+' : ''}${s.open_change_pct}%`}
-                          style={{
-                            fontSize: 9, fontWeight: 800, marginLeft: 5,
-                            padding: '1px 4px', borderRadius: 3,
-                            background: s.open_change_pct >= 0 ? 'rgba(16,220,154,0.22)' : 'rgba(255,86,86,0.22)',
-                            color: s.open_change_pct >= 0 ? '#10dc9a' : '#ff5656',
-                            fontFamily: 'var(--mono)',
-                          }}
                         >
                           {s.open_change_pct > 0 ? '+' : ''}{s.open_change_pct}%
                         </span>
@@ -322,11 +392,11 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
                         >⭐</span>
                       )}
                       {isKing && <span className={`king-badge${isKing ? ' king-pulse' : ''}`}> ★ KING</span>}
-                      {s.node_type === 'neg_king' && (
+                      {isNegKing && (
                         <span
-                          title="-King: largest NEGATIVE GEX · whipsaw/rejection risk zone"
-                          style={{ color: '#ff69b4', fontWeight: 800 }}
-                        > ★ −KING</span>
+                          className="neg-king-badge"
+                          title="-GEX King · largest NEGATIVE gamma cluster · whipsaw / acceleration zone"
+                        >◄ −KING</span>
                       )}
                       {s.node_type === 'gatekeeper' && <span style={{ color: '#a24dff' }}> ◆</span>}
                       {s.node_type === 'floor' && <span style={{ color: '#10dc9a' }}> ▬ FLOOR</span>}
@@ -381,12 +451,18 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
                     </div>
                   )}
                   <div
-                    className={`profile-row${s.node_type === 'king' ? ' king-row' : ''}${isMatrixKing ? ' matrix-king-row' : ''}${s.node_type === 'gatekeeper' ? ' gatekeeper-row' : ''}`}
+                    className={`profile-row${s.node_type === 'king' ? ' king-row' : ''}${s.node_type === 'neg_king' ? ' neg-king-row' : ''}${isMatrixKing ? ' matrix-king-row' : ''}${s.node_type === 'gatekeeper' ? ' gatekeeper-row' : ''}`}
                     style={isMatrixKing ? { boxShadow: 'inset 0 0 0 2px #f4c430' } : undefined}
                     onMouseEnter={(e) => showTip(s, e)}
                     onMouseLeave={hideTip}
                   >
                     <span className="strike text-mono">
+                      {s.node_type === 'neg_king' && (
+                        <span
+                          title="-GEX acceleration zone · whipsaw risk"
+                          style={{ color: '#ff69b4', fontWeight: 800, marginRight: 3 }}
+                        >◄</span>
+                      )}
                       {fmtStrike(s.strike)}
                       {isMatrixKing && (
                         <span
@@ -397,7 +473,7 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
                           }}
                         >⭐</span>
                       )}
-                      <span className={`profile-dot${s.node_type === 'king' ? ' king-pulse' : ''}`} style={{ background: dotColor }} />
+                      <span className={`profile-dot${s.node_type === 'king' ? ' king-pulse' : ''}${s.node_type === 'neg_king' ? ' neg-king-pulse' : ''}`} style={{ background: dotColor }} />
                       {/* Per-strike VEX arrow */}
                       {vexArrow && <span className="vex-arrow" style={{ color: vexColor }}>{vexArrow}</span>}
                     </span>
@@ -419,21 +495,22 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
                         {fmtBigPrecise(s.net_gex)}
                         {s.open_change_pct != null && (
                           <span
+                            className={`change-badge change-badge--${s.open_change_pct >= 0 ? 'pos' : 'neg'}`}
                             title={`Change since 9:30 AM ET open: ${s.open_change_pct > 0 ? '+' : ''}${s.open_change_pct}%`}
-                            style={{
-                              fontSize: 9, fontWeight: 800, marginLeft: 5,
-                              padding: '1px 4px', borderRadius: 3,
-                              background: s.open_change_pct >= 0 ? 'rgba(16,220,154,0.22)' : 'rgba(255,86,86,0.22)',
-                              color: s.open_change_pct >= 0 ? '#10dc9a' : '#ff5656',
-                              fontFamily: 'var(--mono)',
-                            }}
                           >
                             {s.open_change_pct > 0 ? '+' : ''}{s.open_change_pct}%
                           </span>
                         )}
-                        {s.node_type === 'king' && ' ★ KING'}
+                        {s.node_type === 'king' && <span className="king-badge"> ★ KING</span>}
                         {s.node_type === 'neg_king' && (
-                          <span style={{ color: '#ff69b4' }}> ★ −KING</span>
+                          <span style={{
+                            color: '#ff69b4',
+                            fontWeight: 800,
+                            marginLeft: 6,
+                            padding: '1px 6px',
+                            borderRadius: 3,
+                            background: 'rgba(255,105,180,0.15)',
+                          }}> ◄ −KING</span>
                         )}
                         {s.node_type === 'gatekeeper' && ' ◆'}
                         {s.node_type === 'floor' && ' ▬ FLOOR'}

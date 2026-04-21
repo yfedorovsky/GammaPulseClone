@@ -621,8 +621,18 @@ input, select { font-family: inherit; }
   cursor: default;
 }
 .profile-row:hover { background: rgba(255, 255, 255, 0.05); }
-.profile-row.king-row { background: rgba(244, 196, 48, 0.18) !important; border-left: 3px solid #f4c430; }
-.profile-row.gatekeeper-row { background: rgba(162, 77, 255, 0.10) !important; border-left: 2px solid rgba(162,77,255,0.5); }
+/* Level-highlight rows use gradient fades (left→right) rather than flat fills
+   for a softer look. Border-left provides the accent line, gradient provides
+   the tonal indication. Profile-row versions defined here; bar-view versions
+   below in the Level Highlights section. */
+.profile-row.king-row {
+  background: linear-gradient(90deg, rgba(244,196,48,0.22) 0%, rgba(244,196,48,0.08) 60%, transparent 100%) !important;
+  border-left: 3px solid #f4c430;
+}
+.profile-row.gatekeeper-row {
+  background: linear-gradient(90deg, rgba(162,77,255,0.14) 0%, rgba(162,77,255,0.05) 60%, transparent 100%) !important;
+  border-left: 2px solid rgba(162, 77, 255, 0.6);
+}
 .profile-dot {
   display: inline-block;
   width: 8px;
@@ -641,30 +651,186 @@ input, select { font-family: inherit; }
   color: #c8cdd8;
 }
 
-/* === Pulsing King Node === */
-.king-pulse {
-  animation: king-glow 2s ease-in-out infinite;
-  box-shadow: 0 0 6px 2px #f4c430;
-}
-@keyframes king-glow {
-  0%, 100% { box-shadow: 0 0 4px 1px rgba(244, 196, 48, 0.4); }
-  50% { box-shadow: 0 0 10px 4px rgba(244, 196, 48, 0.8); }
-}
+/* ═════════════════════════════════════════════════════════════════
+   Level-Highlight Rows — Visual Language (2026-04-21 polish pass)
+   ═════════════════════════════════════════════════════════════════
+
+   Philosophy:
+   - Gradient fades (left→right) replace flat color fills for cleaner look
+   - Border-left accent line: 3px for structural levels (king, neg_king)
+                              2px for secondary (gatekeeper)
+   - Dot pulse animations stay on the dot only, not the whole row
+   - Hover state: intensify the gradient's left-side color
+
+   Color language:
+     KING       = gold  (#f4c430)  — positive magnet, dealers pull toward
+     -KING      = pink  (#ff69b4)  — negative wall, dealers accelerate away
+     GATEKEEPER = violet (#a24dff) — vanna/delta inflection, secondary importance
+     FLOOR      = green (#10dc9a)  — positive support below spot
+     CEILING    = red   (#ff5656)  — positive resistance above spot
+*/
+
+/* === Positive King === */
 .king-row {
-  background: rgba(244, 196, 48, 0.20) !important;
+  background: linear-gradient(90deg,
+    rgba(244,196,48,0.28) 0%,
+    rgba(244,196,48,0.10) 55%,
+    transparent 100%) !important;
   border-left: 3px solid #f4c430 !important;
 }
 .king-row:hover {
-  background: rgba(244, 196, 48, 0.30) !important;
+  background: linear-gradient(90deg,
+    rgba(244,196,48,0.38) 0%,
+    rgba(244,196,48,0.14) 55%,
+    transparent 100%) !important;
+}
+.king-pulse {
+  animation: king-glow 2s ease-in-out infinite;
+  box-shadow: 0 0 6px 2px rgba(244,196,48,0.7);
+}
+@keyframes king-glow {
+  0%, 100% { box-shadow: 0 0 4px 1px rgba(244, 196, 48, 0.4); }
+  50%      { box-shadow: 0 0 10px 4px rgba(244, 196, 48, 0.8); }
 }
 
-/* === Purple Gatekeeper Nodes === */
+/* ═════ Change Badge — "+X%" / "-X%" (open vs current) ═════
+
+   Design: consistent dark-pill-with-colored-text across ALL rows. This
+   gives predictable contrast regardless of what color the underlying row
+   is (yellow king, pink neg-king, violet gatekeeper, or normal green/red).
+
+   Spacing: proper margin-left + internal padding so the badge "breathes"
+   away from the $ value rather than jamming against it. */
+.change-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  margin-left: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+  vertical-align: baseline;
+  line-height: 1.35;
+  /* Solid dark pill + subtle border — works on any row background */
+  background: rgba(12, 18, 26, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.change-badge--pos {
+  color: #4ee9a7;  /* mint — readable on dark pill on yellow/pink/violet */
+}
+.change-badge--neg {
+  color: #ff7a7a;  /* soft red — readable on dark pill anywhere */
+}
+
+/* ═════ KING text label — high contrast on yellow row ═════ */
+.king-row .king-badge {
+  color: #1a1200 !important;
+  background: rgba(244, 196, 48, 0.95);
+  padding: 1px 7px;
+  border-radius: 3px;
+  font-weight: 900;
+  letter-spacing: 0.5px;
+  margin-left: 10px;
+}
+
+/* ═════ -KING text label — high contrast on pink row ═════ */
+.neg-king-badge {
+  display: inline-block;
+  color: #2a0a18 !important;
+  background: rgba(255, 105, 180, 0.95);
+  padding: 1px 7px;
+  border-radius: 3px;
+  font-weight: 900;
+  letter-spacing: 0.5px;
+  margin-left: 10px;
+  font-size: 11px;
+}
+
+/* ═════ MACRO-view tactical hint ═════
+   Shown only when MACRO (ALL 200D) is the selected expiration. Nudges
+   users toward a near-dated expiration for day-trading decisions, per
+   OG GammaPulse dev feedback: "MACRO is for structural reads; tactical
+   signal comes from a near-dated expiration." */
+.macro-hint {
+  font-size: 11px;
+  color: var(--text-3, #7a8497);
+  padding: 6px 10px;
+  margin: 6px 8px 0;
+  background: linear-gradient(90deg, rgba(96, 165, 250, 0.08) 0%, rgba(96, 165, 250, 0.02) 80%, transparent 100%);
+  border-left: 2px solid rgba(96, 165, 250, 0.5);
+  border-radius: 3px;
+  line-height: 1.5;
+}
+.macro-hint strong {
+  color: #9ec5ff;
+  font-weight: 700;
+}
+.macro-hint-icon {
+  color: #60a5fa;
+  margin-right: 5px;
+  font-weight: 700;
+}
+.macro-hint-jump {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--mono);
+  color: #9ec5ff;
+  background: rgba(96, 165, 250, 0.12);
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.macro-hint-jump:hover {
+  color: #c6dcff;
+  background: rgba(96, 165, 250, 0.22);
+  border-color: rgba(96, 165, 250, 0.6);
+}
+
+/* === Negative King (-GEX acceleration zone / whipsaw marker) ===
+   Added 2026-04-21 for v4 bifurcation. Distinct pink gradient to
+   communicate "danger zone" — semantically opposite of gold king. */
+.neg-king-row {
+  background: linear-gradient(90deg,
+    rgba(255,105,180,0.22) 0%,
+    rgba(255,105,180,0.08) 55%,
+    transparent 100%) !important;
+  border-left: 3px solid #ff69b4 !important;
+}
+.neg-king-row:hover {
+  background: linear-gradient(90deg,
+    rgba(255,105,180,0.32) 0%,
+    rgba(255,105,180,0.12) 55%,
+    transparent 100%) !important;
+}
+.neg-king-pulse {
+  animation: neg-king-glow 2.4s ease-in-out infinite;
+  box-shadow: 0 0 6px 2px rgba(255, 105, 180, 0.6);
+}
+@keyframes neg-king-glow {
+  0%, 100% { box-shadow: 0 0 4px 1px rgba(255, 105, 180, 0.35); }
+  50%      { box-shadow: 0 0 10px 4px rgba(255, 105, 180, 0.75); }
+}
+
+/* === Gatekeeper Nodes (violet — vanna/delta inflections) === */
 .gatekeeper-row {
-  background: rgba(162, 77, 255, 0.12);
-  border-left: 2px solid rgba(162, 77, 255, 0.5) !important;
+  background: linear-gradient(90deg,
+    rgba(162,77,255,0.18) 0%,
+    rgba(162,77,255,0.06) 55%,
+    transparent 100%);
+  border-left: 2px solid rgba(162, 77, 255, 0.55) !important;
 }
 .gatekeeper-row:hover {
-  background: rgba(162, 77, 255, 0.20) !important;
+  background: linear-gradient(90deg,
+    rgba(162,77,255,0.26) 0%,
+    rgba(162,77,255,0.09) 55%,
+    transparent 100%) !important;
 }
 
 /* (floor/ceiling styles defined above with vivid backgrounds) */
