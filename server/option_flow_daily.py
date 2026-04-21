@@ -131,6 +131,30 @@ GOLDEN_FLOW_RULES = {
 }
 
 
+# Mag7-tier GOLDEN: same conviction bars, lower notional threshold.
+#
+# Justification mirrors UPSIDE_BET_RULES_MAG7: Mag7 options are deep enough
+# that $200K at ATM 0-2 DTE is still institutional positioning (not retail
+# lottery), because the absolute dollar floor to move these contracts is
+# genuinely higher. A $200K 0DTE AMZN sweep in 30 seconds is a footprint.
+GOLDEN_FLOW_RULES_MAG7 = {
+    "min_notional": 200_000,       # 2.5x lower (same ratio as UPSIDE_BET tier)
+    "min_bought_pct": 0.65,        # same conviction
+    "min_vol_oi_ratio": 3.0,       # same
+    "max_otm_pct": 0.025,          # same tight ATM band
+    "max_dte": 2,                  # same
+    "min_sold_pct": 0.65,          # same
+}
+
+
+def _golden_flow_rules_for(row: dict) -> dict:
+    """Select GOLDEN_FLOW ruleset: Mag7 tier or default. See _upside_bet_rules_for."""
+    ticker = (row.get("ticker") or "").upper()
+    if ticker in MAG7_ROOTS:
+        return GOLDEN_FLOW_RULES_MAG7
+    return GOLDEN_FLOW_RULES
+
+
 # TAIL FLOW — the cheap-far-OTM-longer-dated-lottery insider pattern.
 #
 # Distinct from GOLDEN (urgent, ATM, 1-2 DTE). This pattern is:
@@ -164,17 +188,124 @@ TAIL_FLOW_RULES = {
 }
 
 
+# UPSIDE_BET — the "institutional bull thesis, 3-20 DTE, ATM-to-moderate-OTM" pattern.
+#
+# Fills the gap between GOLDEN (≤2 DTE, ATM-only, expensive-OK) and TAIL
+# (3-45 DTE, far-OTM, cheap-only). Real cases that failed BOTH today:
+#
+#   MRVL 165C 5/8 (2026-04-20):
+#     13.3% OTM, 18 DTE, $318K, V/OI 75x, 97% bought @ $2.58 avg
+#     → FAILED GOLDEN (OTM too far, DTE too long, notional too small)
+#     → FAILED TAIL (premium too expensive at $2.58 > $2 cap)
+#     → This is the pattern UPSIDE_BET catches.
+#
+#   FSLR 192.5C 4/24 (2026-04-20):
+#     0.6% OTM, 4 DTE, $1M, V/OI 14x, ~97% bought
+#     → FAILED GOLDEN (DTE 4 > 2)
+#     → Doesn't fit TAIL (not cheap, not far-OTM)
+#     → UPSIDE_BET catches.
+#
+# Strategic signal: "someone is positioning for a specific move in the next
+# few weeks." Distinct from GOLDEN (imminent) and TAIL (catastrophic lottery).
+UPSIDE_BET_RULES = {
+    "min_notional": 250_000,       # Lower than GOLDEN — catches mid-cap flows
+    "min_bought_pct": 0.70,        # Higher than GOLDEN — stricter conviction
+    "min_vol_oi_ratio": 10.0,      # Much higher than GOLDEN's 3x — pure new positioning
+    "min_otm_pct": 0.0,            # ATM OK
+    "max_otm_pct": 0.15,           # 0-15% OTM (wider than GOLDEN's 2.5%, narrower than TAIL)
+    "min_dte": 2,                  # Just past 0-1 DTE (gamma gamble zone)
+    "max_dte": 20,                 # 4 trading weeks — catches earnings run-ups + catalyst windows
+    # Note: asymmetric — UPSIDE_BET is BULLISH-for-stock ONLY.
+    # CALL + BUY = bullish (fires), PUT + SELL = bullish (fires).
+    # CALL + SELL (covered calls) and PUT + BUY (protective puts) do NOT fire.
+    # This is by design — GOLDEN's "symmetric" bug we fixed 2026-04-20 taught us
+    # that direction semantics matter more than raw conviction on any side.
+}
+
+
+# ── Mag7 tier ──────────────────────────────────────────────────────
+#
+# Why a separate tier for Mag7 names:
+#
+# Mag7 options trade billions in daily notional. $250K is a rounding error
+# in AMZN/NVDA/AAPL options — meaningful institutional positioning routinely
+# sizes at $100-200K per strike to stay under detection thresholds while
+# still being consequential relative to average retail flow.
+#
+# Real case that motivated this (2026-04-20):
+#   AMZN 5/1 $250C loaded in multiple prints throughout the day:
+#     9:56 AM: 200 @ $8.40 = $168K
+#     11:05 AM: 100 @ $7.65 = $76K
+#     12:38 PM: 100 @ $8.20 = $82K
+#     2:11 PM:  131 @ $8.75 = $114K
+#   → Anthropic investment news broke AH same day → +2.72% AH
+#   → Current $250K threshold misses the 9:56 AM print (would have
+#     given 6+ hours of runway before news)
+#
+# Tier tradeoffs:
+#   - LOWER notional ($100K): catches institutional-size but sub-threshold flows
+#   - TIGHTER OTM (5%): in Mag7, real conviction = near-ATM; wide OTM = retail
+#   - ALLOW 0DTE: Mag7 liquidity supports 0DTE informational flow (not just gamma noise)
+#
+# Roots: "Mag7 + high-liquidity AI-adjacent mega-caps." Despite the historical
+# name, this set has grown past the literal Mag7 — it's the list of names
+# where extreme options liquidity justifies lower absolute-dollar thresholds
+# because institutional positioning routinely sizes at $100-200K per strike
+# to stay under detection while still being consequential vs retail flow.
+#
+# Expand deliberately — this is the highest-signal list, not a general index.
+# Each addition should have (a) >$1B avg daily options notional, (b) a track
+# record of producing clean insider footprints we've observed ourselves.
+#
+# Added 2026-04-20:
+#   ARM — AI chip-licensing play, $16.2M cross-strike footprint on 4/20
+#         (multiple $200K+ prints within 14-min window, clear coordination)
+MAG7_ROOTS = frozenset({
+    "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN",
+    "META", "NVDA", "TSLA",
+    "ARM",
+})
+
+
+UPSIDE_BET_RULES_MAG7 = {
+    "min_notional": 100_000,       # 2.5x lower than default — Mag7 liquidity supports it
+    "min_bought_pct": 0.70,        # same conviction bar
+    "min_vol_oi_ratio": 10.0,      # same new-positioning bar
+    "min_otm_pct": 0.0,            # ATM OK
+    "max_otm_pct": 0.05,           # TIGHTER: 5% max (Mag7 real conviction is near-ATM)
+    "min_dte": 0,                  # Allow 0DTE for Mag7 (liquidity supports it as signal)
+    "max_dte": 20,                 # same 4-week horizon
+}
+
+
+def _upside_bet_rules_for(row: dict) -> dict:
+    """Select the right UPSIDE_BET ruleset: Mag7 tier or default.
+
+    Mag7 names get lower notional threshold (institutional flows size smaller
+    to stay under detection) and tighter OTM (real conviction is near-ATM in
+    mega-cap liquid names, not far-OTM lottery).
+    """
+    ticker = (row.get("ticker") or "").upper()
+    if ticker in MAG7_ROOTS:
+        return UPSIDE_BET_RULES_MAG7
+    return UPSIDE_BET_RULES
+
+
 def is_golden_flow(row: dict) -> tuple[bool, list[str]]:
     """Return (is_golden, list_of_failed_rules).
 
     Row is a dict matching option_flow_daily columns (or close). Missing
     fields fail their rule. Enables "show me what's ALMOST golden" UI later.
+
+    Mag7 names get GOLDEN_FLOW_RULES_MAG7 (lower notional floor). See
+    _golden_flow_rules_for().
     """
+    rules = _golden_flow_rules_for(row)
     failed: list[str] = []
 
     notional = row.get("total_notional") or 0
-    if notional < GOLDEN_FLOW_RULES["min_notional"]:
-        failed.append(f"notional(${notional/1000:.0f}K<${GOLDEN_FLOW_RULES['min_notional']/1000:.0f}K)")
+    if notional < rules["min_notional"]:
+        failed.append(f"notional(${notional/1000:.0f}K<${rules['min_notional']/1000:.0f}K)")
 
     buy = row.get("buy_notional") or 0
     sell = row.get("sell_notional") or 0
@@ -187,23 +318,23 @@ def is_golden_flow(row: dict) -> tuple[bool, list[str]]:
     # Symmetric conviction: bullish buying OR bearish selling (both possible
     # for insider flow depending on whether they're loading puts or selling calls).
     side_ok = (
-        bought_pct >= GOLDEN_FLOW_RULES["min_bought_pct"]
-        or sold_pct >= GOLDEN_FLOW_RULES["min_sold_pct"]
+        bought_pct >= rules["min_bought_pct"]
+        or sold_pct >= rules["min_sold_pct"]
     )
     if not side_ok:
-        failed.append(f"side_conv(B{bought_pct*100:.0f}%/S{sold_pct*100:.0f}% both below {GOLDEN_FLOW_RULES['min_bought_pct']*100:.0f}%)")
+        failed.append(f"side_conv(B{bought_pct*100:.0f}%/S{sold_pct*100:.0f}% both below {rules['min_bought_pct']*100:.0f}%)")
 
     vol = row.get("total_volume") or 0
     oi = row.get("oi") or 0
     vol_oi = (vol / oi) if oi > 0 else float("inf")  # no OI = definitely new
-    if oi > 0 and vol_oi < GOLDEN_FLOW_RULES["min_vol_oi_ratio"]:
-        failed.append(f"vol/oi({vol_oi:.1f}x<{GOLDEN_FLOW_RULES['min_vol_oi_ratio']}x)")
+    if oi > 0 and vol_oi < rules["min_vol_oi_ratio"]:
+        failed.append(f"vol/oi({vol_oi:.1f}x<{rules['min_vol_oi_ratio']}x)")
 
     strike = row.get("strike") or 0
     spot = row.get("spot") or 0
     otm_pct = abs(strike - spot) / spot if (strike > 0 and spot > 0) else 1.0
-    if otm_pct > GOLDEN_FLOW_RULES["max_otm_pct"]:
-        failed.append(f"OTM({otm_pct*100:.1f}%>{GOLDEN_FLOW_RULES['max_otm_pct']*100:.1f}%)")
+    if otm_pct > rules["max_otm_pct"]:
+        failed.append(f"OTM({otm_pct*100:.1f}%>{rules['max_otm_pct']*100:.1f}%)")
 
     # DTE = TRADING days between trade date and expiration (weekdays only).
     # Calendar-day DTE overcounts Fri-trade/Mon-exp as 3 days when it's
@@ -327,6 +458,106 @@ def get_tail_flow(
         is_tail, _failed = is_tail_flow(r)
         if is_tail:
             r["_tail"] = True
+            out.append(r)
+    return out[:limit]
+
+
+def is_upside_bet(row: dict) -> tuple[bool, list[str]]:
+    """UPSIDE_BET classifier — institutional bull thesis 2-20 DTE, ATM-to-moderate-OTM.
+
+    Returns (is_upside_bet, failed_rules). Fills the gap between GOLDEN (≤2 DTE,
+    ATM-only) and TAIL (cheap-only). Asymmetric — fires ONLY on bullish-for-stock
+    flow (CALL+BUY or PUT+SELL dominant).
+
+    Mag7 names get a separate (looser notional, tighter OTM) ruleset — see
+    UPSIDE_BET_RULES_MAG7 and _upside_bet_rules_for().
+    """
+    rules = _upside_bet_rules_for(row)
+    failed: list[str] = []
+
+    notional = row.get("total_notional") or 0
+    if notional < rules["min_notional"]:
+        failed.append(f"notional(${notional/1000:.0f}K<${rules['min_notional']/1000:.0f}K)")
+
+    buy = row.get("buy_notional") or 0
+    sell = row.get("sell_notional") or 0
+    directional = buy + sell
+    bought_pct = (buy / directional) if directional > 0 else 0
+    sold_pct = (sell / directional) if directional > 0 else 0
+
+    # Asymmetric bullish-for-stock requirement
+    option_type = (row.get("option_type") or "").lower()
+    if option_type == "call":
+        # CALL + BUY = institutions loading upside (bullish for stock)
+        if bought_pct < rules["min_bought_pct"]:
+            failed.append(f"call_buy_conv({bought_pct*100:.0f}%<{rules['min_bought_pct']*100:.0f}%)")
+    elif option_type == "put":
+        # PUT + SELL = institutions selling puts for premium (bullish for stock)
+        if sold_pct < rules["min_bought_pct"]:
+            failed.append(f"put_sell_conv({sold_pct*100:.0f}%<{rules['min_bought_pct']*100:.0f}%)")
+    else:
+        failed.append("unknown_option_type")
+
+    vol = row.get("total_volume") or 0
+    oi = row.get("oi") or 0
+    vol_oi = (vol / oi) if oi > 0 else float("inf")
+    if oi > 0 and vol_oi < rules["min_vol_oi_ratio"]:
+        failed.append(f"vol_oi({vol_oi:.1f}x<{rules['min_vol_oi_ratio']:.0f}x)")
+
+    spot = row.get("spot") or 0
+    strike = row.get("strike") or 0
+    if spot > 0 and strike > 0:
+        if option_type == "call":
+            otm_pct = max(0.0, (strike - spot) / spot)
+        else:  # put
+            otm_pct = max(0.0, (spot - strike) / spot)
+        if otm_pct < rules["min_otm_pct"]:
+            failed.append(f"otm({otm_pct*100:.1f}%<{rules['min_otm_pct']*100:.1f}%)")
+        if otm_pct > rules["max_otm_pct"]:
+            failed.append(f"otm({otm_pct*100:.1f}%>{rules['max_otm_pct']*100:.1f}%)")
+
+    dte = row.get("dte")
+    if dte is None:
+        try:
+            import datetime as _dt
+            exp = row.get("expiration")
+            date_str = row.get("date")
+            if exp and date_str:
+                ed = _dt.date.fromisoformat(exp)
+                td = _dt.date.fromisoformat(date_str)
+                dte = max(0, (ed - td).days)
+        except Exception:
+            dte = 999
+    if dte is not None:
+        if dte < rules["min_dte"]:
+            failed.append(f"dte({dte}<{rules['min_dte']})")
+        if dte > rules["max_dte"]:
+            failed.append(f"dte({dte}>{rules['max_dte']})")
+
+    return (len(failed) == 0), failed
+
+
+def get_upside_bet(
+    since_date: str | None = None, ticker: str | None = None,
+    limit: int = 500,
+) -> list[dict]:
+    """Query flow_daily + apply UPSIDE_BET classifier. Returns only matches."""
+    # Pre-filter at DB level with the LOWER threshold so Mag7-tier candidates
+    # aren't dropped before the classifier can route them to the correct rules.
+    pre_filter_min = min(
+        UPSIDE_BET_RULES["min_notional"],
+        UPSIDE_BET_RULES_MAG7["min_notional"],
+    )
+    rows = get_flow_daily(
+        since_date=since_date, ticker=ticker,
+        min_notional=pre_filter_min,
+        limit=limit * 5,
+    )
+    out: list[dict] = []
+    for r in rows:
+        is_ub, _failed = is_upside_bet(r)
+        if is_ub:
+            r["_upside_bet"] = True
             out.append(r)
     return out[:limit]
 

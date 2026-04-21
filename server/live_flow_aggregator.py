@@ -46,7 +46,11 @@ from .config import get_settings
 from .option_flow_daily import (
     DailyFlowAggregate,
     GOLDEN_FLOW_RULES,
+    GOLDEN_FLOW_RULES_MAG7,
+    UPSIDE_BET_RULES,
+    UPSIDE_BET_RULES_MAG7,
     is_golden_flow,
+    is_upside_bet,
     score_golden_flow,
     upsert_flow_daily_batch,
 )
@@ -58,13 +62,62 @@ from .thetadata import (
 )
 
 
-# How often to re-evaluate aggregates for Golden transitions (seconds).
+# How often to re-evaluate aggregates for Golden/UpsideBet transitions (seconds).
 # Fast enough for real-time feel, slow enough to batch DB writes.
 GOLDEN_CHECK_INTERVAL_S = 30
+UPSIDE_BET_CHECK_INTERVAL_S = 30
 
-# Notional floor for even CONSIDERING an aggregate. Contracts below this
-# can't be Golden anyway (rule 1 = ≥$500K), so we skip the check entirely.
-MIN_NOTIONAL_FOR_CHECK = GOLDEN_FLOW_RULES["min_notional"]
+# Notional floor for even CONSIDERING an aggregate. We use the MINIMUM of all
+# tier thresholds across classifiers so no detector gets silently starved at
+# the check gate.
+#
+# Current floors (2026-04-20):
+#   UPSIDE_BET_RULES_MAG7: $100K   ← LOWEST — this is the check gate
+#   UPSIDE_BET_RULES:      $250K
+#   GOLDEN_FLOW_RULES_MAG7: $200K
+#   GOLDEN_FLOW_RULES:      $500K
+MIN_NOTIONAL_FOR_CHECK = min(
+    GOLDEN_FLOW_RULES["min_notional"],
+    GOLDEN_FLOW_RULES_MAG7["min_notional"],
+    UPSIDE_BET_RULES["min_notional"],
+    UPSIDE_BET_RULES_MAG7["min_notional"],
+)
+
+
+def _fmt_strike(strike: float) -> str:
+    """Format a strike preserving half-dollar / quarter increments.
+
+    Previous code used `${strike:.0f}` which silently truncated $272.50 → $272,
+    causing alerts to reference strikes that don't exist on the chain.
+
+    Examples:
+      272.0  → "$272"
+      272.5  → "$272.50"
+      272.25 → "$272.25"
+      7.5    → "$7.50"
+    """
+    if strike == int(strike):
+        return f"${int(strike)}"
+    return f"${strike:.2f}"
+
+
+def _is_bullish_for_stock(option_type: str, side: str) -> bool:
+    """GOLDEN FLOW is historically a BULLISH-for-stock insider pattern.
+
+    Valid bullish configurations:
+      - CALL with BUY-dominant aggressor (institutions loading upside)
+      - PUT with SELL-dominant aggressor (institutions collecting premium / cash-secured puts)
+
+    Invalid (not bullish for underlying):
+      - CALL with SELL-dominant (covered calls / call-selling / bearish bets)
+      - PUT with BUY-dominant (protective puts / bearish bets) — these should
+        be routed to TAIL pattern detection, not GOLDEN
+
+    option_type: 'call' | 'put' (lowercase, as stored in aggregator)
+    side: 'BUY' | 'SELL' (aggressor dominance)
+    """
+    ot = (option_type or "").lower()
+    return (ot == "call" and side == "BUY") or (ot == "put" and side == "SELL")
 
 
 class LiveFlowAggregator:
@@ -79,11 +132,17 @@ class LiveFlowAggregator:
         self._aggregates: dict[tuple[str, str, float, str, str], DailyFlowAggregate] = {}
         # Set of keys that have already fired GOLDEN (one-shot per contract-day)
         self._golden_fired: set[tuple[str, str, float, str, str]] = set()
+        # Set of keys that have already fired UPSIDE_BET (one-shot per contract-day)
+        # Independent from _golden_fired — a contract can be both Golden (imminent)
+        # AND UpsideBet (longer-term catalyst play) depending on DTE at time of
+        # threshold cross. They're different messages; we fire each once.
+        self._upside_bet_fired: set[tuple[str, str, float, str, str]] = set()
         # Telemetry
         self.trades_seen = 0
         self.trades_skipped_excluded = 0
         self.trades_skipped_auction = 0
         self.golden_alerts_fired = 0
+        self.upside_bet_alerts_fired = 0
 
     def _trade_date(self, ts_epoch: float) -> str:
         """Convert trade timestamp to ET date string. Heuristic: server assumed
@@ -176,6 +235,58 @@ class LiveFlowAggregator:
 
         return newly_golden
 
+    async def check_upside_bet_transitions(self) -> list[tuple]:
+        """Re-evaluate every eligible aggregate for UPSIDE_BET status.
+
+        Mirrors check_golden_transitions but runs the is_upside_bet classifier
+        (2-20 DTE, ATM-to-moderate-OTM, bullish-asymmetric). Mag7 names use
+        the lower-threshold Mag7 tier automatically.
+
+        Returns a list of newly-upside-bet keys that just transitioned from
+        not-UB to UB. Caller handles alert dispatch.
+        """
+        newly_ub: list[tuple] = []
+
+        try:
+            snapshot = await cache.snapshot()
+        except Exception:
+            snapshot = {}
+
+        for key, agg in self._aggregates.items():
+            if key in self._upside_bet_fired:
+                continue  # one-shot per contract-day
+            # MIN_NOTIONAL_FOR_CHECK is already the global minimum across tiers
+            # (see module constant) so no extra filter needed here — the
+            # classifier will route to the right per-ticker threshold.
+            if agg.total_notional < MIN_NOTIONAL_FOR_CHECK:
+                continue
+
+            state = snapshot.get(agg.ticker) or {}
+            spot = state.get("actual_spot") or state.get("_spot") or 0
+            oi = self._lookup_oi(state, agg.strike, agg.expiration, agg.option_type)
+
+            row = {
+                "date": agg.date,
+                "ticker": agg.ticker,
+                "strike": agg.strike,
+                "expiration": agg.expiration,
+                "option_type": agg.option_type,
+                "total_volume": agg.total_volume,
+                "total_notional": agg.total_notional,
+                "buy_notional": agg.buy_notional,
+                "sell_notional": agg.sell_notional,
+                "neutral_notional": agg.neutral_notional,
+                "sweep_notional": agg.sweep_notional,
+                "oi": oi,
+                "spot": spot,
+            }
+            is_ub, _failed = is_upside_bet(row)
+            if is_ub:
+                self._upside_bet_fired.add(key)
+                newly_ub.append((key, agg, oi, spot))
+
+        return newly_ub
+
     def _lookup_oi(self, state: dict, strike: float, expiration: str, option_type: str) -> int | None:
         """Pull OI for a contract from the worker's cached raw chain."""
         try:
@@ -226,6 +337,7 @@ class LiveFlowAggregator:
         return {
             "active_aggregates": len(self._aggregates),
             "golden_alerts_fired": self.golden_alerts_fired,
+            "upside_bet_alerts_fired": self.upside_bet_alerts_fired,
             "trades_seen": self.trades_seen,
             "trades_skipped_excluded": self.trades_skipped_excluded,
             "trades_skipped_auction": self.trades_skipped_auction,
@@ -269,6 +381,21 @@ async def send_golden_telegram(
     vol_oi = (agg.total_volume / oi) if oi else float("inf")
     right_label = "CALL" if agg.option_type == "call" else "PUT"
     emoji = "🟢" if agg.option_type == "call" else "🔴"
+
+    # Directional gate: GOLDEN is a BULLISH-for-stock pattern by design.
+    # A CALL with SELL-dominant aggressor (institutions selling calls) is NOT
+    # a bullish-insider pattern — it's call-sellers/covered-calls/bearish bets.
+    # Similarly PUT with BUY-dominant is bearish insider flow (TAIL territory).
+    # Historical bug: symmetric conviction scoring fired GOLDEN on AAPL $272.50C
+    # 4/22/2026 with SELL 87% — this is the fix.
+    if not _is_bullish_for_stock(agg.option_type, side):
+        print(
+            f"[GOLDEN-SKIP] {agg.ticker} {_fmt_strike(agg.strike)} {right_label} "
+            f"{agg.expiration}: {side} {side_pct:.0f}% — not bullish-for-stock; "
+            f"suppressing telegram (logged only)",
+            flush=True,
+        )
+        return
 
     # Trading-day DTE
     try:
@@ -320,7 +447,7 @@ async def send_golden_telegram(
 
     text = (
         f"⚡ GOLDEN {g['grade']}  {agg.ticker}  ({g['score']}/{g['max_score']})\n"
-        f"{emoji} ${agg.strike:.0f} {right_label} {agg.expiration} (DTE={dte})\n"
+        f"{emoji} {_fmt_strike(agg.strike)} {right_label} {agg.expiration} (DTE={dte})\n"
         f"\n"
         f"{side} {side_pct:.0f}%       {_factor_bar(factors['conviction']['pts'])}  {factors['conviction']['pts']}/4\n"
         f"Notional ${agg.total_notional/1e6:.2f}M  {_factor_bar(factors['notional']['pts'])}  {factors['notional']['pts']}/4\n"
@@ -372,7 +499,7 @@ async def run_golden_transition_loop(
                 aggregator.golden_alerts_fired += 1
                 cluster_size = cluster_counter.get((agg.date, agg.ticker), 1)
                 print(
-                    f"[GOLDEN] {agg.ticker} ${agg.strike:.0f}{agg.option_type[0].upper()} "
+                    f"[GOLDEN] {agg.ticker} {_fmt_strike(agg.strike)}{agg.option_type[0].upper()} "
                     f"{agg.expiration} — ${agg.total_notional:,.0f} notional "
                     f"(buy={agg.buy_notional/agg.total_notional*100:.0f}%, "
                     f"sweep={agg.sweep_notional/agg.total_notional*100:.0f}%, "
@@ -398,3 +525,111 @@ async def run_golden_transition_loop(
         print(f"[LIVE_FLOW] shutdown flush done  stats={aggregator.stats()}")
     except Exception as e:
         print(f"[LIVE_FLOW] shutdown flush error: {e}")
+
+
+# ── UPSIDE_BET live alerting ───────────────────────────────────────
+#
+# Mirrors the Golden path but fires on UPSIDE_BET classifier (2-20 DTE,
+# ATM-to-moderate-OTM, bullish-asymmetric). Semantically distinct alert:
+# Golden = "imminent catalyst", UpsideBet = "catalyst within 4 weeks."
+#
+# Runs as its own background task so it doesn't block Golden detection
+# (they share the same underlying aggregator state, independent one-shot
+# dedupe sets).
+
+
+async def send_upside_bet_telegram(
+    agg: DailyFlowAggregate, oi: int | None, spot: float,
+) -> None:
+    """Telegram push when a contract first crosses UPSIDE_BET threshold.
+
+    Format mirrors Golden but uses distinct emoji/title so the user can
+    visually distinguish the two signal classes at a glance.
+    """
+    try:
+        from .telegram import send
+    except ImportError:
+        return
+
+    buy = agg.buy_notional
+    sell = agg.sell_notional
+    directional = buy + sell
+    bought_pct = (buy / directional * 100) if directional > 0 else 0
+    sold_pct = (sell / directional * 100) if directional > 0 else 0
+    vol_oi = (agg.total_volume / oi) if (oi and oi > 0) else None
+    otm = (abs(agg.strike - spot) / spot * 100) if spot > 0 else 0.0
+
+    # Per-ticker tier label in title so Mag7 alerts are visually distinct.
+    from .option_flow_daily import MAG7_ROOTS
+    tier_tag = " [MAG7]" if agg.ticker.upper() in MAG7_ROOTS else ""
+
+    # DTE for context
+    try:
+        ed = dt.date.fromisoformat(agg.expiration)
+        td = dt.date.fromisoformat(agg.date)
+        dte = max(0, (ed - td).days)
+    except Exception:
+        dte = None
+
+    side_label = "BOUGHT" if bought_pct >= sold_pct else "SOLD"
+    dominant_pct = max(bought_pct, sold_pct)
+    right_emoji = "🟢" if agg.option_type == "call" else "🔴"
+
+    text = (
+        f"🎯 UPSIDE BET{tier_tag}: {agg.ticker}\n"
+        f"{right_emoji} {_fmt_strike(agg.strike)} {agg.option_type.upper()} "
+        f"{agg.expiration}"
+        + (f" ({dte}d)" if dte is not None else "")
+        + "\n"
+        f"\n"
+        f"Notional: ${agg.total_notional:,.0f}  "
+        f"{side_label} {dominant_pct:.0f}%\n"
+        f"Volume: {agg.total_volume:,} / OI: {oi or '—'}"
+        + (f"  (V/OI {vol_oi:.1f}x)" if vol_oi else "")
+        + "\n"
+        f"Sweep %: {(agg.sweep_notional / agg.total_notional * 100) if agg.total_notional else 0:.0f}%\n"
+        f"Largest: {agg.largest_print_size:,} @ ${agg.largest_print_price:.2f}\n"
+        f"Spot: ${spot:.2f} | OTM: {otm:.1f}%"
+    )
+    try:
+        await send(text, ticker=agg.ticker, force=True)
+    except Exception as e:
+        print(f"[LIVE_FLOW] UB telegram send failed: {e}")
+
+
+async def run_upside_bet_transition_loop(
+    aggregator: LiveFlowAggregator, stop_event: asyncio.Event,
+) -> None:
+    """Poll the aggregator every UPSIDE_BET_CHECK_INTERVAL_S seconds for new
+    UPSIDE_BET transitions. Fires Telegram + logs on each new transition.
+
+    Does NOT call flush_to_db (the Golden loop already does that — duplicating
+    here would double the write volume for no benefit)."""
+    while not stop_event.is_set():
+        try:
+            await asyncio.sleep(UPSIDE_BET_CHECK_INTERVAL_S)
+        except asyncio.CancelledError:
+            break
+
+        try:
+            newly_ub = await aggregator.check_upside_bet_transitions()
+        except Exception as e:
+            print(f"[LIVE_FLOW] check_upside_bet_transitions error: {e}")
+            continue
+
+        for key, agg, oi, spot in newly_ub:
+            aggregator.upside_bet_alerts_fired += 1
+            try:
+                dte = (dt.date.fromisoformat(agg.expiration) - dt.date.fromisoformat(agg.date)).days
+            except Exception:
+                dte = None
+            print(
+                f"[UPSIDE_BET] {agg.ticker} {_fmt_strike(agg.strike)}{agg.option_type[0].upper()} "
+                f"{agg.expiration}"
+                + (f" ({dte}d)" if dte is not None else "")
+                + f" — ${agg.total_notional:,.0f} notional "
+                f"(buy={agg.buy_notional/agg.total_notional*100:.0f}%, "
+                f"OI={oi or '—'})",
+                flush=True,
+            )
+            asyncio.create_task(send_upside_bet_telegram(agg, oi, spot))

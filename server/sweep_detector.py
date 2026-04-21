@@ -44,6 +44,7 @@ from .flow_alerts import insert_sweep_alert
 from .live_flow_aggregator import (
     LiveFlowAggregator,
     run_golden_transition_loop,
+    run_upside_bet_transition_loop,
 )
 from .thetadata import (
     EXCLUDE_CONDITIONS,
@@ -59,7 +60,22 @@ from .thetadata import (
 
 ROLLUP_SECONDS = 30
 MIN_SWEEP_NOTIONAL = 50_000    # $ — below this, ignore (noise; single contract ISO)
-TELEGRAM_NOTIONAL = 500_000    # $ — alert threshold for Telegram push
+TELEGRAM_NOTIONAL = 500_000    # $ — default alert threshold for Telegram push
+
+# Mag7 tier: Telegram push fires at a lower threshold for AAPL/AMZN/GOOGL/etc.
+# because (a) these names have deep-enough books that $200K in a 30s window is
+# still institutional footprint, and (b) the AMZN-Anthropic precedent (2026-04-20)
+# showed $168K single prints meaningfully predicted overnight catalysts.
+TELEGRAM_NOTIONAL_MAG7 = 200_000
+
+
+def _telegram_threshold(ticker: str) -> float:
+    """Per-ticker Telegram push threshold for ISO sweeps. Mag7 tier is lower."""
+    # Import here to avoid a hard circular dep at module load time.
+    from .option_flow_daily import MAG7_ROOTS
+    if ticker.upper() in MAG7_ROOTS:
+        return TELEGRAM_NOTIONAL_MAG7
+    return TELEGRAM_NOTIONAL
 
 
 @dataclass
@@ -160,6 +176,42 @@ MVP_WATCHLIST_ROOTS = [
     "AMD", "AVGO", "NFLX", "CRM", "ORCL",
 ]
 
+# Added 2026-04-20 after missing MRVL 165C 5/8 and FSLR 192.5C 4/24 signals:
+# these Tier-3 thematic names have active institutional flow that the REST
+# scanner catches too slowly. Streaming them lets GOLDEN / TAIL / UPSIDE_BET
+# fire within 500ms instead of waiting for next chain-cache refresh.
+#
+# Tighter strike radius (±12 vs mega-cap ±40) keeps budget impact ~1,800
+# contracts, fitting in the 15K-cap headroom.
+#
+# Selection criteria:
+#   - Active options volume (≥100K avg daily)
+#   - In current thematic baskets (AI silicon, power, fiber, neocloud, crypto, clean energy)
+#   - Validated flow activity today or in past week (MRVL +5%, FSLR $1M print, etc.)
+TIER2_THEMATIC_ROOTS = [
+    # AI silicon / networking (missed MRVL 165C today)
+    "MRVL", "ANET",
+    # AI data center power (GEV/VRT rotation winners)
+    "GEV", "VRT",
+    # AI software / data (PLTR confluence + DELL A-grade today)
+    "PLTR", "DELL", "PANW",
+    # Data storage (SNDK NDX-100 inclusion, MU memory cycle)
+    "SNDK",
+    # Clean energy / solar (missed FSLR 192.5C today)
+    "FSLR",
+    # Crypto infrastructure (MSTR/COIN/HOOD momentum cohort)
+    "MSTR", "COIN", "HOOD",
+    # Neocloud (NVDA-reference customers, real flow activity)
+    "NBIS",
+]
+
+# Strike coverage target for Tier-2 thematic names — percentage-based so
+# $1-step stocks (MRVL, FSLR) get enough coverage for 15% OTM (UPSIDE_BET max).
+# Fixed-count radius (12) was too tight: MRVL ±$12 = 8% OTM → missed 165C @ 11.6% OTM.
+TIER2_OTM_COVERAGE_PCT = 0.15  # ±15% of spot
+# Cap to prevent runaway strike counts on very high-priced tickers
+TIER2_MAX_RADIUS = 30
+
 
 async def _build_subscription_plan(
     rest_client: Any = None,
@@ -196,20 +248,18 @@ async def _build_subscription_plan(
     RADIUS_EQUITY = 40
     RADIUS_INDEX = 200  # wider strike count for $5+ step index products
 
-    for root in MVP_WATCHLIST_ROOTS:
+    # Count subscriptions per tier for logging + budget enforcement
+    tier_counts: dict[str, int] = {"mvp": 0, "tier2": 0}
+
+    def _subscribe_root(root: str, radius: int, tier_label: str) -> None:
         state = snapshot.get(root) or {}
         spot = state.get("actual_spot") or state.get("_spot") or 0
         if not spot:
-            continue
-
-        # Per-root strike step (SPY=$1, SPX=$5, NDX=$25, etc.) via root_config
+            return
         step = get_strike_step(root, spot)
         atm = round(spot / step) * step
-        # SPX/SPXW specifically need wider strike count for full TAIL coverage.
-        # NDX/RUT have fewer TAIL candidates — keep equity radius there.
-        radius = RADIUS_INDEX if root in ("SPX", "SPXW") else RADIUS_EQUITY
         strikes = [atm + i * step for i in range(-radius, radius + 1)]
-
+        added = 0
         for exp in expirations:
             for k in strikes:
                 for right in ("C", "P"):
@@ -219,6 +269,43 @@ async def _build_subscription_plan(
                         strike_1000ths=int(k * 1000),
                         right=right,
                     ))
+                    added += 1
+        tier_counts[tier_label] = tier_counts.get(tier_label, 0) + added
+
+    # MVP tier: indexes + mega-caps (wide strike radius)
+    for root in MVP_WATCHLIST_ROOTS:
+        radius = RADIUS_INDEX if root in ("SPX", "SPXW") else RADIUS_EQUITY
+        _subscribe_root(root, radius, "mvp")
+
+    # Tier-2 thematic: percentage-based radius so $1-step names (MRVL, FSLR)
+    # get real 15% OTM coverage instead of just 8%. Capped to prevent runaway.
+    for root in TIER2_THEMATIC_ROOTS:
+        state = snapshot.get(root) or {}
+        spot_t2 = state.get("actual_spot") or state.get("_spot") or 0
+        if not spot_t2:
+            continue
+        step_t2 = get_strike_step(root, spot_t2)
+        # How many steps does 15% of spot represent?
+        radius_t2 = min(
+            TIER2_MAX_RADIUS,
+            max(12, int((spot_t2 * TIER2_OTM_COVERAGE_PCT) / step_t2) + 1),
+        )
+        _subscribe_root(root, radius_t2, "tier2")
+
+    # Safety check — warn if we're approaching the 15K Standard-tier cap
+    total = len(specs)
+    print(
+        f"[SWEEP] subscription plan: {total} contracts "
+        f"(MVP={tier_counts['mvp']}, Tier2={tier_counts['tier2']}) "
+        f"— budget 15,000, {15000 - total} headroom",
+        flush=True,
+    )
+    if total > 14_500:
+        print(
+            f"[SWEEP] ⚠️ subscription count {total} near 15K cap — "
+            f"consider reducing RADIUS_TIER2 or pruning TIER2_THEMATIC_ROOTS",
+            flush=True,
+        )
 
     return specs
 
@@ -316,8 +403,9 @@ class SweepDetector:
             return
 
         # Log + Telegram
+        from .live_flow_aggregator import _fmt_strike
         print(
-            f"[SWEEP] {rollup.ticker} ${rollup.strike:.0f}{rollup.option_type[0].upper()} "
+            f"[SWEEP] {rollup.ticker} {_fmt_strike(rollup.strike)}{rollup.option_type[0].upper()} "
             f"{rollup.expiration} "
             f"notional=${rollup.total_notional:,.0f} "
             f"contracts={rollup.total_contracts} venues={rollup.venue_count} "
@@ -325,7 +413,7 @@ class SweepDetector:
             flush=True,
         )
 
-        if rollup.total_notional >= TELEGRAM_NOTIONAL:
+        if rollup.total_notional >= _telegram_threshold(rollup.ticker):
             asyncio.create_task(self._send_telegram(rollup))
 
     async def _send_telegram(self, rollup: SweepRollup) -> None:
@@ -335,10 +423,11 @@ class SweepDetector:
             from .telegram import send
         except ImportError:
             return
+        from .live_flow_aggregator import _fmt_strike
         right_emoji = "🟢" if rollup.option_type == "call" else "🔴"
         text = (
             f"⚡ ISO SWEEP: {rollup.ticker}\n"
-            f"{right_emoji} ${rollup.strike:.0f} {rollup.option_type.upper()} {rollup.expiration}\n"
+            f"{right_emoji} {_fmt_strike(rollup.strike)} {rollup.option_type.upper()} {rollup.expiration}\n"
             f"Notional: ${rollup.total_notional:,.0f}\n"
             f"Contracts: {rollup.total_contracts:,}\n"
             f"Venues: {rollup.venue_count} (multi-exchange = real sweep)\n"
@@ -467,21 +556,27 @@ async def run_sweep_detector(stop_event: asyncio.Event) -> None:
         # Trickle the sub requests so we don't overwhelm the Terminal
         await asyncio.sleep(0.005)
 
-    # Launch the Golden Flow transition loop as a sibling task — runs in
-    # parallel with the trade consumer, re-evaluates aggregates every 30s.
+    # Launch the Golden Flow + UPSIDE_BET transition loops as sibling tasks.
+    # Both run in parallel with the trade consumer, re-evaluating the shared
+    # aggregator state every 30s. Independent one-shot dedupe per classifier.
     golden_task = asyncio.create_task(
         run_golden_transition_loop(flow_aggregator, stop_event)
+    )
+    upside_bet_task = asyncio.create_task(
+        run_upside_bet_transition_loop(flow_aggregator, stop_event)
     )
 
     # Consume loop — runs until stop_event
     try:
         await detector.consume(stop_event)
     finally:
-        golden_task.cancel()
-        try:
-            await asyncio.wait_for(golden_task, timeout=10)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            pass
+        for t in (golden_task, upside_bet_task):
+            t.cancel()
+        for t in (golden_task, upside_bet_task):
+            try:
+                await asyncio.wait_for(t, timeout=10)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
         await stream.stop()
         print(
             f"[SWEEP] shutdown — sweep: seen={detector.trades_seen} "
