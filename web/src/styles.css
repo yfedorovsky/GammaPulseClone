@@ -1747,3 +1747,188 @@ input, select { font-family: inherit; }
   text-transform: uppercase;
   margin-top: 2px;
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   NetFlow Tab — Price-to-Premium Gap visualization
+   Shipped 2026-04-21 (overnight v1 MVP)
+   =══════════════════════════════════════════════════════════════ */
+
+.netflow-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  overflow: auto;
+  height: 100%;
+}
+
+.netflow-header {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-faint);
+  border-radius: var(--radius-md);
+}
+
+.netflow-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.netflow-label {
+  font-size: var(--fs-xxs);
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.netflow-loading {
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  font-style: italic;
+}
+
+.netflow-err {
+  font-size: var(--fs-xs);
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.netflow-stats {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-faint);
+  flex-wrap: wrap;
+}
+
+.netflow-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.netflow-stat-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.netflow-stat-val {
+  font-size: var(--fs-md);
+  font-weight: 800;
+  font-family: var(--mono);
+  letter-spacing: 0.3px;
+}
+
+.netflow-chart-wrap {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-faint);
+  border-radius: var(--radius-md);
+  padding: 8px;
+}
+
+.netflow-chart-main {
+  width: 100%;
+  min-height: 360px;
+}
+
+.netflow-chart-vol {
+  width: 100%;
+  min-height: 120px;
+}
+
+.netflow-chart-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--text-3);
+  margin-bottom: 4px;
+  padding-left: 6px;
+  text-transform: uppercase;
+}
+
+.netflow-footer {
+  padding: 10px 12px;
+  background: linear-gradient(90deg, rgba(96, 165, 250, 0.06) 0%, rgba(96, 165, 250, 0.02) 60%, transparent 100%);
+  border-left: 2px solid rgba(96, 165, 250, 0.4);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
+.netflow-footer strong {
+  color: #9ec5ff;
+}
+
+.netflow-footer-icon {
+  color: #60a5fa;
+  margin-right: 6px;
+  font-weight: 700;
+}
+
+/* Regime banner — surfaces FLOW_LEADS_UP / DOWN, GAP_CLOSED, DOUBLE_STALL */
+.netflow-regime {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border-left: 3px solid;
+  font-size: var(--fs-xs);
+}
+.netflow-regime.regime-bullish {
+  background: linear-gradient(90deg, rgba(16, 220, 154, 0.14) 0%, rgba(16, 220, 154, 0.03) 80%, transparent 100%);
+  border-left-color: #10dc9a;
+}
+.netflow-regime.regime-bearish {
+  background: linear-gradient(90deg, rgba(255, 79, 168, 0.14) 0%, rgba(255, 79, 168, 0.03) 80%, transparent 100%);
+  border-left-color: #ff4fa8;
+}
+.netflow-regime.regime-neutral {
+  background: linear-gradient(90deg, rgba(244, 196, 48, 0.12) 0%, rgba(244, 196, 48, 0.02) 80%, transparent 100%);
+  border-left-color: #f4c430;
+}
+
+.netflow-regime-icon {
+  font-size: 14px;
+  font-weight: 900;
+}
+.netflow-regime.regime-bullish .netflow-regime-icon { color: #10dc9a; }
+.netflow-regime.regime-bearish .netflow-regime-icon { color: #ff4fa8; }
+.netflow-regime.regime-neutral .netflow-regime-icon { color: #f4c430; }
+
+.netflow-regime-name {
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  font-size: var(--fs-sm);
+}
+.netflow-regime.regime-bullish .netflow-regime-name { color: #10dc9a; }
+.netflow-regime.regime-bearish .netflow-regime-name { color: #ff4fa8; }
+.netflow-regime.regime-neutral .netflow-regime-name { color: #f4c430; }
+
+.netflow-regime-conf {
+  font-size: 9px;
+  font-weight: 800;
+  padding: 1px 6px;
+  border-radius: 3px;
+  letter-spacing: 0.8px;
+}
+.netflow-regime-conf.conf-high   { background: rgba(16, 220, 154, 0.22); color: #4ee9a7; }
+.netflow-regime-conf.conf-medium { background: rgba(244, 196, 48, 0.22); color: #f4c430; }
+.netflow-regime-conf.conf-low    { background: rgba(255, 255, 255, 0.08); color: var(--text-2); }
+
+.netflow-regime-desc {
+  flex: 1;
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+}

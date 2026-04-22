@@ -187,6 +187,16 @@ class LiveFlowAggregator:
             timestamp=dt.datetime.fromtimestamp(time.time()).isoformat(),
         )
 
+        # Net-flow aggregator (ticker-level NCP/NPP) — parallel side-effect
+        # to the per-contract aggregation above. Hot path; this is a cheap
+        # in-memory update. See server/net_flow.py for details.
+        try:
+            from .net_flow import get_net_flow_aggregator
+            get_net_flow_aggregator().add_trade(trade)
+        except Exception as e:
+            # Never let net-flow failures break the main aggregation pipeline
+            print(f"[LIVE_FLOW] net_flow add_trade failed: {e}")
+
     async def check_golden_transitions(self) -> list[tuple]:
         """Re-evaluate every aggregate ≥$500K notional for Golden status.
 

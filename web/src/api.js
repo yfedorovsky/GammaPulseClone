@@ -31,6 +31,9 @@ export const api = {
   flowScan: () => json('GET', '/api/flow/scan'),
   bars: (ticker, interval = '5min', days = 5) =>
     json('GET', `/api/bars/${encodeURIComponent(ticker)}?interval=${interval}&days=${days}`),
+  netFlow: (ticker, minutes = 240) =>
+    json('GET', `/api/net-flow/${encodeURIComponent(ticker)}?minutes=${minutes}`),
+  netFlowStats: () => json('GET', '/api/net-flow-stats'),
   tickers: () => json('GET', '/api/tickers'),
   addTickers: (tickers) => json('POST', '/api/tickers/add', { tickers }),
   removeTickers: (tickers) => json('POST', '/api/tickers/remove', { tickers }),

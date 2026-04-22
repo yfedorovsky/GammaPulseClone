@@ -52,6 +52,8 @@ _scalp_task: asyncio.Task | None = None
 _discord_task: asyncio.Task | None = None
 _sweep_task: asyncio.Task | None = None
 _priority_task: asyncio.Task | None = None
+_net_flow_task: asyncio.Task | None = None
+_net_flow_alert_task: asyncio.Task | None = None
 
 
 @asynccontextmanager
@@ -92,6 +94,21 @@ async def lifespan(app: FastAPI):
     # If the flag is False, the task returns immediately (no-op).
     from .priority_refresh import run_priority_refresh
     _priority_task = asyncio.create_task(run_priority_refresh(_stop))
+    # Net-flow rotation loop: price-backfill + session-open reset for
+    # the per-ticker NCP/NPP aggregator. Trades are folded in via
+    # LiveFlowAggregator.add_trade (sync hot path); this loop handles
+    # async housekeeping that can't run in the hot path.
+    global _net_flow_task, _net_flow_alert_task
+    from .net_flow import run_net_flow_rotation_loop, get_net_flow_aggregator
+    _net_flow_task = asyncio.create_task(
+        run_net_flow_rotation_loop(get_net_flow_aggregator(), _stop)
+    )
+    # Net-flow alert loop: periodically scans regime transitions across
+    # all tracked tickers and fires Telegram alerts on qualifying
+    # FLOW_LEADS_UP / FLOW_LEADS_DOWN / DOUBLE_STALL / DIVERGENCE events.
+    # Dedupe + 15-min cooldown prevents spam during regime flicker.
+    from .net_flow_signals import run_net_flow_alert_loop
+    _net_flow_alert_task = asyncio.create_task(run_net_flow_alert_loop(_stop))
     # Discord listener: opt-in via DISCORD_ENABLED=true in .env
     _discord_task = None
     s = get_settings()
@@ -110,7 +127,7 @@ async def lifespan(app: FastAPI):
         _stop.set()
         await streamer.stop()
         await db.stop()  # Drain write queue before shutdown
-        all_tasks = [_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task, _priority_task]
+        all_tasks = [_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task, _priority_task, _net_flow_task, _net_flow_alert_task]
         for task in all_tasks:
             if task:
                 try:
@@ -1441,6 +1458,76 @@ async def debug_raw_contracts(ticker: str):
         "raw_contracts_keys": list(raw.keys()),
         "raw_contracts_total": sum(len(v) for v in raw.values()),
         "sample_atm": _debug_atm_contracts(raw, state.get("actual_spot") or state.get("_spot") or 0),
+    }
+
+
+# ── Net Flow (NCP / NPP time series) ──────────────────────────────────
+#
+# Implements the "Price-to-Premium Gap Theory" data layer. See
+# server/net_flow.py for the aggregator + sign convention. Data source is
+# the same WebSocket trade stream that powers sweep_detector — no extra
+# subscription required.
+
+@app.get("/api/net-flow/{ticker}")
+async def net_flow_series(ticker: str, minutes: int = 240):
+    """Return the last N minutes of net-flow bars for a ticker.
+
+    Response shape:
+      {
+        "ticker": "SPY",
+        "minutes": 240,
+        "bars": [ {t, t_iso, price, ncp, npp, signed_vol, ...}, ... ],
+        "latest": { ...last bar... },
+        "cum_ncp": session cumulative NCP,
+        "cum_npp": session cumulative NPP,
+        "cum_net": cum_ncp - cum_npp,
+        "cum_since": ISO timestamp of last session-open reset,
+        "tracked": whether this ticker is in TRACKED_TICKERS
+      }
+
+    Clamp: minutes ∈ [1, 1440]. Past 1440 we have no data (24h window).
+    """
+    from .net_flow import get_net_flow_aggregator, TRACKED_TICKERS
+    from .net_flow_signals import regime_summary
+    mins = max(1, min(int(minutes), 1440))
+    agg = get_net_flow_aggregator()
+    ticker_up = ticker.upper()
+    bars = agg.series(ticker_up, minutes=mins)
+    snap = agg.snapshot(ticker_up)
+    # Compute divergence / stall regime over the returned bars.
+    # Stateless — fresh every call, no persistence needed.
+    regime = regime_summary(bars)
+    return {
+        "ticker": ticker_up,
+        "minutes": mins,
+        "bars": bars,
+        "latest": snap["latest"],
+        "cum_ncp": snap["cum_ncp"],
+        "cum_npp": snap["cum_npp"],
+        "cum_net": snap["cum_net"],
+        "cum_since": snap["cum_since"],
+        "tracked": ticker_up in TRACKED_TICKERS,
+        "regime": regime.get("regime"),
+        "regime_description": regime.get("description"),
+        "regime_gap_direction": regime.get("gap_direction"),
+        "regime_confidence": regime.get("confidence"),
+        "signals": regime.get("signals", []),
+    }
+
+
+@app.get("/api/net-flow-stats")
+async def net_flow_stats():
+    """Operational telemetry for the net-flow aggregator.
+
+    Useful for debugging: shows trades seen/tracked/skipped, bars rotated,
+    tickers with data, and the current TRACKED_TICKERS config. Also
+    includes Telegram alert state (last regime per ticker, counts).
+    """
+    from .net_flow import get_net_flow_aggregator
+    from .net_flow_signals import get_alert_state
+    return {
+        "aggregator": get_net_flow_aggregator().stats(),
+        "alerts": get_alert_state().stats(),
     }
 
 
