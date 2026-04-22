@@ -39,6 +39,7 @@ TIER_2 = [
     "QCOM", "TXN", "AMAT", "LRCX", "KLAC", "ASML", "TSM", "ARM", "MRVL", "SMH", "SOXX",
     "NOW", "SHOP", "SNOW", "DDOG", "NET", "CRWD", "ZS", "PANW", "MDB",
     "UBER", "LYFT", "ABNB", "PYPL", "XYZ", "HOOD", "RBLX", "U", "DELL", "HPE",
+    "IBM",   # Added 2026-04-22 — blind spot; Discord friend flagged as bearish setup, -2.7% day
     # IBD adds (Apr 20) — large-cap Sector Leaders + Data Storage leaders
     # WDC / STX / SNDK promoted to TIER_1 Apr 21 (group breakout day).
     "APH",   # Amphenol — IBD Sector Leader, Electronic-Connectors
@@ -66,6 +67,12 @@ TIER_2 = [
     "WBA", "KR", "DG", "DLTR", "BBY", "ROST", "BURL", "M", "KSS", "JWN",
     # Industrials & materials
     "LIN", "APD", "SHW", "ECL", "NUE", "FCX", "X", "CLF", "AA",
+    # Paper / packaging cyclicals (added 2026-04-22 after IP bear miss)
+    # Classic cyclical shorts that we had zero coverage on. Mid-caps,
+    # liquid options chains, trade well in risk-off tapes.
+    "IP",    # International Paper — Discord friend flagged as bear today
+    "PKG",   # Packaging Corp of America — direct IP peer
+    "WRK",   # Smurfit WestRock — post-merger container mega-cap
     # Real estate / REITs
     "PLD", "AMT", "EQIX", "CCI", "PSA", "O", "SPG", "WELL", "DLR",
     # Utilities

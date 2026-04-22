@@ -535,6 +535,16 @@ class ThetaStream:
         self._connected = asyncio.Event()
         self._reconnect_delay = 1.0  # exponential backoff starts here
         self.on_trade: Callable[[ThetaTrade], None] | None = None
+        # Diagnostic counters (2026-04-22) — log every 30s so we can tell
+        # whether Theta is actually delivering TRADE messages or if we're
+        # only getting STATUS/QUOTE traffic. Was blind to the fact that the
+        # 0DTE engine's fast-flow/sweep/golden factors were all stuck at 0.
+        self._msg_count_status = 0
+        self._msg_count_quote = 0
+        self._msg_count_trade = 0
+        self._msg_count_trade_parsed = 0
+        self._msg_count_other = 0
+        self._last_diag_ts = 0.0
         # NBBO cache: (root, exp_int, strike_1000ths, right) -> (bid, ask, ts)
         # Updated on every QUOTE message, read when attaching NBBO to trades.
         # Theta's TRADE stream auto-prepends the pre-trade quote, so this
@@ -631,6 +641,31 @@ class ThetaStream:
 
     async def _read_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         while not self._stop.is_set():
+            # Periodic diagnostic print: Theta message mix by type. Lets us
+            # tell "stream is alive but no TRADEs" from "whole stream dead"
+            # without instrumenting every downstream consumer.
+            _now = time.time()
+            if _now - self._last_diag_ts >= 30.0 and self._last_diag_ts > 0:
+                print(
+                    f"[THETA_STREAM] msg_mix last_30s+ — "
+                    f"STATUS={self._msg_count_status} "
+                    f"QUOTE={self._msg_count_quote} "
+                    f"TRADE={self._msg_count_trade} "
+                    f"(parsed={self._msg_count_trade_parsed}) "
+                    f"OTHER={self._msg_count_other} "
+                    f"queue={self._out_queue.qsize()}",
+                    flush=True,
+                )
+                # Reset counters each interval (rolling window)
+                self._msg_count_status = 0
+                self._msg_count_quote = 0
+                self._msg_count_trade = 0
+                self._msg_count_trade_parsed = 0
+                self._msg_count_other = 0
+                self._last_diag_ts = _now
+            elif self._last_diag_ts == 0:
+                self._last_diag_ts = _now
+
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=15.0)
             except asyncio.TimeoutError:
@@ -649,11 +684,15 @@ class ThetaStream:
 
             if mtype == "STATUS":
                 self._last_heartbeat = time.time()
+                self._msg_count_status += 1
             elif mtype == "QUOTE":
                 self._update_nbbo(msg)
+                self._msg_count_quote += 1
             elif mtype == "TRADE":
+                self._msg_count_trade += 1
                 evt = self._parse_trade(msg)
                 if evt:
+                    self._msg_count_trade_parsed += 1
                     # Attach NBBO from the last-seen quote on this contract.
                     # Theta auto-sends the pre-trade quote before the TRADE
                     # message, so the cache is almost always warm.
@@ -678,6 +717,8 @@ class ThetaStream:
                 resp = header.get("response")
                 if resp and resp != "SUBSCRIBED":
                     print(f"[THETA_STREAM] req response: {resp} id={header.get('req_id')}")
+            else:
+                self._msg_count_other += 1
 
     def _update_nbbo(self, msg: dict) -> None:
         """Cache the latest NBBO for a contract from an incoming QUOTE message."""

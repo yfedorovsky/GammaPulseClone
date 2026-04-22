@@ -15,27 +15,95 @@ const CONV_STYLE = {
   LOW: { border: '1px solid var(--border-faint)', background: 'transparent' },
 };
 
+/**
+ * Derive suggested entry / invalidation / target LEVELS ON THE UNDERLYING
+ * from the alert's stored GEX context (spot, king, floor_level,
+ * ceiling_level, signal). This is NOT an SOE-graded trade ticket — it's a
+ * fast "here's what the levels imply" overlay so the user doesn't have to
+ * mentally re-derive them for every alert.
+ *
+ * For actionable trade tickets with Kelly sizing, spread checks, and
+ * discipline gates, use the SIGNALS tab.
+ *
+ * Returns null for PINNING (sell-premium setup, not directional) or when
+ * required levels are missing.
+ */
+function computeTradeLevels(a) {
+  const spot = a.spot;
+  const king = a.king;
+  const floor = a.floor_level;
+  const ceil = a.ceiling_level;
+  const sig = a.signal;
+  if (!spot) return null;
+  if (sig === 'PINNING') return null;  // Not directional
+
+  const isCall = a.option_type === 'call';
+  const bull = a.sentiment === 'BULLISH';
+  const bear = a.sentiment === 'BEARISH';
+  if (!bull && !bear) return null;
+
+  let entry = spot, stop = null, target = null;
+
+  if (bull && isCall) {
+    // Bull call: king above = magnet target, floor below = invalidation.
+    // Fallbacks: ±2% from spot if the relevant level is missing.
+    target = (king && king > spot) ? king : spot * 1.02;
+    stop = (floor && floor < spot) ? floor : spot * 0.98;
+  } else if (bear && !isCall) {
+    // Bear put: floor below = breakdown target, ceiling above = invalidation.
+    target = (floor && floor < spot) ? floor : spot * 0.98;
+    stop = (ceil && ceil > spot) ? ceil : spot * 1.02;
+  } else {
+    // Misaligned (bullish put / bearish call) — skip; thesis unclear.
+    return null;
+  }
+
+  const risk = Math.abs(entry - stop);
+  const reward = Math.abs(target - entry);
+  const rr = risk > 0 ? reward / risk : 0;
+  return { entry, stop, target, rr };
+}
+
+function fmtLevel(v) {
+  if (v == null) return '—';
+  return `$${Number(v).toFixed(2)}`;
+}
+
 function AlertsView({ alerts, sentFilter, setSentFilter, convFilter, setConvFilter, onClickTicker }) {
+  // Dedupe: keep only the NEWEST alert per (ticker, strike, expiration, option_type).
+  // Flow scanner emits new rows every poll cycle even when vol/OI deltas are tiny,
+  // so without dedup the same SPY 710C shows up 5-10 times. Newest-wins preserves
+  // the latest conviction/signal/status for each unique contract.
+  const deduped = useMemo(() => {
+    const byKey = new Map();
+    // alerts arrive in ts DESC order from API; first occurrence is newest
+    for (const a of alerts) {
+      const key = `${a.ticker}|${a.strike}|${a.expiration}|${a.option_type}`;
+      if (!byKey.has(key)) byKey.set(key, a);
+    }
+    return Array.from(byKey.values());
+  }, [alerts]);
+
   const filtered = useMemo(() => {
-    let rows = [...alerts];
+    let rows = [...deduped];
     if (sentFilter !== 'ALL') rows = rows.filter((a) => a.sentiment === sentFilter);
     if (convFilter !== 'ALL') rows = rows.filter((a) => a.conviction === convFilter);
     return rows;
-  }, [alerts, sentFilter, convFilter]);
+  }, [deduped, sentFilter, convFilter]);
 
   const sentCounts = useMemo(() => {
-    const c = { ALL: alerts.length, BULLISH: 0, BEARISH: 0, NEUTRAL: 0 };
-    for (const a of alerts) { c[a.sentiment] = (c[a.sentiment] || 0) + 1; }
+    const c = { ALL: deduped.length, BULLISH: 0, BEARISH: 0, NEUTRAL: 0 };
+    for (const a of deduped) { c[a.sentiment] = (c[a.sentiment] || 0) + 1; }
     return c;
-  }, [alerts]);
+  }, [deduped]);
 
   const convCounts = useMemo(() => {
-    const c = { ALL: alerts.length, HIGH: 0, MEDIUM: 0, LOW: 0 };
-    for (const a of alerts) { c[a.conviction || 'LOW'] = (c[a.conviction || 'LOW'] || 0) + 1; }
+    const c = { ALL: deduped.length, HIGH: 0, MEDIUM: 0, LOW: 0 };
+    for (const a of deduped) { c[a.conviction || 'LOW'] = (c[a.conviction || 'LOW'] || 0) + 1; }
     return c;
-  }, [alerts]);
+  }, [deduped]);
 
-  // Stats: win rate per conviction
+  // Stats: win rate per conviction (uses full alerts set for historical accuracy)
   const stats = useMemo(() => {
     const buckets = { HIGH: { wins: 0, total: 0 }, MEDIUM: { wins: 0, total: 0 }, LOW: { wins: 0, total: 0 } };
     for (const a of alerts) {
@@ -137,6 +205,26 @@ function AlertsView({ alerts, sentFilter, setSentFilter, convFilter, setConvFilt
                 {a.king && <span style={{ color: 'var(--king-pos)' }}>King ${a.king}</span>}
                 {a.signal && <span className="signal-pill" data-signal={a.signal} style={{ padding: '1px 5px', fontSize: '9px' }}>{a.signal}</span>}
               </div>
+              {(() => {
+                const lv = computeTradeLevels(a);
+                if (!lv) return null;
+                return (
+                  <div
+                    className="flow-alert-levels"
+                    title="Derived from alert's GEX context (spot / king / floor / ceiling). Not an SOE ticket — see SIGNALS tab for graded entries."
+                  >
+                    <span className="flow-alert-levels-label">→ Underlying:</span>
+                    <span>entry <strong style={{ color: 'var(--text-1)' }}>{fmtLevel(lv.entry)}</strong></span>
+                    <span>invalid <strong style={{ color: '#ff8080' }}>{fmtLevel(lv.stop)}</strong></span>
+                    <span>target <strong style={{ color: '#10dc9a' }}>{fmtLevel(lv.target)}</strong></span>
+                    <span>
+                      RR <strong style={{ color: lv.rr >= 2 ? '#10dc9a' : lv.rr >= 1 ? '#f4c430' : '#ff5656' }}>
+                        1:{lv.rr.toFixed(1)}
+                      </strong>
+                    </span>
+                  </div>
+                );
+              })()}
             </div>
           );
         })}

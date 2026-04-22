@@ -669,6 +669,107 @@ async def _maybe_snapshot_eod_oi() -> None:
         print(f"[worker] EOD OI snapshot failed: {e}")
 
 
+async def warmup_indexes() -> None:
+    """Pre-populate the cache with high-priority tickers so HEATMAPS /
+    SCANNER have instant-load data on first visit after a cold start.
+
+    Runs once at startup as a background task in parallel with the worker's
+    first cycle. Without this, /api/chains?SPX was a 30-40s cache miss on
+    boot (SPX has ±200 strike radius + ThetaData greeks = expensive).
+
+    Scope:
+      1. Index tickers first (SPY/QQQ/IWM/SPX/NDX/RUT/DIA/VIX) — critical
+         path for the default MULTI panel.
+      2. All remaining TIER_1 tickers (AI silicon / breakout names /
+         mega caps) — high scanner priority.
+
+    Safety:
+      - Same math as _compute_one in the worker, so no data skew.
+      - Semaphore(4) caps concurrency to match worker pattern — avoids
+        blasting Tradier/ThetaData with 60 parallel calls.
+      - Skips tickers already in cache (worker may beat us to some). This
+        makes warmup + worker's first cycle race-safe with no duplicate
+        work.
+    """
+    settings = get_settings()
+
+    indexes = ["SPY", "QQQ", "IWM", "SPX", "NDX", "RUT", "DIA", "VIX"]
+    # Import here to avoid circular dependency at module load
+    from .tickers import TIER_1
+    # Index tickers first, then rest of TIER_1 in declared order, dedup
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for t in indexes + list(TIER_1):
+        if t not in seen and t in set(all_tickers()):
+            ordered.append(t)
+            seen.add(t)
+    if not ordered:
+        return
+
+    tradier = TradierClient()
+    greeks_client: Any = None
+    if settings.use_thetadata_greeks:
+        greeks_client = ThetaDataClient()
+    elif settings.use_massive_greeks and settings.massive_api_key:
+        greeks_client = MassiveClient()
+
+    try:
+        quotes_full = await tradier.quotes_full(ordered)
+        quotes = {s: q["last"] for s, q in quotes_full.items() if q.get("last")}
+        if not quotes:
+            print("[WARMUP] No quotes returned — skipping warmup")
+            return
+
+        sem = asyncio.Semaphore(4)
+        completed = 0
+        skipped = 0
+
+        async def warm(t: str) -> None:
+            nonlocal completed, skipped
+            # Skip if worker's first cycle already populated this ticker
+            if await cache.get(t) is not None:
+                skipped += 1
+                return
+            spot = quotes.get(t)
+            if not spot:
+                return
+            async with sem:
+                # Re-check inside the semaphore (worker may have caught up
+                # while we were queued)
+                if await cache.get(t) is not None:
+                    skipped += 1
+                    return
+                try:
+                    state = await _compute_one(
+                        tradier, t, spot,
+                        max_exp=12,
+                        greeks_client=greeks_client,
+                    )
+                    if state is None:
+                        return
+                    qf = quotes_full.get(t) or {}
+                    state["_today_volume"] = qf.get("volume", 0)
+                    state["_avg_volume"] = qf.get("average_volume", 0)
+                    await cache.put(t, state)
+                    completed += 1
+                except Exception as e:
+                    print(f"[WARMUP] {t} failed: {e}")
+
+        t0 = time.time()
+        print(f"[WARMUP] Priming cache for {len(ordered)} tickers "
+              f"(8 indexes + {len(ordered) - 8} TIER_1); concurrency=4")
+        await asyncio.gather(*(warm(t) for t in ordered), return_exceptions=True)
+        print(f"[WARMUP] Done in {time.time() - t0:.1f}s — "
+              f"warmed={completed}, skipped_already_cached={skipped}")
+    finally:
+        await tradier.close()
+        if greeks_client is not None:
+            try:
+                await greeks_client.close()
+            except Exception:
+                pass
+
+
 async def run_worker(stop_event: asyncio.Event) -> None:
     settings = get_settings()
     tradier = TradierClient()

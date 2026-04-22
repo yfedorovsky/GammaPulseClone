@@ -85,6 +85,13 @@ async def lifespan(app: FastAPI):
         print(f"[STARTUP] Active basket: {basket.get('sectors')} ({len(basket.get('tickers', set()))} tickers)")
     except Exception as e:
         print(f"[STARTUP] Basket computation failed: {e} — using static fallback")
+    # Warm up the heatmap cache for index tickers BEFORE accepting heavy
+    # /api/chains requests. Without this, a cold-start HEATMAPS visit
+    # blocked for 30-40s on SPX (±200 strike radius + ThetaData greeks).
+    # Fires as a background task so server starts serving immediately;
+    # completes in ~30s alongside the worker's first cycle.
+    from .worker import warmup_indexes
+    asyncio.create_task(warmup_indexes())
     global _worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task, _priority_task
     _worker_task = asyncio.create_task(run_worker(_stop))
     _flow_task = asyncio.create_task(run_flow_scanner(_stop))

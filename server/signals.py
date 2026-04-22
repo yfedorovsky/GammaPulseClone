@@ -315,11 +315,51 @@ def _compute_signal_score(
         structure += 0.5
         sub_reasons.append(f"{regime} gamma aligns")
 
-    # 1b. King polarity
+    # 1b. King polarity (or structural-bear equivalent).
+    # For BULL: king is +GEX (magnet up).
+    # For BEAR (legacy): king is -GEX (dealers short here, amplifies down).
+    # For BEAR (structural, added 2026-04-22): +King is above spot and
+    # net Neg GEX dominates by ≥1.5×. Credits the "+King too far to act
+    # as magnet + Neg-wall overhead" pattern that RTX/LMT/AAOI/ABT showed.
+    pos_g = state.get("pos_gex") or 0
+    neg_g = abs(state.get("neg_gex") or 0)
+    _struct_bear_source = state.get("_last_direction_source", "").startswith(
+        ("gex_dominance_bear", "momentum_override_bear", "multi_day_fade_bear")
+    )
     if (direction == "BULL" and king_positive) or (direction == "BEAR" and not king_positive):
         structure += 0.5
         side = "+GEX" if king_positive else "-GEX"
         sub_reasons.append(f"King ${king} is {side}")
+    elif direction == "BEAR" and _struct_bear_source and neg_g >= pos_g * 1.5:
+        structure += 0.5
+        sub_reasons.append(
+            f"Neg GEX dominant {neg_g/max(pos_g,1):.1f}× (structural bear)"
+        )
+
+    # 1e. Momentum severity bonus for structural bears.
+    # A stock dropping ≥5% vs open is decisively in a bear trend — even if
+    # its GEX structure still reads "bull" on paper, the tape has spoken.
+    # FLY 2026-04-22 chart: $45.71 → $39.80 (-13% from day high). Staying
+    # below 8/9 EMA post-10:45 AM. Without this bonus it scored only 2.5.
+    vs_open_pct = (state.get("_intraday_momentum") or {}).get("vs_open_pct")
+    if direction == "BEAR" and _struct_bear_source and vs_open_pct is not None:
+        if vs_open_pct <= -5.0:
+            structure += 1.0
+            sub_reasons.append(f"Severe bear momentum {vs_open_pct:.1f}% vs open")
+        elif vs_open_pct <= -3.0:
+            structure += 0.5
+            sub_reasons.append(f"Strong bear momentum {vs_open_pct:.1f}% vs open")
+    elif direction == "BULL" and vs_open_pct is not None and vs_open_pct >= 3.0:
+        # Symmetric for momentum bulls (gap-and-go catches)
+        if vs_open_pct >= 5.0:
+            structure += 1.0
+            sub_reasons.append(f"Strong bull momentum {vs_open_pct:.1f}% vs open")
+        else:
+            structure += 0.5
+            sub_reasons.append(f"Bull momentum {vs_open_pct:.1f}% vs open")
+
+    # Structure factor caps at 2.0 to prevent collinearity from over-scoring
+    structure = min(structure, 2.0)
 
     # 1c. ZGL position (true gamma-profile solve)
     if zgl:
@@ -352,6 +392,24 @@ def _compute_signal_score(
     elif king_dist_pct < 0.003:
         score += 0.5
         reasons.append(f"Pinning near king ({king_dist_pct*100:.1f}%) — less directional")
+    elif direction == "BEAR" and _struct_bear_source:
+        # Structural bears: the +king is often far (useless magnet). Instead
+        # credit -King (bear sell-wall) proximity if it's above spot within
+        # a 3% radius. This is the "overhead resistance" equivalent to the
+        # BULL sweet-spot king magnet distance.
+        neg_king = state.get("king_neg") or 0
+        if neg_king and neg_king > spot:
+            nk_dist = (neg_king - spot) / spot
+            if nk_dist <= 0.03:
+                score += 1
+                reasons.append(
+                    f"-King ${neg_king} overhead at {nk_dist*100:.1f}% — bear sell-wall"
+                )
+            elif nk_dist <= 0.05:
+                score += 0.5
+                reasons.append(
+                    f"-King ${neg_king} {nk_dist*100:.1f}% above — nearby resistance"
+                )
 
     # ── Factor 3: Support/Resistance (0-1) ─────────────────────────
     if direction == "BULL" and floor_val and floor_val < spot:
@@ -371,6 +429,20 @@ def _compute_signal_score(
         else:
             score += 1
             reasons.append(f"Ceiling at ${ceiling_val} caps upside")
+    elif direction == "BEAR" and _struct_bear_source and (not floor_val or floor_val <= 0):
+        # Structural bear with NO floor detected below spot — nothing
+        # structural to stop the decline. This is the IP-style "air pocket"
+        # scenario and earns the full factor 3 credit.
+        score += 1
+        reasons.append("No floor below spot — structural air pocket")
+    elif direction == "BEAR" and _struct_bear_source and floor_val and floor_val < spot:
+        # Floor exists but far below — partial credit, the decline has room
+        floor_dist_pct = (spot - floor_val) / spot if spot else 0
+        if floor_dist_pct >= 0.05:
+            score += 0.5
+            reasons.append(
+                f"Floor ${floor_val} {floor_dist_pct*100:.1f}% below — decline has room"
+            )
 
     # ── Factor 4: IV Environment (0-1) ───────────────────────────
     # Two-part check using per-ticker metrics (not cross-universe):
@@ -526,6 +598,66 @@ def _compute_signal_score(
                 reasons.append(f"RTS {rts_score_val} LEADER — trend bonus (+0.25)")
             else:
                 reasons.append(f"RTS {rts_score_val} neutral")
+
+    # ── Factor 6: Volume Surge bonus (0 to +0.75) ──────────────────
+    # Real moves have volume backing. 2× avg = conviction, 5× = explosive.
+    # Borrowed 2026-04-22 from Discord buddy's briefing scoring (-5 to +15
+    # scaled to our 0-6 grade). Additive bonus — doesn't raise max_score,
+    # just separates real moves from noise. Particularly useful for bears
+    # (distribution confirmed by volume vs drift on low volume = trap).
+    today_vol = state.get("_today_volume") or 0
+    avg_vol = state.get("_avg_volume") or 0
+    if avg_vol > 0:
+        vol_ratio = today_vol / avg_vol
+        vol_bonus = 0.0
+        if vol_ratio >= 5.0:
+            vol_bonus = 0.75
+        elif vol_ratio >= 3.0:
+            vol_bonus = 0.50
+        elif vol_ratio >= 2.0:
+            vol_bonus = 0.25
+        elif vol_ratio >= 1.5:
+            vol_bonus = 0.15
+        if vol_bonus > 0:
+            score += vol_bonus
+            reasons.append(f"Volume surge {vol_ratio:.1f}× avg (+{vol_bonus:.2f})")
+
+    # ── Guard: Drawdown / chase protection ─────────────────────────
+    # Stops us firing A/B+ on extreme-stretched bulls (chase trap) or
+    # extreme-oversold bears (falling knife / dip-buyer rally). Scaled
+    # down to our 0-6 grade: max -2.5 moves A → C, killing the fire.
+    #
+    # Thresholds calibrated for momentum-leader context: real breakouts
+    # (AEHR +171% 1mo) naturally sit 25-45% above MA20. Only penalize
+    # when STRETCH IS EXTREME (past 30% bulls, past 25% bears). Moderate
+    # extension (+20% bulls, -15% bears) = -1.0 warning but tradeable.
+    ma20_guard = (state.get("_rts") or {}).get("mas", {}).get("ma20")
+    if ma20_guard and spot:
+        ma20_dist = (spot - ma20_guard) / ma20_guard
+        if direction == "BULL":
+            if ma20_dist > 0.30:
+                score -= 2.5
+                reasons.append(
+                    f"⚠️ CHASE GUARD: spot {ma20_dist*100:+.1f}% vs 20MA "
+                    f"${ma20_guard:.2f} (−2.5 extreme stretch)"
+                )
+            elif ma20_dist > 0.20:
+                score -= 1.0
+                reasons.append(
+                    f"Stretched: spot {ma20_dist*100:+.1f}% vs 20MA (−1.0)"
+                )
+        elif direction == "BEAR":
+            if ma20_dist < -0.25:
+                score -= 2.5
+                reasons.append(
+                    f"⚠️ FALLING KNIFE: spot {ma20_dist*100:+.1f}% vs 20MA "
+                    f"${ma20_guard:.2f} (−2.5 overextended)"
+                )
+            elif ma20_dist < -0.15:
+                score -= 1.0
+                reasons.append(
+                    f"Overextended: spot {ma20_dist*100:+.1f}% vs 20MA (−1.0)"
+                )
 
     return score, reasons
 
@@ -711,16 +843,72 @@ def _select_contract(
     selected = candidates[0]
 
     # ── Entry / Target / Stop ─────────────────────────────────────
+    # Smart RR cascade (Patch E, 2026-04-22) — pick the target+stop pair
+    # that maximizes RR from the available structural levels.
+    #
+    # Prior issue: ARM fix (Apr 22 morning) stretched to ceiling when
+    # king was BELOW spot. Good. But OKLO same afternoon had king only
+    # +1.6% above spot — target=king gave reward $1.08 vs risk $3.92 to
+    # distant floor = RR 0.27, blocked. Real structural trade is target
+    # = ceiling $75 (+8.8%) + tighter stop (spot*0.97), RR 2.94.
+    #
+    # Cascade chooses from:
+    #   BULL targets: king (if >spot), ceiling (if >spot), spot*1.02
+    #   BULL stops:   floor (if within 5% of spot), spot*0.97
+    # and picks the combination with the best RR.
+    ceiling = state.get("ceiling") or 0
+    floor_v = state.get("floor") or 0
     if direction == "BULL":
-        target = king if king > spot else (spot * 1.02)
-        target_label = "King (magnet)" if king > spot else "+2%"
-        stop = state.get("floor", spot * 0.98)
-        stop_label = "Floor break"
+        tgt_options: list[tuple[float, str]] = []
+        if king and king > spot:
+            tgt_options.append((king, "King (magnet)"))
+        if ceiling and ceiling > spot and ceiling != king:
+            tgt_options.append((ceiling, "Ceiling (breakout)"))
+        if not tgt_options:
+            tgt_options.append((spot * 1.02, "+2%"))
+        stp_options: list[tuple[float, str]] = []
+        # Use floor as stop only if within 5% of spot (tighter stops beat
+        # distant floors for RR math). If floor is further than 5%, use
+        # spot*0.97 as the structural trailing stop proxy.
+        if floor_v and floor_v < spot and (spot - floor_v) / spot <= 0.05:
+            stp_options.append((floor_v, "Floor break"))
+        stp_options.append((spot * 0.97, "-3% trail"))
+        # Pick best RR pair
+        best_rr, best = -1.0, None
+        for tgt, tlbl in tgt_options:
+            for stp, slbl in stp_options:
+                risk = abs(spot - stp)
+                if risk <= 0:
+                    continue
+                reward = abs(tgt - spot)
+                rr = reward / risk
+                if rr > best_rr:
+                    best_rr, best = rr, (tgt, tlbl, stp, slbl)
+        target, target_label, stop, stop_label = best
     else:
-        target = king if king < spot else (spot * 0.98)
-        target_label = "King (breakdown)" if king < spot else "-2%"
-        stop = state.get("ceiling", spot * 1.02)
-        stop_label = "Ceiling break"
+        # BEAR branch — symmetric smart RR cascade
+        tgt_options: list[tuple[float, str]] = []
+        if king and king < spot:
+            tgt_options.append((king, "King (breakdown)"))
+        if floor_v and floor_v < spot and floor_v != king:
+            tgt_options.append((floor_v, "Floor (breakdown)"))
+        if not tgt_options:
+            tgt_options.append((spot * 0.98, "-2%"))
+        stp_options: list[tuple[float, str]] = []
+        if ceiling and ceiling > spot and (ceiling - spot) / spot <= 0.05:
+            stp_options.append((ceiling, "Ceiling break"))
+        stp_options.append((spot * 1.03, "+3% trail"))
+        best_rr, best = -1.0, None
+        for tgt, tlbl in tgt_options:
+            for stp, slbl in stp_options:
+                risk = abs(spot - stp)
+                if risk <= 0:
+                    continue
+                reward = abs(tgt - spot)
+                rr = reward / risk
+                if rr > best_rr:
+                    best_rr, best = rr, (tgt, tlbl, stp, slbl)
+        target, target_label, stop, stop_label = best
 
     reward = abs(target - spot)
     risk = abs(stop - spot) or 1
@@ -750,14 +938,99 @@ def _select_contract(
 
 
 def _determine_direction(state: dict[str, Any]) -> str | None:
-    """Determine trade direction from GEX structure."""
+    """Determine trade direction from GEX structure.
+
+    Patch A (2026-04-22) — three-layer cascade:
+
+      1. **Momentum override** — if spot is ≥3% against the open, the
+         day's action has decisively broken from structural GEX posture.
+         Catches names like HIMS/FLY 2026-04-22 where Pos GEX dominated
+         (would have said BULL) but stock dropped 4.5-4.7% intraday.
+         In these cases, the magnet thesis is broken for this session —
+         trade with the tape, not the structure. Tags
+         `_direction_source = "momentum_override"`.
+
+      2. **GEX dominance** — if Pos vs Neg GEX is lopsided by ≥1.5×,
+         direction = sign of dominant side. Catches RTX/LMT/AAOI/ABT
+         where king position (naive old rule) said BULL but net GEX
+         was heavily Neg. Tags `gex_dominance_bear/bull`.
+
+      3. **Signal label fallback** — legacy logic for balanced GEX.
+
+      DANGER always returns None.
+
+    Direction source is stashed on state via `_last_direction_source`
+    so downstream gates (Rule #1 put block) can treat structural bears
+    differently from speculative ones.
+    """
     signal = state.get("signal", "")
+
+    # Layer 1: Intraday momentum override (highest priority).
+    # When price moves decisively vs today's open, the tape is telling
+    # you something regardless of multi-day trend or GEX structure.
+    # Runs BEFORE DANGER, BEFORE multi-day, BEFORE GEX dominance so the
+    # "today is different" signal always wins. Threshold 2.5% catches
+    # IBM (-2.7%) and harder movers. Higher = fewer false positives but
+    # misses borderline cases.
+    mom = state.get("_intraday_momentum") or {}
+    vs_open = mom.get("vs_open_pct")
+    MOM_OVERRIDE_PCT = 2.5
+    if vs_open is not None and abs(vs_open) >= MOM_OVERRIDE_PCT:
+        if vs_open <= -MOM_OVERRIDE_PCT:
+            state["_last_direction_source"] = "momentum_override_bear"
+            return "BEAR"
+        if vs_open >= MOM_OVERRIDE_PCT:
+            state["_last_direction_source"] = "momentum_override_bull"
+            return "BULL"
+
+    # Only skip DANGER when there's NO clear directional momentum to lean on
+    if signal == "DANGER":
+        state["_last_direction_source"] = "danger_skip"
+        return None
+
+    # Layer 1b: Multi-day fade / trend detector (Patch D).
+    # For names with mild intraday action that aren't caught by Layer 1,
+    # check if the multi-day trend is decisive. C 2026-04-22 was -0.2%
+    # today but -3.8% over 2d from peak — multi-day fade is the story.
+    # Conditions: 5d >= 3% + above MA20 + trend bullish (bull version);
+    # 5d <= -3% + below MA20 + trend bearish (bear version). Simulation
+    # validated: fires RTX/LMT/ABT as distribution bears while correctly
+    # skipping C/AAOI/FLY (pullbacks in bull trends, still above MA20).
+    rts = state.get("_rts") or {}
+    _spot = state.get("actual_spot") or state.get("_spot") or 0
+    _ret_5d = (rts.get("returns") or {}).get("5d")
+    _ma20 = (rts.get("mas") or {}).get("ma20")
+    _ts_details = rts.get("ts_details", [])
+    if _ret_5d is not None and _ma20 and _spot:
+        trend_bearish = any("Below" in d or "slope: -" in d for d in _ts_details)
+        if _ret_5d <= -3.0 and _spot < _ma20 and trend_bearish:
+            state["_last_direction_source"] = "multi_day_fade_bear"
+            return "BEAR"
+        trend_bullish = any("Above 3" in d or "slope: +" in d for d in _ts_details)
+        if _ret_5d >= 3.0 and _spot > _ma20 and trend_bullish:
+            state["_last_direction_source"] = "multi_day_trend_bull"
+            return "BULL"
+
+    pos_gex = state.get("pos_gex") or 0
+    neg_gex = abs(state.get("neg_gex") or 0)  # stored negative; take magnitude
+    DOMINANCE_RATIO = 1.5
+
+    # Layer 2: GEX dominance cue
+    if pos_gex > 0 and neg_gex > 0:
+        if neg_gex >= pos_gex * DOMINANCE_RATIO:
+            state["_last_direction_source"] = "gex_dominance_bear"
+            return "BEAR"
+        if pos_gex >= neg_gex * DOMINANCE_RATIO:
+            state["_last_direction_source"] = "gex_dominance_bull"
+            return "BULL"
+        # Balanced — fall through to signal label
+
+    # Layer 3: Legacy signal-label path (fallback)
+    state["_last_direction_source"] = "signal_label"
     if signal in ("MAGNET UP", "SUPPORT", "PINNING"):
         return "BULL"
-    elif signal in ("AIR POCKET", "RESISTANCE"):
+    if signal in ("AIR POCKET", "RESISTANCE"):
         return "BEAR"
-    elif signal == "DANGER":
-        return None  # Too risky
     return None
 
 
@@ -992,11 +1265,25 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
     cutoff_mins = now.hour * 60 + now.minute
 
     for ticker, state in snapshot.items():
-        if ticker not in _INDEX_TICKERS and cutoff_mins > 960:
-            continue
+        # Patch C (2026-04-22) — big-mover escalation. When a stock gaps
+        # ≥2.5% or has a >3% intraday range, it's likely trading on a
+        # catalyst (earnings, macro, headline). These are the setups we
+        # MOST want SOE to evaluate — but they also disproportionately
+        # hit the earnings-blackout veto. Override: if |gap_pct| ≥ 2.5%
+        # AND direction came from structural GEX dominance (not speculative
+        # signal label), bypass both the EOD cutoff and blackout.
+        gap_pct = abs(state.get("_gap_pct") or 0)
+        is_big_mover = gap_pct >= 2.5
 
-        # Earnings blackout: skip tickers with upcoming earnings (both books)
-        if ticker in blackout_set:
+        if ticker not in _INDEX_TICKERS and cutoff_mins > 960:
+            if not is_big_mover:
+                continue
+            # Big mover — evaluate even past normal cutoff
+
+        # Earnings blackout: skip tickers with upcoming earnings (both books).
+        # Big-mover override: if structural bear (pre-tested downstream),
+        # we still let it through to log the decision via ab_decisions.
+        if ticker in blackout_set and not is_big_mover:
             continue
 
         # Fetch Mir signal early — needed for both books
@@ -1043,11 +1330,38 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
         # valid hedge/scalp and their put trades last week were winners
         # (QQQ $645P, TSLA $380P in the simulator's block list). Single-
         # name puts in a bull tape are the bleed.
+        #
+        # Patch B (2026-04-22) — structural-bear override, gated.
+        # When direction was chosen from GEX dominance (Neg GEX ≥ 1.5× Pos,
+        # not from a near-king magnet label), the bear case is STRUCTURAL
+        # not speculative. Today RTX/LMT/AAOI/ABT all dropped 3-5% and
+        # Rule #1 would have blocked all of them. Override allows these
+        # through IF enabled. Default OFF — we still log to ab_decisions
+        # so we can measure the hit rate before flipping the flag live.
+        import os as _os
+        _STRUCTURAL_BEAR_LIVE = (
+            _os.environ.get("SOE_STRUCTURAL_BEAR_ENABLED", "").lower() == "true"
+        )
+        direction_source = state.get("_last_direction_source", "")
+        is_structural_bear = (
+            direction == "BEAR"
+            and direction_source in (
+                "gex_dominance_bear", "momentum_override_bear",
+                "multi_day_fade_bear",
+            )
+        )
         if (
             _block_puts
             and direction == "BEAR"
             and ticker not in ("SPY", "QQQ", "IWM", "SPX", "NDX", "RUT", "DIA")
+            and not (is_structural_bear and _STRUCTURAL_BEAR_LIVE)
         ):
+            # Still log the blocked decision via ab_decisions downstream
+            # for hit-rate measurement, just don't fire Telegram/paper.
+            if is_structural_bear:
+                # Mark the state so downstream AB logger can tag "would-
+                # have-fired structural bear". Doesn't change the continue.
+                state["_rule1_would_have_fired"] = True
             continue
 
         # Trend day context (used by both pathways)

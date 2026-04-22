@@ -172,6 +172,39 @@ def _next_expirations(n: int = 3) -> list[int]:
     return [int(d.strftime("%Y%m%d")) for d in dates]
 
 
+def _monthly_opex_expirations(n_monthlies: int = 2) -> list[int]:
+    """Return the next N monthly opex dates (3rd Friday of each month).
+
+    Added 2026-04-22 after missing Mir's SMH 15MAY 490C call at 11:28 AM.
+    Root cause: the live Theta subscription only covered the next 3 daily
+    expirations (via _next_expirations(n=3)) — never any monthly contracts.
+    That blinded us to TAIL_FLOW activity which by rule is 3-45 DTE, much
+    of which concentrates in monthlies on single-name equities.
+
+    Theta silently ignores non-existent expirations, so subscribing to the
+    3rd Friday of the next N months is safe — only real listings get data.
+    """
+    import datetime
+    today = datetime.date.today()
+    monthlies: list[datetime.date] = []
+    year, month = today.year, today.month
+    # Walk forward up to 6 months; collect up to n_monthlies opex dates
+    for _ in range(6):
+        # 3rd Friday = 1st of month + days-to-Friday + 14
+        first = datetime.date(year, month, 1)
+        days_to_fri = (4 - first.weekday()) % 7
+        third_fri = first + datetime.timedelta(days=days_to_fri + 14)
+        if third_fri > today:
+            monthlies.append(third_fri)
+            if len(monthlies) >= n_monthlies:
+                break
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+    return [int(d.strftime("%Y%m%d")) for d in monthlies]
+
+
 # Hardcoded MVP watchlist. Expansion: dynamically read from worker's Tier 1
 # watchlist once worker has populated the cache (follow-up work).
 #
@@ -179,10 +212,33 @@ def _next_expirations(n: int = 3) -> list[int]:
 # PM-settled. Both trade OPRA and support ISO sweeps. 0DTE SPXW is where
 # most insider flow lives (UW's best-performing alert category).
 MVP_WATCHLIST_ROOTS = [
-    "SPY", "QQQ", "IWM",                              # ETF indices
-    "SPX", "SPXW", "NDX", "RUT",                      # Cash-settled index options
-    "AAPL", "NVDA", "MSFT", "TSLA", "META", "AMZN", "GOOGL",  # mega-cap momentum
+    "SPY", "QQQ", "IWM", "DIA",                       # ETF indices (DIA added Apr 22)
+    "SPX", "SPXW", "NDX", "RUT", "VIX",               # Cash-settled + vol (VIX added)
+    "AAPL", "NVDA", "MSFT", "TSLA", "META", "AMZN", "GOOGL", "GOOG",  # mega-cap
     "AMD", "AVGO", "NFLX", "CRM", "ORCL",
+    # Sector ETFs with active OPRA flow. SMH added 2026-04-22 after missing
+    # Mir's SMH 15MAY 490C ~$2M tape print at 11:28 AM — it wasn't in any
+    # subscription tier, so the Theta aggregator never saw the trade.
+    "SMH",                                            # semi ETF
+    # Universe-audit adds (2026-04-22) — tickers with ≥$100M weekly flow
+    # that were invisible to the live Theta stream. Prioritized by catalyst
+    # proximity (BA/INTC reporting this week) and flow notional.
+    "UNH",    # healthcare mega-cap ($724M weekly flow)
+    "INTC",   # Thursday AMC earnings ($596M flow, 12.8% implied)
+    "BA",     # Wednesday BMO earnings ($141M flow)
+    "LLY",    # healthcare mega-cap
+    "XOM",    # energy mega-cap (Iran-sensitive)
+    "GLD",    # gold ETF ($955M weekly — biggest non-index miss)
+    "SLV",    # silver ETF ($346M weekly)
+    "USO",    # oil ETF ($417M weekly)
+    "IBIT",   # BTC ETF ($117M weekly)
+    # Financials + consumer + China (added 2026-04-22 round 2)
+    "JPM",    # financial mega-cap
+    "GS",     # financial
+    "MS",     # financial
+    "BRK.B",  # Berkshire — ultra-liquid, news-sensitive
+    "WMT",    # consumer staple mega-cap
+    "BABA",   # China ADR — active options, news-driven
 ]
 
 # Added 2026-04-20 after missing MRVL 165C 5/8 and FSLR 192.5C 4/24 signals:
@@ -205,13 +261,39 @@ TIER2_THEMATIC_ROOTS = [
     # AI software / data (PLTR confluence + DELL A-grade today)
     "PLTR", "DELL", "PANW",
     # Data storage (SNDK NDX-100 inclusion, MU memory cycle)
-    "SNDK",
+    "SNDK", "WDC", "STX", "MU",
+    # Semi equipment (added 2026-04-22 after missing ASML -5% news crash).
+    # These are news-sensitive mega-caps with heavy option flow — the kind
+    # of crashes the live Theta stream SHOULD catch via put sweep detection.
+    "ASML", "LRCX", "KLAC", "AMAT", "TSM",
+    # AI silicon momentum leaders (added 2026-04-22)
+    "ALAB", "CRDO", "AEHR", "ARM",
     # Clean energy / solar (missed FSLR 192.5C today)
     "FSLR",
     # Crypto infrastructure (MSTR/COIN/HOOD momentum cohort)
     "MSTR", "COIN", "HOOD",
     # Neocloud (NVDA-reference customers, real flow activity)
     "NBIS",
+    # ─── Universe-audit adds (2026-04-22) ─────────────────────────────
+    # Tickers with $30M+ weekly flow that weren't in any sweep tier.
+    # Prioritized for active options + thematic fit.
+    # Semi equipment / analog peers
+    "AMKR", "TXN",
+    # AI connectivity / photonics (AAOI/GLW/COHR fiber optics layer)
+    "AAOI", "COHR", "GLW",
+    # Software mega-caps (sector mover signals)
+    "NOW", "SNOW", "DDOG",
+    # Space / defense satellites (pairs with BKSY already in Tier3)
+    "RKLB", "ASTS",
+    # Defense prime (missed today's -3.2% bear move)
+    "LMT",
+    # Alt-energy / fuel cells
+    "BE",
+    # Thematic momentum single-names (heavy retail + institutional interest)
+    "OKLO",   # nuclear SMR (500% rip today on 75C weekly)
+    "IONQ",   # quantum pure-play
+    "HIMS",   # pharma momentum
+    "AXTI",   # $227M/7d extreme concentration — smart money signal
 ]
 
 # Strike coverage target for Tier-2 thematic names — percentage-based so
@@ -242,7 +324,10 @@ async def _build_subscription_plan(
 
     snapshot = await cache.snapshot()
     specs: list[SubscribeSpec] = []
-    expirations = _next_expirations(n=3)
+    # Daily expirations (0DTE + 1-2 DTE index coverage) + monthly opex
+    # (catches TAIL flow 3-45 DTE on single names). Combined list ~5-7 dates;
+    # Theta silently ignores any that aren't listed for a given root.
+    expirations = _next_expirations(n=3) + _monthly_opex_expirations(n_monthlies=2)
 
     # Per-root strike radius. Equities get ±40 (covers ±6% at $1 step for SPY-sized
     # names). Index products need wider radius in STRIKE count to cover same OTM %
@@ -476,6 +561,40 @@ class SweepDetector:
 
         flush_task = asyncio.create_task(flush_loop())
 
+        # Diagnostic heartbeat (2026-04-22) — every 30s print trades_seen so
+        # we can distinguish "stream alive but consumer stuck" from "no
+        # trades arriving at all". Paired with ThetaStream msg_mix log.
+        async def diag_heartbeat():
+            last_trades = 0
+            while not stop_event.is_set():
+                await asyncio.sleep(30.0)
+                delta = self.trades_seen - last_trades
+                last_trades = self.trades_seen
+                print(
+                    f"[SWEEP] heartbeat — trades_seen={self.trades_seen} "
+                    f"(+{delta}/30s)  stream_queue_size="
+                    f"{self.stream._out_queue.qsize() if hasattr(self.stream, '_out_queue') else '?'}",
+                    flush=True,
+                )
+
+        diag_task = asyncio.create_task(diag_heartbeat())
+
+        # Drain stale trades that accumulated in the queue BEFORE consume
+        # started. Without this, the fast 10s-bar aggregator ingests 5-15
+        # min of stale market data as if it were live, producing bogus
+        # FLOW_LEADS_UP/DOWN signals for several minutes. 2026-04-22:
+        # saw queue=7659 before fix; drains in ~100ms at startup.
+        if hasattr(self.stream, "_out_queue"):
+            drained = 0
+            while not self.stream._out_queue.empty():
+                try:
+                    self.stream._out_queue.get_nowait()
+                    drained += 1
+                except asyncio.QueueEmpty:
+                    break
+            if drained > 0:
+                print(f"[SWEEP] drained {drained} stale trades from queue pre-consume", flush=True)
+
         try:
             async for trade in self.stream.trades():
                 if stop_event.is_set():
@@ -519,10 +638,12 @@ class SweepDetector:
                 rollup.add(trade)
         finally:
             flush_task.cancel()
-            try:
-                await flush_task
-            except asyncio.CancelledError:
-                pass
+            diag_task.cancel()
+            for t in (flush_task, diag_task):
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
 
 
 # ── Background task entry point (called from main.py lifespan) ──────────
@@ -557,13 +678,35 @@ async def run_sweep_detector(stop_event: asyncio.Event) -> None:
             break
         await asyncio.sleep(5.0)
 
-    # Build + send subscription plan
+    # Build subscription plan
     specs = await _build_subscription_plan()
-    print(f"[SWEEP] subscribing to {len(specs)} contracts via Theta stream")
-    for spec in specs:
-        await stream.subscribe(spec)
-        # Trickle the sub requests so we don't overwhelm the Terminal
-        await asyncio.sleep(0.005)
+    print(f"[SWEEP] subscribing to {len(specs)} contracts via Theta stream (async)")
+
+    # Run subscribe trickle IN A BACKGROUND TASK so consume() can start
+    # immediately. Earlier this was a blocking for-loop — when Theta
+    # reconnected mid-trickle (every ~15s on stream hiccup), the loop
+    # hung on a dead websocket and consume() never ran. Queue grew to
+    # 7,659 trades undrained on 2026-04-22.
+    #
+    # Resilient version: each subscribe wrapped in try/except so individual
+    # failures don't kill the batch. Trickle continues; consumer drains
+    # queue from second one.
+    async def _subscribe_trickle() -> None:
+        sent = 0
+        failed = 0
+        for spec in specs:
+            if stop_event.is_set():
+                break
+            try:
+                await stream.subscribe(spec)
+                sent += 1
+            except Exception as e:
+                failed += 1
+                if failed <= 3:
+                    print(f"[SWEEP] subscribe failed: {e}")
+            await asyncio.sleep(0.005)
+        print(f"[SWEEP] trickle done — sent={sent} failed={failed}")
+    subscribe_task = asyncio.create_task(_subscribe_trickle())
 
     # Launch the Golden Flow + UPSIDE_BET transition loops as sibling tasks.
     # Both run in parallel with the trade consumer, re-evaluating the shared
@@ -575,13 +718,14 @@ async def run_sweep_detector(stop_event: asyncio.Event) -> None:
         run_upside_bet_transition_loop(flow_aggregator, stop_event)
     )
 
-    # Consume loop — runs until stop_event
+    # Consume loop — runs NOW (parallel with subscribe). Trades flow from
+    # whatever subscriptions have landed so far. Queue drains as it fills.
     try:
         await detector.consume(stop_event)
     finally:
-        for t in (golden_task, upside_bet_task):
+        for t in (golden_task, upside_bet_task, subscribe_task):
             t.cancel()
-        for t in (golden_task, upside_bet_task):
+        for t in (golden_task, upside_bet_task, subscribe_task):
             try:
                 await asyncio.wait_for(t, timeout=10)
             except (asyncio.TimeoutError, asyncio.CancelledError):

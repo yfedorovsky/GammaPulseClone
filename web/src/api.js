@@ -42,7 +42,11 @@ export const api = {
   removeTickers: (tickers) => json('POST', '/api/tickers/remove', { tickers }),
   earnings: (weekOffset = 0) => json('GET', `/api/earnings?week_offset=${weekOffset}`),
   earningsDates: (ticker, days = 90) => json('GET', `/api/earnings/dates/${encodeURIComponent(ticker)}?days=${days}`),
-  alerts: (since = 0) => json('GET', `/api/alerts?since=${since}&limit=50`),
+  // limit=500 lets HIGH-conviction alerts persist through SPY/SPX daily-expiration
+  // firehose (~20+/min). At 50 the "disappearing alerts" effect was bad: a legit
+  // GLW/MRVL/ARM HIGH would get displaced by new MEDIUM/LOW SPY strikes in <3 min.
+  // 500 covers ~25 minutes of alerts even during the busiest stretches.
+  alerts: (since = 0) => json('GET', `/api/alerts?since=${since}&limit=500`),
   sweeps: (since = 0, limit = 200, ticker = '', minNotional = 0) =>
     json(
       'GET',

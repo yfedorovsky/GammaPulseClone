@@ -182,7 +182,7 @@ function LivePanel({ ticker }) {
       }
     }
     load();
-    const iv = setInterval(load, 10_000);
+    const iv = setInterval(load, 5_000);
     return () => { alive = false; clearInterval(iv); };
   }, [ticker]);
 
