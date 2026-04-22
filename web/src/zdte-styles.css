@@ -1,0 +1,314 @@
+/* ═══════════════════════════════════════════════════════════════
+   0DTE Confluence Alert Tab — shipped 2026-04-22 overnight
+   ═══════════════════════════════════════════════════════════════ */
+
+.zdte-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  overflow: auto;
+  height: 100%;
+}
+.zdte-header {
+  padding: 10px 14px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-faint);
+  border-radius: var(--radius-md);
+}
+.zdte-title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  color: var(--text-1);
+}
+.zdte-subtitle {
+  margin-top: 4px;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  line-height: 1.5;
+}
+.zdte-subtitle strong { color: var(--accent); }
+
+.zdte-summary {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 0 6px;
+}
+.zdte-summary-pill {
+  font-family: var(--mono);
+  font-size: var(--fs-xxs);
+  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+}
+
+.zdte-live-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 8px;
+}
+.zdte-live {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-faint);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.zdte-live-bullish { border-left-color: #10dc9a; }
+.zdte-live-bearish { border-left-color: #ff4fa8; }
+.zdte-live-neutral { border-left-color: var(--border-mid); }
+.zdte-live-header { display: flex; align-items: center; gap: 8px; }
+.zdte-live-ticker { font-family: var(--mono); font-weight: 800; letter-spacing: 0.5px; }
+.zdte-live-points { font-size: var(--fs-xxs); color: var(--text-3); font-family: var(--mono); }
+.zdte-card-spacer { flex: 1; }
+.zdte-live-spot { font-family: var(--mono); font-weight: 700; color: #f4c430; }
+.zdte-live-ctx { font-size: var(--fs-xxs); color: var(--text-2); }
+.zdte-live-ctx strong { color: var(--text-1); font-weight: 700; }
+.zdte-live-factors { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+.zdte-live-factor {
+  font-size: 9px;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.zdte-live-err { font-size: var(--fs-xxs); color: var(--danger); }
+
+.zdte-grade {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  font-weight: 900;
+  padding: 2px 8px;
+  border-radius: 4px;
+  letter-spacing: 0.6px;
+}
+.zdte-grade-aplus {
+  background: linear-gradient(135deg, #10dc9a, #05704f);
+  color: #021a10;
+  box-shadow: 0 0 10px rgba(16, 220, 154, 0.5);
+}
+.zdte-grade-a {
+  background: rgba(16, 220, 154, 0.2);
+  color: #4ee9a7;
+  border: 1px solid rgba(16, 220, 154, 0.5);
+}
+.zdte-grade-bplus {
+  background: rgba(244, 196, 48, 0.22);
+  color: #ffd666;
+  border: 1px solid rgba(244, 196, 48, 0.5);
+}
+.zdte-grade-b {
+  background: rgba(244, 196, 48, 0.12);
+  color: #d4b347;
+  border: 1px solid rgba(244, 196, 48, 0.3);
+}
+.zdte-grade-c {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-2);
+  border: 1px solid var(--border-faint);
+}
+
+.zdte-stars {
+  font-size: 11px;
+  letter-spacing: 1px;
+  font-family: var(--mono);
+}
+.zdte-stars[data-pts="4"] { color: #10dc9a; }
+.zdte-stars[data-pts="3"] { color: #4ee9a7; }
+.zdte-stars[data-pts="2"] { color: #f4c430; }
+.zdte-stars[data-pts="1"] { color: #c47e1a; }
+.zdte-stars[data-pts="0"] { color: var(--text-3); }
+
+.zdte-feed-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 4px 4px;
+  margin-top: 6px;
+}
+.zdte-feed-header h3 {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  color: var(--text-2);
+}
+.zdte-feed-count { font-size: var(--fs-xxs); color: var(--text-3); font-family: var(--mono); }
+.zdte-feed { display: flex; flex-direction: column; gap: 8px; }
+
+.zdte-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-faint);
+  border-left: 3px solid;
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.zdte-card-bullish {
+  border-left-color: #10dc9a;
+  background: linear-gradient(90deg, rgba(16, 220, 154, 0.06) 0%, var(--bg-panel) 50%);
+}
+.zdte-card-bearish {
+  border-left-color: #ff4fa8;
+  background: linear-gradient(90deg, rgba(255, 79, 168, 0.06) 0%, var(--bg-panel) 50%);
+}
+.zdte-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--fs-sm);
+}
+.zdte-card-ticker {
+  font-family: var(--mono);
+  font-weight: 900;
+  font-size: var(--fs-md);
+  color: var(--text-1);
+}
+.zdte-card-contract {
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--text-2);
+  letter-spacing: 0.3px;
+}
+.zdte-card-age { font-size: var(--fs-xxs); color: var(--text-3); font-family: var(--mono); }
+.zdte-copy-btn {
+  font-family: var(--mono);
+  font-size: var(--fs-xxs);
+  font-weight: 700;
+  padding: 3px 8px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-2);
+  border: 1px solid var(--border-faint);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.zdte-copy-btn:hover {
+  background: rgba(16, 220, 154, 0.12);
+  color: var(--accent);
+  border-color: rgba(16, 220, 154, 0.4);
+}
+
+.zdte-card-pricing {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: var(--radius-sm);
+}
+.zdte-pricing-item { display: flex; flex-direction: column; gap: 1px; }
+.zdte-pricing-label {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  color: var(--text-3);
+}
+.zdte-pricing-val {
+  font-family: var(--mono);
+  font-weight: 800;
+  font-size: var(--fs-md);
+  color: var(--text-1);
+}
+.zdte-pricing-spread, .zdte-pricing-r, .zdte-pricing-stop-pct {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--text-3);
+}
+.zdte-pricing-target .zdte-pricing-val { color: #10dc9a; }
+.zdte-pricing-stop .zdte-pricing-val { color: #ff5656; }
+.zdte-pricing-r { color: #10dc9a; font-weight: 700; }
+.zdte-pricing-stop-pct { color: #ff5656; font-weight: 700; }
+
+.zdte-factors {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.015);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
+}
+.zdte-factors-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 800;
+  color: var(--text-2);
+  letter-spacing: 0.4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border-faint);
+}
+.zdte-factors-spacer { flex: 1; }
+.zdte-card-ctx strong { color: var(--text-1); font-weight: 700; }
+.zdte-factor-row {
+  display: grid;
+  grid-template-columns: 60px 80px 1fr;
+  gap: 10px;
+  align-items: center;
+  font-size: var(--fs-xs);
+}
+.zdte-factor-name {
+  font-family: var(--mono);
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-2);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+.zdte-factor-reasoning { color: var(--text-2); font-family: var(--mono); font-size: 11px; }
+
+.zdte-card-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-faint);
+  font-size: var(--fs-xxs);
+  color: var(--text-2);
+}
+.zdte-card-footer strong { color: var(--text-1); }
+.zdte-dot { color: var(--text-3); }
+.zdte-warn { color: var(--warn); font-weight: 700; }
+
+.zdte-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  background: var(--bg-panel);
+  border: 1px dashed var(--border-faint);
+  border-radius: var(--radius-md);
+  line-height: 1.6;
+}
+
+.zdte-err {
+  padding: 10px 14px;
+  color: var(--danger);
+  font-weight: 700;
+  background: rgba(255, 86, 86, 0.08);
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius-sm);
+}
+
+.zdte-footer-stats {
+  padding: 8px 12px;
+  font-size: var(--fs-xxs);
+  color: var(--text-3);
+  font-family: var(--mono);
+  text-align: center;
+  border-top: 1px solid var(--border-faint);
+  margin-top: 10px;
+}

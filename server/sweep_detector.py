@@ -144,19 +144,28 @@ class SweepRollup:
 
 
 def _next_expirations(n: int = 3) -> list[int]:
-    """Return the next N weekly expiration dates (Friday-anchored) as YYYYMMDD ints.
+    """Return the next N expiration dates as YYYYMMDD ints.
 
-    Theta expects YYYYMMDD ints on the wire. We target Fridays going forward
-    plus Wednesday/Monday for SPY/QQQ daily expirations.
+    Expanded 2026-04-22 to include Tuesday + Thursday so SPX/SPXW daily
+    expirations are captured on those days too (SPY/QQQ also have daily
+    expirations now as of ~2022, and index products have them daily).
+
+    Theta will silently ignore subscriptions to expirations that don't
+    exist for a given root, so over-subscribing weekdays is safe — the
+    benefit is never missing a 0DTE day on any product.
+
+    We still skip weekends because no US options trade Sat/Sun.
     """
     import datetime
     today = datetime.date.today()
     dates: list[datetime.date] = []
 
-    # SPY/QQQ have M/W/F expirations. Pull all upcoming M/W/F in next 14 days.
+    # Cover all weekdays in the next 14 calendar days. Daily-expiry index
+    # products (SPX, SPXW, QQQ, SPY) expire every weekday; M/W/F-only
+    # equities silently ignore T/Th subscriptions.
     for d in range(0, 14):
         candidate = today + datetime.timedelta(days=d)
-        if candidate.weekday() in (0, 2, 4):  # Mon, Wed, Fri
+        if candidate.weekday() < 5:  # Mon-Fri
             dates.append(candidate)
             if len(dates) >= n:
                 break

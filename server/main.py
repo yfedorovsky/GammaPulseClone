@@ -54,6 +54,8 @@ _sweep_task: asyncio.Task | None = None
 _priority_task: asyncio.Task | None = None
 _net_flow_task: asyncio.Task | None = None
 _net_flow_alert_task: asyncio.Task | None = None
+_net_flow_fast_task: asyncio.Task | None = None
+_zero_dte_task: asyncio.Task | None = None
 
 
 @asynccontextmanager
@@ -109,6 +111,16 @@ async def lifespan(app: FastAPI):
     # Dedupe + 15-min cooldown prevents spam during regime flicker.
     from .net_flow_signals import run_net_flow_alert_loop
     _net_flow_alert_task = asyncio.create_task(run_net_flow_alert_loop(_stop))
+    # Fast-tick net-flow aggregator (10s bars for SPY/SPX/QQQ/IWM) —
+    # powers the 0DTE confluence engine with sub-minute freshness.
+    global _net_flow_fast_task, _zero_dte_task
+    from .net_flow_fast import run_fast_net_flow_loop
+    _net_flow_fast_task = asyncio.create_task(run_fast_net_flow_loop(_stop))
+    # 0DTE confluence alert engine — combines GEX + NetFlow + Sweep +
+    # Golden signals into A+/A/B+/B/C-graded trade tickets with strike
+    # selection + exit planning + Telegram push.
+    from .zero_dte_loop import run_zero_dte_loop
+    _zero_dte_task = asyncio.create_task(run_zero_dte_loop(_stop))
     # Discord listener: opt-in via DISCORD_ENABLED=true in .env
     _discord_task = None
     s = get_settings()
@@ -127,7 +139,7 @@ async def lifespan(app: FastAPI):
         _stop.set()
         await streamer.stop()
         await db.stop()  # Drain write queue before shutdown
-        all_tasks = [_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task, _priority_task, _net_flow_task, _net_flow_alert_task]
+        all_tasks = [_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task, _priority_task, _net_flow_task, _net_flow_alert_task, _net_flow_fast_task, _zero_dte_task]
         for task in all_tasks:
             if task:
                 try:
@@ -1512,6 +1524,63 @@ async def net_flow_series(ticker: str, minutes: int = 240):
         "regime_gap_direction": regime.get("gap_direction"),
         "regime_confidence": regime.get("confidence"),
         "signals": regime.get("signals", []),
+    }
+
+
+# ── 0DTE Confluence Alert Engine ─────────────────────────────────
+#
+# Live-graded 0DTE alert feed with full trade tickets. See
+# server/zero_dte_loop.py and server/zero_dte_engine.py for details.
+
+@app.get("/api/zero-dte/alerts")
+async def zero_dte_alerts(limit: int = 50):
+    """Return the most recent 0DTE alerts (newest first)."""
+    from .zero_dte_loop import get_alert_history, get_cooldown_state
+    history = get_alert_history()
+    alerts = list(history)[-limit:][::-1]
+    return {
+        "alerts": [a.to_row() for a in alerts],
+        "count": len(alerts),
+        "cooldown": get_cooldown_state().stats(),
+    }
+
+
+@app.get("/api/zero-dte/evaluate/{ticker}")
+async def zero_dte_evaluate(ticker: str):
+    """On-demand evaluation of a single ticker — returns the CURRENT
+    confluence snapshot without firing alerts. Useful for UI debug /
+    testing new signals before they're tuned."""
+    from .cache import cache
+    from .net_flow_fast import get_fast_net_flow_aggregator, snapshot_fast_flow
+    from .net_flow import get_net_flow_aggregator
+    from .net_flow_signals import regime_summary
+    from .zero_dte_engine import evaluate
+    from .zero_dte_loop import _recent_sweeps_for_ticker, _recent_goldens_for_ticker
+
+    ticker_up = ticker.upper()
+    snap = await cache.snapshot()
+    gex_state = snap.get(ticker_up) or {}
+    fast_snap = snapshot_fast_flow(get_fast_net_flow_aggregator(), ticker_up)
+    main_bars = get_net_flow_aggregator().series(ticker_up, minutes=240)
+    reg = regime_summary(main_bars) if main_bars else {}
+    sweeps = _recent_sweeps_for_ticker(ticker_up)
+    goldens = _recent_goldens_for_ticker(ticker_up)
+
+    ev = evaluate(
+        ticker=ticker_up,
+        gex_state=gex_state,
+        fast_flow_snap=fast_snap,
+        regime=reg.get("regime"),
+        regime_confidence=reg.get("confidence"),
+        recent_sweeps=sweeps,
+        recent_goldens=goldens,
+    )
+    return {
+        "evaluation": ev.to_row(),
+        "fast_flow": fast_snap.to_row() if fast_snap else None,
+        "sweeps_seen": len(sweeps),
+        "goldens_seen": len(goldens),
+        "regime": reg,
     }
 
 

@@ -34,6 +34,9 @@ export const api = {
   netFlow: (ticker, minutes = 240) =>
     json('GET', `/api/net-flow/${encodeURIComponent(ticker)}?minutes=${minutes}`),
   netFlowStats: () => json('GET', '/api/net-flow-stats'),
+  zeroDteAlerts: (limit = 50) => json('GET', `/api/zero-dte/alerts?limit=${limit}`),
+  zeroDteEvaluate: (ticker) =>
+    json('GET', `/api/zero-dte/evaluate/${encodeURIComponent(ticker)}`),
   tickers: () => json('GET', '/api/tickers'),
   addTickers: (tickers) => json('POST', '/api/tickers/add', { tickers }),
   removeTickers: (tickers) => json('POST', '/api/tickers/remove', { tickers }),

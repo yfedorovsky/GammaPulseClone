@@ -197,6 +197,15 @@ class LiveFlowAggregator:
             # Never let net-flow failures break the main aggregation pipeline
             print(f"[LIVE_FLOW] net_flow add_trade failed: {e}")
 
+        # Fast-tick net-flow (10s bars for SPY/SPX/QQQ/IWM) — powers the
+        # 0DTE confluence engine with sub-minute flow freshness. Gated
+        # internally to FAST_TICKERS so non-index trades are cheap no-ops.
+        try:
+            from .net_flow_fast import get_fast_net_flow_aggregator
+            get_fast_net_flow_aggregator().add_trade(trade)
+        except Exception as e:
+            print(f"[LIVE_FLOW] net_flow_fast add_trade failed: {e}")
+
     async def check_golden_transitions(self) -> list[tuple]:
         """Re-evaluate every aggregate ≥$500K notional for Golden status.
 

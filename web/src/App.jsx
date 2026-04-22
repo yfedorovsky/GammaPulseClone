@@ -25,6 +25,7 @@ const SweepsTab = lazy(() => import('./tabs/SweepsTab.jsx'));
 const BigFlowTab = lazy(() => import('./tabs/BigFlowTab.jsx'));
 const GuideTab = lazy(() => import('./tabs/GuideTab.jsx'));
 const NetFlowTab = lazy(() => import('./tabs/NetFlowTab.jsx'));
+const ZeroDTETab = lazy(() => import('./tabs/ZeroDTETab.jsx'));
 
 export default function App() {
   const {
@@ -153,6 +154,7 @@ export default function App() {
           {tab === 'NEWS' && <NewsTab />}
           {tab === 'GUIDE' && <GuideTab />}
           {tab === 'NETFLOW' && <NetFlowTab />}
+          {tab === '0DTE' && <ZeroDTETab />}
         </Suspense>
       </div>
     </div>
