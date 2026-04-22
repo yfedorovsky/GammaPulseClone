@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import json
+import os
 import sqlite3
 import time
 from collections import deque
@@ -46,8 +48,48 @@ COOLDOWN_S = 600  # 10 minutes
 TIER_RANK = {"A+": 3, "A": 2, "B+": 1, "B": 0, "C": -1}
 MIN_TELEGRAM_TIER = 1   # B+ or better triggers Telegram
 
-# How many past evals to keep in memory for the UI endpoint
+# In-memory deque size — used for fire-time operations (cooldown context,
+# Telegram format). API reads from sqlite (see ZERO_DTE_DB_PATH) so alerts
+# survive server restarts. Was losing every alert on deploy before Apr 22.
 HISTORY_SIZE = 200
+
+# Dedicated sqlite file for 0DTE alert history (schema + path below).
+ZERO_DTE_DB_PATH = os.environ.get("ZERO_DTE_DB_PATH", "./zero_dte_alerts.db")
+
+ZERO_DTE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS zero_dte_alerts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  alert_id TEXT UNIQUE NOT NULL,
+  ticker TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  grade TEXT NOT NULL,
+  total_points REAL,
+  max_points REAL,
+  fired_at REAL NOT NULL,
+  factors_json TEXT,
+  spot REAL,
+  king_pos REAL,
+  king_neg REAL,
+  target_level REAL,
+  gex_signal TEXT,
+  flow_regime TEXT,
+  strike REAL,
+  right TEXT,
+  expiration TEXT,
+  est_delta REAL,
+  est_entry_price REAL,
+  est_bid REAL,
+  est_ask REAL,
+  target_mid REAL,
+  stop_mid REAL,
+  target_r REAL,
+  time_stop_minutes INTEGER,
+  strike_quality TEXT,
+  ticket_reasoning TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_zero_dte_fired_at ON zero_dte_alerts(fired_at);
+CREATE INDEX IF NOT EXISTS idx_zero_dte_ticker ON zero_dte_alerts(ticker, fired_at);
+"""
 
 
 # ── Data structures ───────────────────────────────────────────────
@@ -177,6 +219,7 @@ class CooldownState:
 
 _cooldown_state: CooldownState | None = None
 _alert_history: deque[ZeroDTEAlert] | None = None
+_db_schema_ready = False
 
 
 def get_cooldown_state() -> CooldownState:
@@ -186,7 +229,141 @@ def get_cooldown_state() -> CooldownState:
     return _cooldown_state
 
 
+def _ensure_db_schema() -> None:
+    """Idempotent — creates the zero_dte_alerts table if missing."""
+    global _db_schema_ready
+    if _db_schema_ready:
+        return
+    conn = sqlite3.connect(ZERO_DTE_DB_PATH)
+    try:
+        conn.executescript(ZERO_DTE_SCHEMA)
+        conn.commit()
+    finally:
+        conn.close()
+    _db_schema_ready = True
+
+
+def _persist_alert(alert: "ZeroDTEAlert") -> None:
+    """Write an alert to the persistent store. Best-effort — DB failures
+    log a warning but never interrupt the fire path (Telegram already sent)."""
+    try:
+        _ensure_db_schema()
+        conn = sqlite3.connect(ZERO_DTE_DB_PATH)
+        try:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO zero_dte_alerts (
+                  alert_id, ticker, direction, grade, total_points, max_points,
+                  fired_at, factors_json, spot, king_pos, king_neg, target_level,
+                  gex_signal, flow_regime, strike, right, expiration, est_delta,
+                  est_entry_price, est_bid, est_ask, target_mid, stop_mid,
+                  target_r, time_stop_minutes, strike_quality, ticket_reasoning
+                ) VALUES (
+                  ?, ?, ?, ?, ?, ?,
+                  ?, ?, ?, ?, ?, ?,
+                  ?, ?, ?, ?, ?, ?,
+                  ?, ?, ?, ?, ?,
+                  ?, ?, ?, ?
+                )
+                """,
+                (
+                    alert.alert_id, alert.ticker, alert.direction, alert.grade,
+                    alert.total_points, alert.max_points,
+                    alert.fired_at, json.dumps(alert.factors),
+                    alert.spot, alert.king_pos, alert.king_neg, alert.target_level,
+                    alert.gex_signal, alert.flow_regime,
+                    alert.strike, alert.right, alert.expiration, alert.est_delta,
+                    alert.est_entry_price, alert.est_bid, alert.est_ask,
+                    alert.target_mid, alert.stop_mid,
+                    alert.target_r, alert.time_stop_minutes,
+                    alert.strike_quality, alert.ticket_reasoning,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[ZERO_DTE] persist failed for {alert.alert_id}: {e}")
+
+
+def load_alerts_from_db(limit: int = 50, ticker: str | None = None) -> list[dict[str, Any]]:
+    """Return recent alerts from sqlite, newest first. Used by the
+    /api/zero-dte/alerts handler so history survives server restarts."""
+    try:
+        _ensure_db_schema()
+        conn = sqlite3.connect(ZERO_DTE_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        try:
+            if ticker:
+                cur = conn.execute(
+                    "SELECT * FROM zero_dte_alerts WHERE ticker=? "
+                    "ORDER BY fired_at DESC LIMIT ?",
+                    (ticker.upper(), limit),
+                )
+            else:
+                cur = conn.execute(
+                    "SELECT * FROM zero_dte_alerts "
+                    "ORDER BY fired_at DESC LIMIT ?",
+                    (limit,),
+                )
+            rows = [dict(r) for r in cur.fetchall()]
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[ZERO_DTE] load failed: {e}")
+        return []
+
+    # Normalize to the same shape as ZeroDTEAlert.to_row() so the UI can
+    # consume either source interchangeably.
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        factors: list[dict[str, Any]] = []
+        fj = r.get("factors_json")
+        if fj:
+            try:
+                factors = json.loads(fj)
+            except Exception:
+                factors = []
+        fired_at = r.get("fired_at") or 0
+        out.append({
+            "alert_id": r.get("alert_id"),
+            "ticker": r.get("ticker"),
+            "direction": r.get("direction"),
+            "grade": r.get("grade"),
+            "total_points": r.get("total_points"),
+            "max_points": r.get("max_points"),
+            "fired_at": fired_at,
+            "fired_at_iso": (
+                dt.datetime.utcfromtimestamp(fired_at).isoformat() + "Z"
+                if fired_at else None
+            ),
+            "factors": factors,
+            "spot": r.get("spot"),
+            "king_pos": r.get("king_pos"),
+            "king_neg": r.get("king_neg"),
+            "target_level": r.get("target_level"),
+            "gex_signal": r.get("gex_signal"),
+            "flow_regime": r.get("flow_regime"),
+            "strike": r.get("strike"),
+            "right": r.get("right"),
+            "expiration": r.get("expiration"),
+            "est_delta": r.get("est_delta"),
+            "est_entry_price": r.get("est_entry_price"),
+            "est_bid": r.get("est_bid"),
+            "est_ask": r.get("est_ask"),
+            "target_mid": r.get("target_mid"),
+            "stop_mid": r.get("stop_mid"),
+            "target_r": r.get("target_r"),
+            "time_stop_minutes": r.get("time_stop_minutes"),
+            "strike_quality": r.get("strike_quality"),
+            "ticket_reasoning": r.get("ticket_reasoning"),
+        })
+    return out
+
+
 def get_alert_history() -> deque[ZeroDTEAlert]:
+    """Return the in-memory deque. Used at fire time only — API reads
+    from sqlite via load_alerts_from_db() so it survives restarts."""
     global _alert_history
     if _alert_history is None:
         _alert_history = deque(maxlen=HISTORY_SIZE)
@@ -375,9 +552,10 @@ async def _eval_and_maybe_fire(
     except Exception as e:
         print(f"[ZERO_DTE] telegram send failed: {e}")
 
-    # 11. Record
+    # 11. Record — in-memory deque for fire-time ops, sqlite for durability
     cd.mark(ev.ticker, ev.direction, ev.grade)
     get_alert_history().append(alert)
+    _persist_alert(alert)
     print(
         f"[ZERO_DTE] {alert.grade} {alert.direction.upper()} {ticker} "
         f"{strike_choice.strike}{strike_choice.right[0].upper()} "

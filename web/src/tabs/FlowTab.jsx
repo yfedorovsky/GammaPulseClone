@@ -259,10 +259,36 @@ export default function FlowTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
+  // Accumulator: poll with since=lastSeenTs, merge new rows into state
+  // keyed by id. Bounded to last 2 hours so HIGH-conviction alerts on
+  // quieter names persist through SPY/SPX firehose bursts. Before this,
+  // loadAlerts replaced state with the newest 500 API rows every 15s —
+  // at 50+ alerts/min the 500-row window covered only ~10min of history
+  // and older alerts silently scrolled off.
+  const TWO_HOURS_S = 2 * 60 * 60;
   async function loadAlerts() {
     try {
-      const d = await api.alerts(0);
-      setAlerts(d.alerts || []);
+      const since = alertSince > 0 ? alertSince - 1 : 0;
+      const d = await api.alerts(since);
+      const incoming = d.alerts || [];
+      if (!incoming.length && alertSince > 0) return; // nothing new
+
+      setAlerts((prev) => {
+        const byId = new Map();
+        // Seed with existing alerts (preserves history across polls)
+        for (const a of prev) byId.set(a.id, a);
+        // Overlay incoming — newer version wins if id collision
+        for (const a of incoming) byId.set(a.id, a);
+        // Sort newest first + drop rows older than 2h
+        const cutoff = (Date.now() / 1000) - TWO_HOURS_S;
+        return Array.from(byId.values())
+          .filter((a) => (a.ts || 0) >= cutoff)
+          .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+      });
+
+      // Advance watermark to newest ts in the incoming batch
+      const newest = incoming.reduce((m, a) => Math.max(m, a.ts || 0), 0);
+      if (newest > alertSince) setAlertSince(newest);
     } catch (e) {
       console.warn(e);
     }

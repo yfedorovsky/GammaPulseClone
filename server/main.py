@@ -1540,13 +1540,14 @@ async def net_flow_series(ticker: str, minutes: int = 240):
 # server/zero_dte_loop.py and server/zero_dte_engine.py for details.
 
 @app.get("/api/zero-dte/alerts")
-async def zero_dte_alerts(limit: int = 50):
-    """Return the most recent 0DTE alerts (newest first)."""
-    from .zero_dte_loop import get_alert_history, get_cooldown_state
-    history = get_alert_history()
-    alerts = list(history)[-limit:][::-1]
+async def zero_dte_alerts(limit: int = 50, ticker: str | None = None):
+    """Return the most recent 0DTE alerts (newest first). Reads from
+    sqlite so history survives server restarts. ``limit`` caps the number
+    of rows; ``ticker`` optionally filters (case-insensitive)."""
+    from .zero_dte_loop import load_alerts_from_db, get_cooldown_state
+    alerts = load_alerts_from_db(limit=limit, ticker=ticker)
     return {
-        "alerts": [a.to_row() for a in alerts],
+        "alerts": alerts,
         "count": len(alerts),
         "cooldown": get_cooldown_state().stats(),
     }
