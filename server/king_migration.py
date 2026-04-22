@@ -1,0 +1,467 @@
+"""King Migration Detector — runner roll-up signal.
+
+Detects +King magnet migration events across option snapshots. Pattern
+documented 2026-04-22 from ARM runner audit (4/13 $157 → 4/22 $195).
+
+## The pattern
+
+A "runner" stock has its +King (highest positive GEX strike) stable at
+level X, then abruptly migrates up to X+N as new call OI accumulates one
+or more strikes higher. Mir's pattern: buy the NEW king strike on the
+migration event — not a delta-based OTM strike. Catches the gamma
+squeeze as dealers must chase spot higher.
+
+## Example — ARM migrations we missed rolling correctly
+
+  4/17 06:17 AM  $160 → $165  ratio 3.7 → 6.8  (fresh OI accumulation)
+  4/17 08:22 AM  $165 → $170  ratio 6.1 → 6.7  (momentum)
+  4/20 11:26 AM  $170 → $180  ratio 2.9 → 5.4  <- Mir's roll #2 timing
+  4/22 10:18 AM  $180 → $200  ratio 8.0 → 8.9  <- Mir's roll #3 timing
+
+## The 5-gate qualifier
+
+  1. signal == MAGNET UP (call wall target above spot)
+  2. king migrated upward by ≥ MIN_MIGRATION_PTS since last snapshot
+  3. pos/neg GEX ratio ≥ RATIO_GATE before migration (mature structure)
+  4. new floor ≥ old king (floor-floor leapfrog confirms real migration)
+  5. net dealer delta growing (dealers increasingly short → forced chase)
+
+## Intended use
+
+  Historical: run_backfill() over snapshots.db to verify pattern.
+  Live (later): poll every eval cycle per ticker, fire alert on qualify.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import json
+import os
+import sqlite3
+import time
+from dataclasses import dataclass, field, asdict
+from typing import Any, Iterable
+
+
+# ── Configuration ─────────────────────────────────────────────────
+
+# Minimum king jump in dollars to qualify as a migration. Empirically,
+# valid ARM migrations were +5 to +20. Anything smaller is noise (fractional
+# OI shuffle within an existing magnet).
+MIN_MIGRATION_PTS = 5
+
+# Minimum pos/neg GEX ratio before migration. Below this the structure
+# is too immature to trust the call-side accumulation (could be transient).
+# Was 4.0 empirically — all 5 ARM migrations had pre-ratio ≥ 2.85.
+# Using 2.5 to catch the weekend-reset case (Mir roll #2 was 2.85 → 5.36).
+RATIO_GATE = 2.5
+
+# Window — how far back to look for the "before" snapshot. Migrations
+# happen fast (within minutes) but the "before" state should be the
+# prior stable snapshot, not 24h ago. 4 hours captures overnight and
+# pre-market while excluding cross-day baseline drift.
+PREV_LOOKBACK_SEC = 4 * 3600
+
+# Storage
+KING_MIGRATION_DB_PATH = os.environ.get("KING_MIGRATION_DB_PATH", "./king_migrations.db")
+
+KING_MIGRATION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS king_migrations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticker TEXT NOT NULL,
+  migration_ts INTEGER NOT NULL,
+  migration_iso TEXT NOT NULL,
+  old_king REAL,
+  new_king REAL,
+  delta_pts REAL,
+  old_floor REAL,
+  new_floor REAL,
+  old_ceiling REAL,
+  new_ceiling REAL,
+  spot REAL,
+  signal TEXT,
+  ratio_before REAL,
+  ratio_after REAL,
+  net_delta_before REAL,
+  net_delta_after REAL,
+  gate_signal_magnet_up INTEGER,
+  gate_migration_min INTEGER,
+  gate_ratio INTEGER,
+  gate_floor_leapfrog INTEGER,
+  gate_net_delta_growing INTEGER,
+  qualified INTEGER NOT NULL,
+  qualified_reasons TEXT,
+  UNIQUE(ticker, migration_ts)
+);
+CREATE INDEX IF NOT EXISTS idx_kmig_ts ON king_migrations(migration_ts);
+CREATE INDEX IF NOT EXISTS idx_kmig_ticker ON king_migrations(ticker, migration_ts);
+CREATE INDEX IF NOT EXISTS idx_kmig_qualified ON king_migrations(qualified, migration_ts);
+"""
+
+
+# ── Data structures ───────────────────────────────────────────────
+
+
+@dataclass
+class Snapshot:
+    """Minimal GEX snapshot row needed for migration detection."""
+    ticker: str
+    ts: int
+    spot: float | None
+    king: float | None
+    floor: float | None
+    ceiling: float | None
+    pos_gex: float | None
+    neg_gex: float | None
+    net_delta: float | None
+    signal: str | None
+
+    @property
+    def ratio(self) -> float:
+        pos = self.pos_gex or 0
+        neg = abs(self.neg_gex or 0)
+        return pos / neg if neg > 0 else 0.0
+
+
+@dataclass
+class MigrationEvent:
+    """One qualifying or non-qualifying king migration."""
+    ticker: str
+    migration_ts: int
+    before: Snapshot
+    after: Snapshot
+
+    # Gate outcomes (True if passed)
+    gate_signal_magnet_up: bool = False
+    gate_migration_min: bool = False
+    gate_ratio: bool = False
+    gate_floor_leapfrog: bool = False
+    gate_net_delta_growing: bool = False
+    reasons: list[str] = field(default_factory=list)
+
+    @property
+    def qualified(self) -> bool:
+        return all([
+            self.gate_signal_magnet_up,
+            self.gate_migration_min,
+            self.gate_ratio,
+            self.gate_floor_leapfrog,
+            self.gate_net_delta_growing,
+        ])
+
+    @property
+    def delta_pts(self) -> float:
+        return (self.after.king or 0) - (self.before.king or 0)
+
+    def to_row(self) -> dict[str, Any]:
+        return {
+            "ticker": self.ticker,
+            "migration_ts": self.migration_ts,
+            "migration_iso": (
+                dt.datetime.utcfromtimestamp(self.migration_ts).isoformat() + "Z"
+            ),
+            "old_king": self.before.king,
+            "new_king": self.after.king,
+            "delta_pts": self.delta_pts,
+            "old_floor": self.before.floor,
+            "new_floor": self.after.floor,
+            "old_ceiling": self.before.ceiling,
+            "new_ceiling": self.after.ceiling,
+            "spot": self.after.spot,
+            "signal": self.after.signal,
+            "ratio_before": round(self.before.ratio, 3),
+            "ratio_after": round(self.after.ratio, 3),
+            "net_delta_before": self.before.net_delta,
+            "net_delta_after": self.after.net_delta,
+            "gate_signal_magnet_up": int(self.gate_signal_magnet_up),
+            "gate_migration_min": int(self.gate_migration_min),
+            "gate_ratio": int(self.gate_ratio),
+            "gate_floor_leapfrog": int(self.gate_floor_leapfrog),
+            "gate_net_delta_growing": int(self.gate_net_delta_growing),
+            "qualified": int(self.qualified),
+            "qualified_reasons": " | ".join(self.reasons),
+        }
+
+
+# ── Core detection ────────────────────────────────────────────────
+
+
+def _qualify_gates(before: Snapshot, after: Snapshot) -> MigrationEvent:
+    """Run all 5 gates; return event with gate outcomes + reasons."""
+    ev = MigrationEvent(
+        ticker=after.ticker,
+        migration_ts=after.ts,
+        before=before,
+        after=after,
+    )
+
+    # 1. Signal == MAGNET UP on the after-snapshot (the new magnet is active)
+    ev.gate_signal_magnet_up = (after.signal == "MAGNET UP")
+    if not ev.gate_signal_magnet_up:
+        ev.reasons.append(f"signal={after.signal} not MAGNET UP")
+
+    # 2. King jump ≥ MIN_MIGRATION_PTS
+    dp = ev.delta_pts
+    ev.gate_migration_min = dp >= MIN_MIGRATION_PTS
+    if not ev.gate_migration_min:
+        ev.reasons.append(f"migration {dp:+.1f}pts below threshold")
+    else:
+        ev.reasons.append(f"migration +${dp:.0f}")
+
+    # 3. Ratio before migration — proves structure existed before fresh OI
+    r_before = before.ratio
+    ev.gate_ratio = r_before >= RATIO_GATE
+    if not ev.gate_ratio:
+        ev.reasons.append(f"pre-ratio {r_before:.2f} below {RATIO_GATE}")
+    else:
+        ev.reasons.append(f"pre-ratio {r_before:.2f}")
+
+    # 4. Floor leapfrog — new floor at or above old king = real migration
+    # not merely a fleeting transient jump. ARM 4/17 $160→$165: floor stayed
+    # at $155 (didn't leapfrog) — rejected. 4/20 11:26: floor went $160→$170
+    # (leapfrog). This is the key "real migration" confirmation.
+    #
+    # Relaxed threshold: new_floor ≥ old_king - 5 (tolerates step-floor by
+    # one level). Strict equality (new_floor >= old_king) is too strict:
+    # ARM 4/22 10:18 had old_king=$180, new_floor=$180 — exactly meets.
+    # ARM 4/20 11:26 had old_king=$170, new_floor=$170 — also exactly meets.
+    old_king = before.king or 0
+    new_floor = after.floor or 0
+    ev.gate_floor_leapfrog = new_floor >= old_king - 5
+    if not ev.gate_floor_leapfrog:
+        ev.reasons.append(
+            f"floor ${new_floor:.0f} below old king ${old_king:.0f} (no leapfrog)"
+        )
+    else:
+        ev.reasons.append(f"floor-leapfrog ${new_floor:.0f}")
+
+    # 5. Net delta growing — dealers getting shorter = forced chase
+    # Both must be positive AND after > before. Zero or negative = no signal.
+    nd_b = before.net_delta or 0
+    nd_a = after.net_delta or 0
+    ev.gate_net_delta_growing = nd_a > nd_b and nd_a > 0
+    if not ev.gate_net_delta_growing:
+        ev.reasons.append(
+            f"net_delta {nd_b/1e6:.1f}M→{nd_a/1e6:.1f}M not growing"
+        )
+    else:
+        ev.reasons.append(f"net_delta {nd_b/1e6:.1f}M→{nd_a/1e6:.1f}M (+{(nd_a-nd_b)/1e6:.1f}M)")
+
+    return ev
+
+
+def detect_migrations_for_ticker(
+    ticker: str,
+    snapshots: list[Snapshot],
+) -> list[MigrationEvent]:
+    """Scan a time-ordered list of snapshots for king jumps.
+
+    Algorithm: walk forward. For each row, compare king to prior row's king.
+    If it moved upward ≥ MIN_MIGRATION_PTS AND prior row was within
+    PREV_LOOKBACK_SEC, qualify the event via all 5 gates.
+
+    Returns all migration events (qualified + non-qualified) for inspection.
+    """
+    events: list[MigrationEvent] = []
+    for i in range(1, len(snapshots)):
+        prev = snapshots[i - 1]
+        cur = snapshots[i]
+        if prev.king is None or cur.king is None:
+            continue
+        if (cur.ts - prev.ts) > PREV_LOOKBACK_SEC:
+            continue
+        if cur.king - prev.king < MIN_MIGRATION_PTS:
+            continue
+        events.append(_qualify_gates(prev, cur))
+    return events
+
+
+# ── Persistence ───────────────────────────────────────────────────
+
+
+_schema_ready = False
+
+
+def _ensure_schema() -> None:
+    global _schema_ready
+    if _schema_ready:
+        return
+    conn = sqlite3.connect(KING_MIGRATION_DB_PATH)
+    try:
+        conn.executescript(KING_MIGRATION_SCHEMA)
+        conn.commit()
+    finally:
+        conn.close()
+    _schema_ready = True
+
+
+def persist_event(ev: MigrationEvent) -> None:
+    """Write event row to sqlite. Idempotent (UNIQUE on ticker+ts)."""
+    _ensure_schema()
+    row = ev.to_row()
+    conn = sqlite3.connect(KING_MIGRATION_DB_PATH)
+    try:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO king_migrations (
+              ticker, migration_ts, migration_iso,
+              old_king, new_king, delta_pts,
+              old_floor, new_floor, old_ceiling, new_ceiling,
+              spot, signal, ratio_before, ratio_after,
+              net_delta_before, net_delta_after,
+              gate_signal_magnet_up, gate_migration_min, gate_ratio,
+              gate_floor_leapfrog, gate_net_delta_growing,
+              qualified, qualified_reasons
+            ) VALUES (
+              ?, ?, ?,
+              ?, ?, ?,
+              ?, ?, ?, ?,
+              ?, ?, ?, ?,
+              ?, ?,
+              ?, ?, ?,
+              ?, ?,
+              ?, ?
+            )
+            """,
+            (
+                row["ticker"], row["migration_ts"], row["migration_iso"],
+                row["old_king"], row["new_king"], row["delta_pts"],
+                row["old_floor"], row["new_floor"],
+                row["old_ceiling"], row["new_ceiling"],
+                row["spot"], row["signal"], row["ratio_before"], row["ratio_after"],
+                row["net_delta_before"], row["net_delta_after"],
+                row["gate_signal_magnet_up"], row["gate_migration_min"],
+                row["gate_ratio"], row["gate_floor_leapfrog"],
+                row["gate_net_delta_growing"],
+                row["qualified"], row["qualified_reasons"],
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_recent(
+    limit: int = 100,
+    ticker: str | None = None,
+    qualified_only: bool = False,
+) -> list[dict[str, Any]]:
+    """API read: newest first, filter by ticker / qualified status."""
+    _ensure_schema()
+    conn = sqlite3.connect(KING_MIGRATION_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        sql = "SELECT * FROM king_migrations WHERE 1=1"
+        params: list[Any] = []
+        if ticker:
+            sql += " AND ticker = ?"
+            params.append(ticker.upper())
+        if qualified_only:
+            sql += " AND qualified = 1"
+        sql += " ORDER BY migration_ts DESC LIMIT ?"
+        params.append(limit)
+        cur = conn.execute(sql, params)
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+# ── Snapshot source adapter ───────────────────────────────────────
+
+
+def load_snapshots_from_db(
+    snapshot_db_path: str,
+    ticker: str,
+    since_ts: int = 0,
+) -> list[Snapshot]:
+    """Pull ARM-style per-ticker snapshots from the main snapshots.db.
+
+    Columns assumed: ts, spot, king, floor, ceiling, pos_gex, neg_gex,
+    net_delta, signal (matches server/snapshots.py schema in use).
+    """
+    conn = sqlite3.connect(snapshot_db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.execute(
+            """
+            SELECT ts, spot, king, floor, ceiling, pos_gex, neg_gex,
+                   net_delta, signal
+            FROM snapshots
+            WHERE ticker = ? AND ts >= ?
+            ORDER BY ts ASC
+            """,
+            (ticker.upper(), since_ts),
+        )
+        out: list[Snapshot] = []
+        for r in cur.fetchall():
+            out.append(Snapshot(
+                ticker=ticker.upper(),
+                ts=int(r["ts"]),
+                spot=r["spot"],
+                king=r["king"],
+                floor=r["floor"],
+                ceiling=r["ceiling"],
+                pos_gex=r["pos_gex"],
+                neg_gex=r["neg_gex"],
+                net_delta=r["net_delta"],
+                signal=r["signal"],
+            ))
+        return out
+    finally:
+        conn.close()
+
+
+# ── Backfill CLI ──────────────────────────────────────────────────
+
+
+def run_backfill(
+    snapshot_db_path: str = "./snapshots.db",
+    tickers: Iterable[str] | None = None,
+    since_days: int = 14,
+) -> dict[str, Any]:
+    """Run detection retroactively on snapshots.db and persist all events.
+
+    Call from the command line:
+        python -m server.king_migration
+
+    Returns summary dict: {tickers_scanned, events_total, events_qualified}.
+    """
+    if tickers is None:
+        # Default: scan all distinct tickers in the snapshots window
+        conn = sqlite3.connect(snapshot_db_path)
+        try:
+            since_ts = int(time.time()) - since_days * 86400
+            cur = conn.execute(
+                "SELECT DISTINCT ticker FROM snapshots WHERE ts >= ?",
+                (since_ts,),
+            )
+            tickers = [r[0] for r in cur.fetchall()]
+        finally:
+            conn.close()
+
+    since_ts = int(time.time()) - since_days * 86400
+    total = 0
+    qualified = 0
+    by_ticker: dict[str, dict[str, int]] = {}
+    for ticker in tickers:
+        snaps = load_snapshots_from_db(snapshot_db_path, ticker, since_ts=since_ts)
+        events = detect_migrations_for_ticker(ticker, snaps)
+        q = sum(1 for e in events if e.qualified)
+        total += len(events)
+        qualified += q
+        by_ticker[ticker] = {"events": len(events), "qualified": q}
+        for e in events:
+            persist_event(e)
+    return {
+        "tickers_scanned": len(list(tickers)),
+        "events_total": total,
+        "events_qualified": qualified,
+        "by_ticker": by_ticker,
+    }
+
+
+if __name__ == "__main__":
+    import sys
+    since_days = int(sys.argv[1]) if len(sys.argv) > 1 else 14
+    print(f"Running king-migration backfill — last {since_days} days…")
+    summary = run_backfill(since_days=since_days)
+    print(json.dumps(summary, indent=2))

@@ -1539,6 +1539,23 @@ async def net_flow_series(ticker: str, minutes: int = 240):
 # Live-graded 0DTE alert feed with full trade tickets. See
 # server/zero_dte_loop.py and server/zero_dte_engine.py for details.
 
+@app.get("/api/king-migrations")
+async def king_migrations_api(
+    limit: int = 100,
+    ticker: str | None = None,
+    qualified_only: bool = False,
+):
+    """Return recent king-migration events (newest first).
+
+    Qualifying events are the 5-gate-pass signals documented in
+    server/king_migration.py — these are the runner roll-up triggers
+    identified in the 2026-04-22 ARM audit.
+    """
+    from .king_migration import load_recent
+    rows = load_recent(limit=limit, ticker=ticker, qualified_only=qualified_only)
+    return {"events": rows, "count": len(rows)}
+
+
 @app.get("/api/zero-dte/alerts")
 async def zero_dte_alerts(limit: int = 50, ticker: str | None = None):
     """Return the most recent 0DTE alerts (newest first). Reads from
