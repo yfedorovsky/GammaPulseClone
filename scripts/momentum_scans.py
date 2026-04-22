@@ -244,7 +244,8 @@ def main():
     tickers = all_tickers()
     print(f"Scanning {len(tickers)} tickers from GammaPulse universe...")
 
-    con = sqlite3.connect("snapshots.db")
+    db_path = Path(__file__).resolve().parent.parent / "snapshots.db"
+    con = sqlite3.connect(db_path)
     results = run_scans(con, tickers)
     results = apply_qm_rank_filter(results, pct_threshold=96.0)
     con.close()

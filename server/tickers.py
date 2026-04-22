@@ -18,17 +18,30 @@ TIER_1 = [
     # High-activity movers
     "AMD", "COIN", "PLTR", "NFLX", "CRM", "ORCL", "ADBE", "INTC", "MU", "UVXY",
     "BAC", "WMT", "COST", "DIS", "CSCO", "PEP", "KO", "T", "VZ", "SMCI",
+    # AI silicon / connectivity — promoted to TIER_1 Apr 21 (live signal priority).
+    # All four hit the Finviz breakout + RS-pullback screens the same session;
+    # ANET also fired SOE MAGNET BREAKOUT A-grade live. Every-cycle refresh
+    # matters because these can trigger intraday GEX transitions.
+    "ALAB",  # Astera Labs — PCIe/CXL retimers, Tier-1 AI silicon
+    "CRDO",  # Credo — AEC/retimer silicon, ALAB peer (correlated move)
+    "AEHR",  # Aehr Test Systems — semi equipment, dual-screen hit
+    "ANET",  # Arista Networks — AI connectivity backbone
+    # Memory / NAND cycle — promoted Apr 21 on group-wide breakout
+    # (WDC +$10, STX +$16 today; SNDK already leading; user's thesis:
+    # whole group to new highs). DRAM ETF fresh breakout confirms the cycle.
+    "WDC",   # Western Digital — NAND, breakout Apr 21
+    "STX",   # Seagate — HDD/NAND, breakout Apr 21
+    "SNDK",  # Sandisk — NAND leader, already extended
 ]
 
 TIER_2 = [
     # Tech / semis
     "QCOM", "TXN", "AMAT", "LRCX", "KLAC", "ASML", "TSM", "ARM", "MRVL", "SMH", "SOXX",
     "NOW", "SHOP", "SNOW", "DDOG", "NET", "CRWD", "ZS", "PANW", "MDB",
-    "UBER", "LYFT", "ABNB", "PYPL", "XYZ", "HOOD", "RBLX", "U", "DELL", "HPE", "SNDK",
+    "UBER", "LYFT", "ABNB", "PYPL", "XYZ", "HOOD", "RBLX", "U", "DELL", "HPE",
     # IBD adds (Apr 20) — large-cap Sector Leaders + Data Storage leaders
+    # WDC / STX / SNDK promoted to TIER_1 Apr 21 (group breakout day).
     "APH",   # Amphenol — IBD Sector Leader, Electronic-Connectors
-    "WDC",   # Western Digital — IBD Group #2 Data Storage
-    "STX",   # Seagate — IBD Group #2 Data Storage
     # Gemini weekend research (Apr 19) — data center power thesis
     "GEV",   # GE Vernova — grid, turbines, nuclear, wind; "power is the new real estate"
     # Sovereign silicon / specialty foundry (Apr 19 @Venu_7_ diagram)
@@ -63,11 +76,13 @@ TIER_3 = [
     # China ADRs
     "BABA", "PDD", "JD", "BIDU", "NIO", "XPEV", "LI", "TCEHY", "BILI", "TME",
     # Photonics / Fiber / AI Infra (Mir's top themes 2026)
-    "AAOI", "COHR", "GLW", "CIEN", "ANET", "VRT", "AXTI", "LITE",
+    # ANET promoted to TIER_1 Apr 21.
+    "AAOI", "COHR", "GLW", "CIEN", "VRT", "AXTI", "LITE",
     "VIAV",  # Apr 20 IBD add — Fiber Optics Group #1 (144% YTD)
     "LASR",  # nLIGHT — lasers/photonics, Group #6 Electronic-Parts leader
     # Semi Equipment (Mir's basket + Apr 20 IBD Group #3 expansion)
-    "AEHR", "TER",
+    # AEHR promoted to TIER_1 Apr 21.
+    "TER",
     "ICHR",  # Ichor Holdings — 222% YTD, IBD Group #3 top-3 member
     "UCTT",  # Ultra Clean Holdings — 191% YTD
     "FORM",  # FormFactor — 131% YTD
@@ -83,6 +98,7 @@ TIER_3 = [
     "SATS",  # EchoStar — spectrum/satellite/Boost Mobile, RS 93, liquid leader
     "VSAT",  # Viasat — defense/gov satcom + multi-orbit connectivity (GPT Apr 19)
     "GSAT",  # Globalstar — AMZN deal catalyst, 52w high, satellite operator
+    "BKSY",  # BlackSky — geospatial intel / sat imaging; defense-adjacent (Apr 21 breakout screen +4%)
     # Signal integrity / comms semis breakout (GPT Apr 19)
     "SMTC",  # Semtech — data center interconnect, comms infra, +36% 1M
     # Aerospace & defense specialty metals
@@ -142,6 +158,9 @@ TIER_3 = [
     # Others
     "CHWY", "ETSY", "EBAY", "W", "RH", "DKS", "ULTA", "LULU", "DECK",
     "CROX", "PVH", "TPR", "RL", "CPRI", "URBN", "ANF", "AEO",
+    # Memory / DRAM cycle macro proxies (Apr 21 — group breakout thesis)
+    "EWY",   # iShares MSCI Korea — Samsung + SK Hynix HBM exposure
+    "DRAM",  # DRAM/memory supply-chain ETF — fresh breakout Apr 21
     # Semiconductors second tier
     "ON", "MCHP", "ADI", "NXPI", "STM", "SWKS", "QRVO", "WOLF", "CRUS",
     # Software second tier
@@ -167,8 +186,7 @@ TIER_3 = [
     "CLS",   # Celestica — EMS for hyperscalers, Group #13 Contract Mfg
     "BE",    # Bloom Energy — fuel cells for data center power, Group #22 Alt
     # Mir's focus list Apr 19 — filling gaps
-    "ALAB",  # Astera Labs — AI connectivity/CXL silicon, Group #38 specialty
-    "CRDO",  # Credo Technology — AEC/retimer silicon for AI racks, ALAB peer (@SRxTrades Apr 19)
+    # ALAB + CRDO promoted to TIER_1 Apr 21.
     "PL",    # Planet Labs — earth observation satellites, space adjacent
     "FLY",   # Firefly Aerospace — space launch, momentum (Stockbee scan)
     "POWL",  # Powell Industries — DC electrical distribution, Group #29

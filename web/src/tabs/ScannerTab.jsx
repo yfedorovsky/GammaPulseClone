@@ -532,38 +532,38 @@ export default function ScannerTab() {
             padding: 12,
           }}
         >
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: 10,
-            }}
-          >
-            <div style={{ fontSize: 18, fontWeight: 800 }}>{selectedRow._ticker}</div>
-            <button className="header-btn" onClick={() => setSelectedRow(null)}>
-              ✕ Close
-            </button>
-          </div>
-
-          <div style={{ marginBottom: 10 }}>
-            <span style={{ fontSize: 20, fontWeight: 800, marginRight: 8 }}>
+          {/* OG-style big-price hero — ticker + close on top row, then
+             jumbo spot price, then status pills + level line. Establishes
+             clear hierarchy so eye lands on spot first. */}
+          <div className="scanner-hero">
+            <div className="scanner-hero-top">
+              <div className="scanner-hero-ticker">{selectedRow._ticker}</div>
+              <button className="header-btn" onClick={() => setSelectedRow(null)}>
+                ✕ Close
+              </button>
+            </div>
+            <div className="scanner-hero-price">
               ${fmtPrice(selectedRow.actual_spot)}
-            </span>
-            <span className="signal-pill" data-signal={selectedRow.signal}>
-              {selectedRow.signal}
-            </span>{' '}
-            <span className="regime-pill">{selectedRow.regime} γ</span>
-          </div>
-
-          <div className="mini" style={{ marginBottom: 14 }}>
-            <span style={{ color: '#f4c430', fontWeight: 800 }}>
-              King ${selectedRow.king}
-            </span>
-            <span className="sep"> · </span>
-            Floor ${selectedRow.floor}
-            <span className="sep"> · </span>
-            Ceil ${selectedRow.ceiling}
+            </div>
+            <div className="scanner-hero-meta">
+              <span className="signal-pill" data-signal={selectedRow.signal}>
+                {selectedRow.signal}
+              </span>
+              <span className="regime-pill">{selectedRow.regime} γ</span>
+              {selectedRow.king != null && (
+                <span className="scanner-hero-king">
+                  King ${selectedRow.king}
+                </span>
+              )}
+            </div>
+            <div className="scanner-hero-levels">
+              <span className="scanner-hero-level scanner-hero-level--floor">
+                Floor <b>${selectedRow.floor}</b>
+              </span>
+              <span className="scanner-hero-level scanner-hero-level--ceil">
+                Ceil <b>${selectedRow.ceiling}</b>
+              </span>
+            </div>
           </div>
 
           {/* Greeks + IVP + IV/HV context */}

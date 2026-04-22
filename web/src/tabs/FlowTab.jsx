@@ -242,13 +242,34 @@ export default function FlowTab() {
 
   return (
     <div style={{ display: 'grid', gridTemplateRows: 'auto 1fr', height: '100%' }}>
-      {/* Header */}
+      {/* Header — pill-tabs promote mode switcher to primary axis (OG-style) */}
       <div className="ctrl-bar" style={{ gap: 14 }}>
         <strong style={{ fontSize: 15, marginRight: 6 }}>Options Flow</strong>
-        <div className="ctrl-group">
-          <button className={`ctrl-btn ${mode === 'alerts' ? 'active' : ''}`} onClick={() => setMode('alerts')}>ALERTS</button>
-          <button className={`ctrl-btn ${mode === 'scan' ? 'active' : ''}`} onClick={() => setMode('scan')}>SCAN</button>
-          <button className={`ctrl-btn ${mode === 'detail' ? 'active' : ''}`} onClick={() => setMode('detail')}>DETAIL</button>
+        <div className="pill-tabs" role="tablist" aria-label="Flow view mode">
+          <button
+            className={`pill-tab ${mode === 'alerts' ? 'active' : ''}`}
+            role="tab"
+            aria-selected={mode === 'alerts'}
+            onClick={() => setMode('alerts')}
+          >
+            ⚡ ALERTS
+          </button>
+          <button
+            className={`pill-tab ${mode === 'scan' ? 'active' : ''}`}
+            role="tab"
+            aria-selected={mode === 'scan'}
+            onClick={() => setMode('scan')}
+          >
+            🔎 SCAN
+          </button>
+          <button
+            className={`pill-tab ${mode === 'detail' ? 'active' : ''}`}
+            role="tab"
+            aria-selected={mode === 'detail'}
+            onClick={() => setMode('detail')}
+          >
+            📊 DETAIL
+          </button>
         </div>
         <div style={{ flex: 1 }} />
         {mode === 'detail' && (

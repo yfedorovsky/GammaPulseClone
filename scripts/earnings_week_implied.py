@@ -73,14 +73,14 @@ def mid(q: dict) -> float | None:
     return (bid + ask) / 2
 
 
-async def run(expiry: str):
+async def run(expiry: str, tickers: list[str]):
     client = ThetaDataClient()
     print(f"Computing ATM straddle implied moves for expiry {expiry}")
     print(f"{'Ticker':<8}{'Spot':>10}{'ATM K':>10}{'Call':>8}{'Put':>8}"
           f"{'Strdl':>8}{'Impl%':>9}{'IV_C':>8}{'IV_P':>8}")
     print("-" * 77)
 
-    for t in TICKERS:
+    for t in tickers:
         try:
             # snapshot_chain_greeks returns (rows, underlying_price)
             rows, spot = await client.snapshot_chain_greeks(t, expiration=expiry)
@@ -119,9 +119,12 @@ async def run(expiry: str):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--expiry", default=DEFAULT_EXPIRY,
-                    help=f"YYYYMMDD expiry (default: {DEFAULT_EXPIRY} = 4/25)")
+                    help=f"YYYY-MM-DD expiry (default: {DEFAULT_EXPIRY})")
+    ap.add_argument("--tickers", default=",".join(TICKERS),
+                    help="Comma-separated tickers (default: baked-in list)")
     args = ap.parse_args()
-    asyncio.run(run(args.expiry))
+    tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
+    asyncio.run(run(args.expiry, tickers))
 
 
 if __name__ == "__main__":

@@ -338,7 +338,7 @@ function SignalCard({ sig, expanded, onToggle }) {
         </div>
         <div>
           <span style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xxs)' }}>IV</span><br />
-          <span style={{ color: '#10dc9a', fontWeight: 700 }}>{sig.iv ? (sig.iv * 100).toFixed(1) + '%' : '-'}</span>
+          <span style={{ color: '#10dc9a', fontWeight: 700 }}>{sig.iv ? sig.iv.toFixed(1) + '%' : '-'}</span>
         </div>
         <div>
           <span style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xxs)' }}>R:R</span><br />
