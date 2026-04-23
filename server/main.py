@@ -1539,6 +1539,23 @@ async def net_flow_series(ticker: str, minutes: int = 240):
 # Live-graded 0DTE alert feed with full trade tickets. See
 # server/zero_dte_loop.py and server/zero_dte_engine.py for details.
 
+@app.get("/api/king-breakouts")
+async def king_breakouts_api(
+    limit: int = 100,
+    ticker: str | None = None,
+    qualified_only: bool = False,
+):
+    """Recent king-breakout events (newest first).
+
+    Breakouts are when spot crosses +King from below with mature gamma
+    structure — the gamma-squeeze trigger documented in
+    server/king_breakout.py. Sibling to /api/king-migrations.
+    """
+    from .king_breakout import load_recent
+    rows = load_recent(limit=limit, ticker=ticker, qualified_only=qualified_only)
+    return {"events": rows, "count": len(rows)}
+
+
 @app.get("/api/king-migrations")
 async def king_migrations_api(
     limit: int = 100,
