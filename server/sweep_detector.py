@@ -279,8 +279,14 @@ TIER2_THEMATIC_ROOTS = [
     # Prioritized for active options + thematic fit.
     # Semi equipment / analog peers
     "AMKR", "TXN",
-    # AI connectivity / photonics (AAOI/GLW/COHR fiber optics layer)
-    "AAOI", "COHR", "GLW",
+    # AI connectivity / photonics (AAOI/GLW/COHR fiber optics layer).
+    # LITE added 2026-04-22 from HeidingOut AI-ecosystem thesis — CPO lasers
+    # and NVDA commitments. Pairs directly with AAOI/COHR in the photonics
+    # leg of the Rubin/Groq LPX disaggregation thesis.
+    "AAOI", "COHR", "GLW", "LITE",
+    # AI power delivery (rack-density / 48V conversion — VRT already covers
+    # cooling; VICR covers the power-module layer). Added 2026-04-22.
+    "VICR",
     # Software mega-caps (sector mover signals)
     "NOW", "SNOW", "DDOG",
     # Space / defense satellites (pairs with BKSY already in Tier3)
@@ -512,7 +518,15 @@ class SweepDetector:
 
     async def _send_telegram(self, rollup: SweepRollup) -> None:
         """Telegram push for high-notional sweeps. Uses the existing
-        rate-limited sender; SWEEP is its own category."""
+        rate-limited sender; SWEEP is its own category. Gated on market
+        hours + contract tradeable (2026-04-23) — ThetaData sometimes
+        delivers late OPRA closing prints after hours; those are not
+        actionable for the user."""
+        from .alert_gates import should_send_alert
+        ok, reason = should_send_alert(expiration=rollup.expiration)
+        if not ok:
+            print(f"[SWEEP] telegram gated ({reason}) — {rollup.ticker} {rollup.strike}{rollup.option_type[0].upper()}")
+            return
         try:
             from .telegram import send
         except ImportError:

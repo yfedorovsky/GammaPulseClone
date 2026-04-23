@@ -383,7 +383,17 @@ async def send_golden_telegram(
     a glance whether this is a top-tier alert vs barely-scraping-threshold.
     Hit-rate context (forward returns on similar prior setups) appended when
     available. force=True bypasses rate-limiter — Golden is time-sensitive.
+
+    Gated on market hours + contract still tradeable (2026-04-23): prevents
+    late-arriving OPRA closing prints from firing useless midnight alerts
+    on already-expired 0DTE contracts.
     """
+    from .alert_gates import should_send_alert
+    ok, reason = should_send_alert(expiration=agg.expiration)
+    if not ok:
+        print(f"[GOLDEN] gated ({reason}) — {agg.ticker} {agg.strike}{agg.option_type[0].upper()} {agg.expiration}")
+        return
+
     try:
         from .telegram import send
     except ImportError:
@@ -563,8 +573,15 @@ async def send_upside_bet_telegram(
     """Telegram push when a contract first crosses UPSIDE_BET threshold.
 
     Format mirrors Golden but uses distinct emoji/title so the user can
-    visually distinguish the two signal classes at a glance.
+    visually distinguish the two signal classes at a glance. Same
+    market-hours + contract-expired gates as GOLDEN (see alert_gates.py).
     """
+    from .alert_gates import should_send_alert
+    ok, reason = should_send_alert(expiration=agg.expiration)
+    if not ok:
+        print(f"[UPSIDE_BET] gated ({reason}) — {agg.ticker} {agg.strike}{agg.option_type[0].upper()} {agg.expiration}")
+        return
+
     try:
         from .telegram import send
     except ImportError:

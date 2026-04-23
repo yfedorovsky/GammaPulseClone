@@ -1135,6 +1135,14 @@ async def _alert_transition(
     else:
         return
 
+    # Gate: skip Telegram outside market hours so day-rollover state
+    # transitions at midnight don't spam the user. Event is still logged
+    # to console via the print above for morning review.
+    from .alert_gates import should_send_alert
+    ok, reason = should_send_alert()
+    if not ok:
+        print(f"[runner_tracker] Telegram gated ({reason}) — {ticker} {new_state}: {text[:80]}")
+        return
     await send(text, ticker=ticker, force=True)
 
 
