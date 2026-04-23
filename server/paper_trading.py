@@ -98,9 +98,20 @@ STARTING_BALANCE = 20_000
 
 @contextmanager
 def _conn():
+    """Connection with WAL mode + busy_timeout so concurrent writes from
+    worker / discord_listener / signal engine don't blow up with
+    'database is locked'. Default sqlite journal serializes all writes;
+    WAL allows concurrent readers + single writer with queued contention.
+
+    Added 2026-04-23 after user reported the locked error firing "almost
+    all the time." PRAGMAs are idempotent and per-connection cheap."""
     s = get_settings()
-    c = sqlite3.connect(s.snapshot_db)
+    c = sqlite3.connect(s.snapshot_db, timeout=15.0)
     c.row_factory = sqlite3.Row
+    # Drain PRAGMA result rows so cursor doesn't leak
+    c.execute("PRAGMA journal_mode=WAL").fetchall()
+    c.execute("PRAGMA busy_timeout=15000").fetchall()
+    c.execute("PRAGMA synchronous=NORMAL").fetchall()  # safe under WAL
     try:
         yield c
         c.commit()
