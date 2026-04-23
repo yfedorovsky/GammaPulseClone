@@ -142,20 +142,47 @@ def _resolve_contract_from_cache(
     # Find best matching expiration
     target_exp = None
     if expiry_raw:
-        # Try to match expiry_raw like "17apr", "this week", "0DTE"
+        # Try to match expiry_raw like "17apr", "this week", "0DTE", "next week"
         er = (expiry_raw or "").lower().strip()
         if er in ("0dte", "today", "same_day"):
             target_exp = today.isoformat()
-        elif er in ("this week", "this_week"):
-            # Nearest Friday
+        elif er in ("1dte", "tomorrow", "next_day"):
+            target_exp = (today + datetime.timedelta(days=1)).isoformat()
+        elif er in ("this week", "this_week", "tw", "this wk"):
+            # Friday of THIS week (or today's Friday if weekend)
             days_to_fri = (4 - today.weekday()) % 7
             target_exp = (today + datetime.timedelta(days=days_to_fri)).isoformat()
+        elif er in ("next week", "next_week", "nw", "next wk", "nxt week"):
+            # Friday of NEXT calendar week — critical for Mir who frequently
+            # says "next week" to mean 5-10 DTE weekly (not tomorrow's 1DTE).
+            # Bug caught 2026-04-23: ARM 220C "next week" at $4.35 got
+            # matched to 4/24 (1DTE, mid $0.78) instead of 5/1 (8DTE, mid $4.35).
+            days_to_this_fri = (4 - today.weekday()) % 7
+            target_exp = (today + datetime.timedelta(days=days_to_this_fri + 7)).isoformat()
         else:
             # Try matching against available expirations
             for exp in sorted(raw_contracts.keys()):
                 if er.replace(" ", "") in exp.replace("-", "").lower():
                     target_exp = exp
                     break
+
+        # If target_exp not in raw_contracts, try the closest available
+        # expiration within ±2 days (handles weekly variance / holidays).
+        if target_exp and target_exp not in raw_contracts:
+            target_dt = datetime.date.fromisoformat(target_exp)
+            best_exp = None
+            best_diff = 999
+            for exp in raw_contracts.keys():
+                try:
+                    exp_dt = datetime.date.fromisoformat(exp)
+                    diff = abs((exp_dt - target_dt).days)
+                    if diff <= 2 and diff < best_diff:
+                        best_diff = diff
+                        best_exp = exp
+                except ValueError:
+                    continue
+            if best_exp:
+                target_exp = best_exp
 
     # Fallback: nearest expiration with this strike
     if not target_exp:
