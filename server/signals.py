@@ -1899,7 +1899,34 @@ async def check_signal_outcomes() -> None:
 # high RTS + leading industry + GEX structure + EMA alignment
 # Pushes "SETUP FORMING" alerts to Telegram — ideas BEFORE Mir calls them.
 
-_setup_seen: dict[str, float] = {}  # ticker -> last alert ts (4hr cooldown)
+# Persistent cooldown file — survives uvicorn --reload / restart cycles.
+# Previously in-memory only, which caused duplicate fires whenever we
+# deployed a fix mid-session (e.g., 2026-04-23: NVDA + GOOGL fired 3:36
+# then again 3:43 because a commit in between reloaded the module).
+import json as _json
+import os as _os
+_SETUP_SEEN_PATH = _os.environ.get("SETUP_SEEN_PATH", "./setup_cooldown.json")
+_setup_seen: dict[str, float] = {}
+_setup_seen_loaded = False
+
+def _load_setup_seen() -> None:
+    global _setup_seen, _setup_seen_loaded
+    if _setup_seen_loaded:
+        return
+    try:
+        if _os.path.exists(_SETUP_SEEN_PATH):
+            with open(_SETUP_SEEN_PATH) as f:
+                _setup_seen = _json.load(f)
+    except Exception:
+        _setup_seen = {}
+    _setup_seen_loaded = True
+
+def _save_setup_seen() -> None:
+    try:
+        with open(_SETUP_SEEN_PATH, "w") as f:
+            _json.dump(_setup_seen, f)
+    except Exception:
+        pass
 
 async def scan_setups() -> list[dict[str, Any]]:
     """Scan for Mir-style setups forming across the universe.
@@ -1940,13 +1967,15 @@ async def scan_setups() -> list[dict[str, Any]]:
 
     setups: list[dict[str, Any]] = []
     now_ts = time.time()
+    # Hydrate cooldown state from disk (once per process)
+    _load_setup_seen()
 
     for ticker, state in snapshot.items():
         # Skip indexes — this is for single-stock sector leaders
         if ticker in ("SPY", "QQQ", "IWM", "DIA", "SPX", "NDX", "RUT", "VIX"):
             continue
 
-        # 4-hour cooldown per ticker
+        # 4-hour cooldown per ticker (persistent across restarts)
         if now_ts - _setup_seen.get(ticker, 0) < 14400:
             continue
 
@@ -2048,6 +2077,7 @@ async def scan_setups() -> list[dict[str, Any]]:
             }
             setups.append(setup)
             _setup_seen[ticker] = now_ts
+            _save_setup_seen()  # persist immediately — survives --reload
 
     # Sort by score descending, take top 3
     setups.sort(key=lambda x: x["score"], reverse=True)
