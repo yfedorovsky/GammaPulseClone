@@ -267,11 +267,50 @@ MIR_SCANNER_FILTERS = {
 }
 
 MIR_PREFERRED_SECTORS = {
-    "PHOTONICS": ["AAOI", "LITE", "COHR", "GLW", "CIEN", "AXTI"],
-    "SEMI_EQUIPMENT": ["AEHR", "TER", "AMAT", "LRCX", "KLAC"],
-    "SPACE": ["RKLB", "ASTS"],
-    "AI_COMPUTE": ["NBIS", "OKLO", "IREN", "VRT", "ANET"],
-    "MEMORY": ["MU", "WDC"],
+    # ── Semiconductors (4 sub-buckets per Mir's taxonomy, RAG validated 2026-04-23) ──
+    "SEMI_MEMORY_HBM":          ["MU", "SNDK", "ENTG", "NVTS"],  # + WDC retained (prior research)
+    "SEMI_FOUNDRY_CPU":         ["ARM", "SMCI"],
+    "SEMI_EQUIPMENT":           ["ASML", "AMAT", "LRCX", "KLAC", "AEHR", "TER"],  # AEHR kept (HeidingOut Tier 2 + flow evidence)
+    "SEMI_ETF":                 ["SMH"],
+
+    # ── AI infrastructure (2 tiers — hyperscalers vs. neocloud/adjacent) ──
+    "AI_COMPUTE_HYPERSCALERS":  ["NVDA", "AVGO", "ORCL", "AMZN", "GOOGL", "META"],
+    "AI_INFRA_NEOCLOUD":        ["NBIS", "CRWV", "IREN", "VRT", "ANET", "GEV", "WULF"],
+
+    # ── Photonics (validated via targeted RAG query — 4 new names added) ──
+    "PHOTONICS_THESIS": [
+        # Core transceiver/laser makers
+        "AAOI", "LITE", "COHR", "HIMX",
+        # Upstream substrate / epiwafer (options liquidity varies — SIVE/SOI/IQE
+        # may be OTC/illiquid but kept for Mir-signal attribution)
+        "AXTI", "SIVE", "SOI", "IQE",
+        # Silicon photonics via acquisition (Polariton)
+        "MRVL",
+        # Networking / fiber adjacent (prior research, not RAG-surfaced)
+        "GLW", "CIEN",
+    ],
+
+    # ── Cybersecurity (RAG: "3 favorites since Iran war Feb 28") ──
+    "CYBERSECURITY":            ["CRWD", "NET", "PANW"],
+
+    # ── Nuclear / uranium (RAG surfaced OKLO+USAR only; broader basket kept
+    # based on today's watchlist explicitly calling uranium momentum) ──
+    "NUCLEAR_URANIUM":          ["OKLO", "USAR", "SMR", "NNE", "LEU", "CCJ", "UEC", "UUUU"],
+
+    # ── Crypto infra / bitcoin proxy ──
+    "CRYPTO_INFRA":             ["IBIT", "MSTR", "COIN", "HOOD"],
+
+    # ── Space / satellite (RAG: ASTS+LUNR; RKLB+PL+BKSY retained from prior) ──
+    "SPACE_SATELLITE":          ["ASTS", "LUNR", "RKLB", "PL", "BKSY"],
+
+    # ── Biotech (RAG new) ──
+    "BIOTECH":                  ["CELC", "MRNA"],
+
+    # ── Consumer / BNPL / fintech (RAG new) ──
+    "CONSUMER_FINTECH":         ["SEZL", "AFRM", "LMND"],
+
+    # ── Broad market ETFs (RAG new — Mir trades these as theme vehicles) ──
+    "BROAD_MARKET_ETF":         ["ARKK", "IWM", "QQQ", "SPX", "DIA"],
 }
 
 def is_mir_sector(ticker: str) -> tuple[bool, str]:
