@@ -692,23 +692,29 @@ async def run_sweep_detector(stop_event: asyncio.Event) -> None:
             break
         await asyncio.sleep(5.0)
 
-    # Build subscription plan
-    specs = await _build_subscription_plan()
-    print(f"[SWEEP] subscribing to {len(specs)} contracts via Theta stream (async)")
-
-    # Run subscribe trickle IN A BACKGROUND TASK so consume() can start
-    # immediately. Earlier this was a blocking for-loop — when Theta
-    # reconnected mid-trickle (every ~15s on stream hiccup), the loop
-    # hung on a dead websocket and consume() never ran. Queue grew to
-    # 7,659 trades undrained on 2026-04-22.
+    # Subscription lifecycle:
+    #   Phase 1 (now): subscribe all roots currently in cache (indexes + any
+    #                  Tier 1/2 already populated by warmup_indexes).
+    #   Phase 2 (background, every 60s): re-build plan and subscribe any
+    #                  new roots that are now cached but weren't before.
     #
-    # Resilient version: each subscribe wrapped in try/except so individual
-    # failures don't kill the batch. Trickle continues; consumer drains
-    # queue from second one.
-    async def _subscribe_trickle() -> None:
+    # This fixes the Tier2=0 race where _build_subscription_plan runs before
+    # the worker's first full cycle has populated Tier 2 GEX state for names
+    # like ARM/AEHR/CRDO. On 2026-04-23 this gap caused us to miss Mir's live
+    # ARM 220C trade — ARM wasn't in the sweep subscription at all.
+    subscribed_roots: set[str] = set()
+
+    async def _subscribe_new_roots(label: str) -> tuple[int, int]:
+        """Build plan + subscribe any roots not yet subscribed. Idempotent.
+        Returns (specs_sent, roots_added)."""
+        specs = await _build_subscription_plan()
+        new_specs = [s for s in specs if s.root not in subscribed_roots]
+        new_roots = {s.root for s in new_specs}
+        if not new_roots:
+            return 0, 0
         sent = 0
         failed = 0
-        for spec in specs:
+        for spec in new_specs:
             if stop_event.is_set():
                 break
             try:
@@ -717,9 +723,33 @@ async def run_sweep_detector(stop_event: asyncio.Event) -> None:
             except Exception as e:
                 failed += 1
                 if failed <= 3:
-                    print(f"[SWEEP] subscribe failed: {e}")
+                    print(f"[SWEEP] {label} subscribe failed: {e}")
             await asyncio.sleep(0.005)
-        print(f"[SWEEP] trickle done — sent={sent} failed={failed}")
+        subscribed_roots.update(new_roots)
+        print(
+            f"[SWEEP] {label}: added {len(new_roots)} roots ({sorted(new_roots)[:8]}"
+            f"{'...' if len(new_roots)>8 else ''}) — {sent} specs sent, {failed} failed"
+        )
+        return sent, len(new_roots)
+
+    async def _subscribe_trickle() -> None:
+        # Phase 1: immediate subscription for what's already cached
+        await _subscribe_new_roots("phase1")
+        # Phase 2: periodic catch-up for Tier 2 roots as they populate
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=60.0)
+                break
+            except asyncio.TimeoutError:
+                pass
+            try:
+                sent, added = await _subscribe_new_roots("phase2")
+                if added == 0 and len(subscribed_roots) >= 50:
+                    # Stable state — increase interval to reduce overhead
+                    await asyncio.sleep(300)
+            except Exception as e:
+                print(f"[SWEEP] phase2 resubscribe error: {e}")
+
     subscribe_task = asyncio.create_task(_subscribe_trickle())
 
     # Launch the Golden Flow + UPSIDE_BET transition loops as sibling tasks.
