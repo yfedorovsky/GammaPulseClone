@@ -325,16 +325,20 @@ import time
 
 
 # Seconds of cooldown between alerts for the same ticker. Set via env or
-# adjust here. 15 min = 900s is aggressive enough to catch genuine
-# transitions without flooding chat during regime-flicker periods.
-ALERT_COOLDOWN_S = 900
+# adjust here. 20 min baseline — net-flow signals change slowly, faster
+# cooldowns flood chat during chop (documented spam 2026-04-23: 17 alerts
+# in 28 min with same tickers flipping bear/bull repeatedly).
+ALERT_COOLDOWN_S = 1200
 
 # How often the alert loop scans all tickers (seconds).
 ALERT_SCAN_INTERVAL_S = 60
 
-# Minimum confidence required to fire a Telegram alert. 'low' conf signals
-# exist for UI display but aren't worth a push notification.
-ALERT_MIN_CONFIDENCE = "medium"
+# Minimum confidence required to fire a Telegram alert. Raised from
+# 'medium' to 'high' 2026-04-23 — MEDIUM alerts fire on $100k+ 10-min
+# premium moves, which is noise for mega-cap tickers (SPY/QQQ/MSFT
+# trade $100M+ options daily). HIGH requires 5x the move = real signal.
+# MEDIUM/LOW still persist to DB + UI for inspection.
+ALERT_MIN_CONFIDENCE = "high"
 
 # Which signals get Telegram pushes. The non-actionable ones (GAP_CLOSED)
 # are watch-only (shown in UI but no push).
@@ -384,10 +388,13 @@ class NetFlowAlertState:
             # Cooldown elapsed, re-fire to remind user regime is still active
             return True
 
-        # Different regime than last — transition. Still respect global cooldown
-        # to prevent rapid-flip flooding.
-        if now - last_ts < ALERT_COOLDOWN_S / 3:
-            # Allow more frequent alerts on genuine transitions (5 min min)
+        # Different regime than last — transition. Previously allowed
+        # transition alerts at 1/3 cooldown (5 min on 900s), which caused
+        # the 2026-04-23 spam: TSLA bear→bull→bear within 17 min because
+        # transition gate was lenient. Now require 2/3 cooldown (13 min on
+        # 1200s) for transitions too. Flip-flop regimes are usually chop,
+        # not real signals.
+        if now - last_ts < ALERT_COOLDOWN_S * 2 / 3:
             self.alerts_suppressed_cooldown += 1
             return False
         return True
