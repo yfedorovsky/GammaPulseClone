@@ -188,11 +188,44 @@ def get_sweep_alerts(
 
 
 def _compute_conviction(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) -> str:
-    """Score conviction: HIGH / MEDIUM / LOW based on volume, notional, and GEX alignment."""
+    """Score conviction: HIGH / MEDIUM / LOW based on volume, notional, and GEX alignment.
+
+    Includes CHEAP 0DTE WHALE override (2026-04-23): notional-based scoring
+    systematically under-grades cheap-option lotto whales. Example caught:
+    QQQ 649P 0DTE today — UW flagged $0.09 → $4.33 (+4700%). We saw 55k vol
+    at $0.10 ($550k notional = MEDIUM under old rules) but that's 55,000
+    contracts = delta-equivalent of ~2,000 ATM puts = actual whale positioning.
+    Override catches this pattern.
+    """
+    import datetime
+
     score = 0
-    vol = alert.get("volume", 0)
-    notional = alert.get("notional", 0)
-    vol_oi = alert.get("vol_oi", 0)
+    vol = alert.get("volume", 0) or 0
+    notional = alert.get("notional", 0) or 0
+    vol_oi = alert.get("vol_oi", 0) or 0
+    last_price = alert.get("last_price", 0) or 0
+    expiration = alert.get("expiration", "") or ""
+
+    # ── CHEAP-OPTION WHALE OVERRIDE (checked first, bypasses notional) ──
+    # Position size over premium size. When someone dumps $500k into 50k
+    # contracts of a 10¢ 0/1DTE option, that's a gamma-squeeze lotto bet.
+    try:
+        today_str = datetime.date.today().isoformat()
+        tomorrow_str = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+        is_0_1_dte = expiration in (today_str, tomorrow_str)
+        # Tier A: cheap ≤$0.50, 20k+ vol, 10x+ v/oi, 0/1 DTE → HIGH
+        if is_0_1_dte and 0 < last_price <= 0.50 and vol >= 20_000 and vol_oi >= 10:
+            return "HIGH"
+        # Tier B: ultra-cheap ≤$0.25 lottos with extreme v/oi → HIGH
+        if is_0_1_dte and 0 < last_price <= 0.25 and vol >= 10_000 and vol_oi >= 15:
+            return "HIGH"
+        # Tier C: absurd volume regardless of price (50k+ contracts single strike) → HIGH
+        if vol >= 50_000 and vol_oi >= 5:
+            return "HIGH"
+    except Exception:
+        pass
+
+    # ── Standard score-based logic (existing) ──
 
     # Volume tier
     if vol >= 5000: score += 2
@@ -210,13 +243,10 @@ def _compute_conviction(alert: dict[str, Any], gex_info: dict[str, Any] | None =
         signal = gex_info.get("signal", "")
         sentiment = alert.get("sentiment", "")
         otype = alert.get("option_type", "")
-        # Bullish call flow in MAGNET UP / SUPPORT = aligned
         if sentiment == "BULLISH" and otype == "call" and signal in ("MAGNET UP", "SUPPORT"):
             score += 2
-        # Bearish put flow in AIR POCKET / RESISTANCE = aligned
         elif sentiment == "BEARISH" and otype == "put" and signal in ("AIR POCKET", "RESISTANCE"):
             score += 2
-        # Neutral pinning flow
         elif signal == "PINNING":
             score += 1
 
