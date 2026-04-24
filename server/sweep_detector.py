@@ -735,7 +735,11 @@ async def run_sweep_detector(stop_event: asyncio.Event) -> None:
     async def _subscribe_trickle() -> None:
         # Phase 1: immediate subscription for what's already cached
         await _subscribe_new_roots("phase1")
-        # Phase 2: periodic catch-up for Tier 2 roots as they populate
+        # Phase 2: periodic catch-up for Tier 2 roots as they populate.
+        # Also periodically clean up expired subscriptions to free budget
+        # (critical at date-rollover — yesterday's 0DTE specs occupy slots
+        # that block new tickers from being added).
+        last_cleanup_date = None
         while not stop_event.is_set():
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=60.0)
@@ -743,6 +747,20 @@ async def run_sweep_detector(stop_event: asyncio.Event) -> None:
             except asyncio.TimeoutError:
                 pass
             try:
+                # Run expired-subscription cleanup once per calendar day
+                import datetime as _dt
+                today = _dt.date.today().isoformat()
+                if today != last_cleanup_date:
+                    try:
+                        removed = await stream.cleanup_expired_subscriptions()
+                        last_cleanup_date = today
+                        # Also forget those roots from subscribed_roots so
+                        # phase2 re-adds them with fresh expirations
+                        if removed > 0:
+                            subscribed_roots.clear()
+                    except Exception as e:
+                        print(f"[SWEEP] expired-cleanup error: {e}")
+
                 sent, added = await _subscribe_new_roots("phase2")
                 if added == 0 and len(subscribed_roots) >= 50:
                     # Stable state — increase interval to reduce overhead

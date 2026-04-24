@@ -572,16 +572,69 @@ class ThetaStream:
         return (time.time() - self._last_heartbeat) < 10.0
 
     async def subscribe(self, spec: SubscribeSpec) -> bool:
-        """Subscribe to a contract. Idempotent. Returns True if subscribe sent."""
+        """Subscribe to a contract. Idempotent. Returns True if subscribe sent.
+
+        Filters:
+        - Silently rejects expired expirations (spec.expiration < today). No
+          point wasting budget on a 4/23 subscribe attempt when today is 4/24.
+        - Rate-limits 'budget hit' log to once per minute to prevent spam
+          when Phase 2 re-subscribe tries thousands of contracts into a
+          full budget.
+        """
         if spec.key in self._subscriptions:
             return False
+
+        # Expired-contract filter (silent reject — not worth logging)
+        try:
+            import datetime as _dt
+            today_int = int(_dt.date.today().strftime("%Y%m%d"))
+            exp_val = spec.expiration if isinstance(spec.expiration, int) else int(str(spec.expiration).replace("-", ""))
+            if exp_val < today_int:
+                return False
+        except Exception:
+            pass  # fail-open on parse errors — let existing logic handle
+
         if len(self._subscriptions) >= 14_500:  # stay under 15K hard cap
-            print(f"[THETA_STREAM] subscription budget hit, cannot add {spec.key}")
+            # Rate-limit log: once per 60s regardless of how many specs fail.
+            now = time.time()
+            last = getattr(self, "_last_budget_log_ts", 0.0)
+            if now - last >= 60.0:
+                self._last_budget_log_ts = now
+                print(
+                    f"[THETA_STREAM] subscription budget hit "
+                    f"({len(self._subscriptions)}/15000) — rejecting new subs. "
+                    f"Last rejected: {spec.key}"
+                )
             return False
         self._subscriptions[spec.key] = spec
         if self._ws and self._connected.is_set():
             await self._send_subscribe(spec)
         return True
+
+    async def cleanup_expired_subscriptions(self) -> int:
+        """Remove expired expirations from subscription map to free budget.
+        Called periodically at midnight / on date rollover. Returns count
+        of subscriptions removed."""
+        import datetime as _dt
+        today_int = int(_dt.date.today().strftime("%Y%m%d"))
+        expired_keys = []
+        for key, spec in self._subscriptions.items():
+            try:
+                exp_val = spec.expiration if isinstance(spec.expiration, int) else int(str(spec.expiration).replace("-", ""))
+                if exp_val < today_int:
+                    expired_keys.append(key)
+            except Exception:
+                continue
+        for key in expired_keys:
+            spec = self._subscriptions.pop(key, None)
+            if spec and self._ws and self._connected.is_set():
+                try:
+                    await self._send_unsubscribe(spec)
+                except Exception:
+                    pass
+        if expired_keys:
+            print(f"[THETA_STREAM] cleaned up {len(expired_keys)} expired subscriptions, budget now {len(self._subscriptions)}/15000")
+        return len(expired_keys)
 
     async def unsubscribe(self, spec: SubscribeSpec) -> bool:
         if spec.key not in self._subscriptions:
