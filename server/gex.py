@@ -307,35 +307,37 @@ def _classify_strike(
 def _compute_signal(
     spot: float, king: float, king_is_positive: bool, floor: float, ceiling: float,
     neg_king: float | None = None,
+    pos_gex: float = 0, neg_gex: float = 0,
 ) -> tuple[str, bool]:
     """Return (signal, king_pos_bool).
 
     Updated 2026-04-21 for KING bifurcation: neg_king (strongest -GEX strike)
     drives the DANGER signal when it's in proximity to spot, independent of
-    where the (positive) king sits. Previously DANGER only fired when our
-    single king was negative AND near spot, causing us to miss "price testing
-    a -GEX wall while a larger +GEX wall exists elsewhere" scenarios.
+    where the (positive) king sits.
+
+    Updated 2026-04-23 for NEG-DOM OVERRIDE: MAGNET UP / SUPPORT labels
+    assume positive gamma dominates. When total neg gamma exceeds total pos
+    gamma (pos/neg ratio < 1.0), the magnet thesis is broken — dealers
+    are net short gamma and amplify moves. Return MAGNET FADE / SUPPORT
+    FADE instead so downstream scoring + Telegram alerts reflect the
+    bearish structural regime.
+
+    Caught 4 false positives in 2 days before this fix: NOW (-13% AH),
+    IBM (-7% AH), SPY 712C borderline, AAOI (-22% peak-to-current). All
+    showed MAGNET UP labels while pos/neg ratios ranged 0.34 to 0.73.
 
     Signal precedence:
-      1. DANGER: spot is within 0.3% of a meaningful neg_king (acceleration zone)
-      2. PINNING: spot is within 0.3% of the (positive) king (magnet)
-      3. MAGNET UP: positive king above spot (price pulled toward king)
-      4. SUPPORT: positive king below spot (king provides bid)
-      5. AIR POCKET / RESISTANCE: fallback for pure-negative-regime edge case
+      1. DANGER: spot within 0.15% of neg_king
+      2. PINNING: spot within 0.3% of +king
+      3a. MAGNET UP: +king above spot AND pos_gex dominates (ratio ≥ 1.0)
+      3b. MAGNET FADE: +king above spot BUT neg_gex dominates (broken magnet)
+      4a. SUPPORT: +king below spot AND pos_gex dominates
+      4b. SUPPORT FADE: +king below spot BUT neg_gex dominates
+      5. AIR POCKET / RESISTANCE: pure-negative-regime fallback
     """
     if spot <= 0 or king <= 0:
         return "PINNING", king_is_positive
 
-    # DANGER: proximity to negative-gamma acceleration zone.
-    # Checked BEFORE king-based signals because hitting a neg-king is the
-    # more urgent risk signal — the positive king magnet still matters but
-    # doesn't activate until price escapes the danger zone.
-    #
-    # Threshold: 0.15% (was 0.3% pre-2026-04-21-restart). Tightened to match
-    # GammaPulse Pro's apparent threshold. A 0.3% window flagged DANGER on
-    # spots that had already bounced OFF the -GEX wall — useful for warning
-    # but too trigger-happy for the live signal. 0.15% means DANGER only when
-    # price is within immediate-test-range of the acceleration zone.
     if neg_king and neg_king > 0:
         neg_dist_pct = abs(spot - neg_king) / spot
         if neg_dist_pct < 0.0015:
@@ -348,10 +350,17 @@ def _compute_signal(
             return "PINNING", True
         return "DANGER", False
 
+    # Neg-dom check: if total neg gamma exceeds total pos gamma, the
+    # magnet thesis is structurally broken regardless of king geometry.
+    # Threshold: pos/neg < 1.0 (neg dominates AT ALL) — conservative. If
+    # this over-fires in practice we can relax to 0.8 or 0.75.
+    abs_neg = abs(neg_gex) if neg_gex else 0
+    is_neg_dominant = (abs_neg > 0 and pos_gex < abs_neg)
+
     if king_is_positive:
         if king > spot:
-            return "MAGNET UP", True
-        return "SUPPORT", True
+            return ("MAGNET FADE" if is_neg_dominant else "MAGNET UP"), True
+        return ("SUPPORT FADE" if is_neg_dominant else "SUPPORT"), True
 
     # Pure-negative-regime fallback (no positive gamma anywhere in chain)
     if king < spot:
@@ -871,6 +880,7 @@ def build_signal(exp_data: dict[str, Any], spot: float) -> tuple[str, str, bool]
     signal, _ = _compute_signal(
         spot, king, king_pos, floor, ceiling,
         neg_king=neg_king if neg_king else None,
+        pos_gex=pos_gex, neg_gex=neg_gex,
     )
     return signal, regime, king_pos
 
