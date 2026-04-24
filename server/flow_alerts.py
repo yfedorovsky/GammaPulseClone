@@ -209,18 +209,23 @@ def _compute_conviction(alert: dict[str, Any], gex_info: dict[str, Any] | None =
     # ── CHEAP-OPTION WHALE OVERRIDE (checked first, bypasses notional) ──
     # Position size over premium size. When someone dumps $500k into 50k
     # contracts of a 10¢ 0/1DTE option, that's a gamma-squeeze lotto bet.
+    # Sets alert['_whale_override'] so the Telegram formatter can flag
+    # these visually distinct from standard HIGH alerts.
     try:
         today_str = datetime.date.today().isoformat()
         tomorrow_str = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
         is_0_1_dte = expiration in (today_str, tomorrow_str)
-        # Tier A: cheap ≤$0.50, 20k+ vol, 10x+ v/oi, 0/1 DTE → HIGH
+        # Tier A: cheap <= $0.50, 20k+ vol, 10x+ v/oi, 0/1 DTE -> HIGH (WHALE)
         if is_0_1_dte and 0 < last_price <= 0.50 and vol >= 20_000 and vol_oi >= 10:
+            alert["_whale_override"] = "A"
             return "HIGH"
-        # Tier B: ultra-cheap ≤$0.25 lottos with extreme v/oi → HIGH
+        # Tier B: ultra-cheap <= $0.25 lottos with extreme v/oi -> HIGH (WHALE)
         if is_0_1_dte and 0 < last_price <= 0.25 and vol >= 10_000 and vol_oi >= 15:
+            alert["_whale_override"] = "B"
             return "HIGH"
-        # Tier C: absurd volume regardless of price (50k+ contracts single strike) → HIGH
+        # Tier C: absurd volume regardless of price (50k+ contracts single strike) -> HIGH (WHALE)
         if vol >= 50_000 and vol_oi >= 5:
+            alert["_whale_override"] = "C"
             return "HIGH"
     except Exception:
         pass
@@ -351,13 +356,24 @@ async def _send_telegram(alert: dict[str, Any]) -> None:
         else "🟡"
     )
     otype = alert["option_type"].upper()
+
+    # Whale-override alerts get a distinct header so you can spot them
+    # at a glance vs. standard HIGH (notional-driven) flow. Tier letter
+    # (A/B/C) corresponds to which override rule fired — see
+    # _compute_conviction for the rule definitions.
+    whale_tier = alert.get("_whale_override")
+    if whale_tier:
+        header = f"🐋 {emoji} WHALE FLOW [{whale_tier}]: {alert['ticker']}\n"
+    else:
+        header = f"{emoji} FLOW ALERT: {alert['ticker']}\n"
+
     text = (
-        f"{emoji} FLOW ALERT: {alert['ticker']}\n"
-        f"${alert['strike']} {otype} {alert['expiration']}\n"
-        f"Vol: {alert['volume']:,} | OI: {alert['oi']:,} | {alert['vol_oi']}x\n"
-        f"Side: {alert['side']} | {alert['sentiment']}\n"
-        f"Last: ${alert['last']:.2f} | Notional: ${alert['notional']:,.0f}\n"
-        f"IV: {alert['iv']}% | Delta: {alert['delta']} | Spot: ${alert['spot']:.2f}"
+        header
+        + f"${alert['strike']} {otype} {alert['expiration']}\n"
+        + f"Vol: {alert['volume']:,} | OI: {alert['oi']:,} | {alert['vol_oi']}x\n"
+        + f"Side: {alert['side']} | {alert['sentiment']}\n"
+        + f"Last: ${alert['last']:.2f} | Notional: ${alert['notional']:,.0f}\n"
+        + f"IV: {alert['iv']}% | Delta: {alert['delta']} | Spot: ${alert['spot']:.2f}"
     )
     try:
         async with httpx.AsyncClient() as client:
