@@ -410,6 +410,162 @@ def load_snapshots_from_db(
         conn.close()
 
 
+# ── Live detection loop (added 2026-04-24) ───────────────────────
+#
+# Fires king-migration alerts in real-time by polling the worker's
+# in-memory cache for king changes on each scan cycle. Missed ARM
+# 250C migration 2026-04-24 at 9:35 AM because detector was
+# backfill-only — this wires it live.
+#
+# Design:
+#  - Per-ticker 'last seen king' tracked in memory
+#  - When cache-snapshot king differs from last seen, build a
+#    (prev, cur) Snapshot pair and run _qualify_gates
+#  - If qualified, persist + Telegram push (subject to alert gates)
+#  - 60-min cooldown per ticker to prevent migration-flicker spam
+
+import asyncio
+
+
+# Module-scope state — resets on process restart (acceptable; migrations
+# are rare and a missed one isn't catastrophic). Persistence via sqlite
+# means any fired events survive.
+_live_last_king: dict[str, tuple[float, int]] = {}  # ticker -> (king, ts)
+_live_last_fired: dict[str, int] = {}  # ticker -> ts of last Telegram fire
+LIVE_FIRE_COOLDOWN_SEC = 60 * 60  # 1 hour per ticker
+
+
+async def _send_king_migration_telegram(ev: "MigrationEvent") -> None:
+    """Push a king-migration Telegram alert."""
+    from .alert_gates import should_send_alert
+    ok, reason = should_send_alert()
+    if not ok:
+        print(f"[KING_MIG] gated ({reason}) — {ev.ticker} ${ev.before.king:.0f}->${ev.after.king:.0f}")
+        return
+    try:
+        from .telegram import send
+    except ImportError:
+        return
+    emoji = "👑"
+    text = (
+        f"{emoji} KING MIGRATION: {ev.ticker}\n"
+        f"${ev.before.king:.0f} → ${ev.after.king:.0f}  (+${ev.delta_pts:.0f})\n"
+        f"Spot: ${ev.after.spot:.2f}  |  Floor leap: ${ev.before.floor or 0:.0f} → ${ev.after.floor or 0:.0f}\n"
+        f"Pos/Neg: {ev.before.ratio:.2f} → {ev.after.ratio:.2f}\n"
+        f"Net Δ: {(ev.before.net_delta or 0)/1e6:.1f}M → {(ev.after.net_delta or 0)/1e6:.1f}M\n"
+        f"\n"
+        f"Play: buy ${ev.after.king:.0f} call, 5-10 DTE, stop on spot < ${ev.after.floor or 0:.0f}\n"
+        f"Pattern docs: new king = new magnet target"
+    )
+    try:
+        await send(text, ticker=ev.ticker)
+    except Exception as e:
+        print(f"[KING_MIG] telegram failed: {e}")
+
+
+async def _check_ticker_live(ticker: str, state: dict) -> None:
+    """Build Snapshot from cache state, compare to last-seen king, fire
+    if migration qualifies. Called per-ticker from the live loop."""
+    spot = state.get("actual_spot") or state.get("_spot") or 0
+    king = state.get("king") or 0
+    floor = state.get("floor") or 0
+    ceiling = state.get("ceiling") or 0
+    pos_gex = state.get("pos_gex") or 0
+    neg_gex = state.get("neg_gex") or 0
+    net_delta = state.get("net_delta") or 0
+    signal = state.get("signal") or ""
+
+    if not spot or not king:
+        return
+
+    now_ts = int(time.time())
+    last_king, last_ts = _live_last_king.get(ticker, (None, 0))
+
+    # Update last-seen (but don't fire yet)
+    if last_king is None:
+        _live_last_king[ticker] = (king, now_ts)
+        return
+
+    # No change? Nothing to do.
+    if king == last_king:
+        _live_last_king[ticker] = (king, now_ts)
+        return
+
+    # King changed. Only care about upward migrations meeting the jump.
+    delta_pts = king - last_king
+    if delta_pts < MIN_MIGRATION_PTS:
+        _live_last_king[ticker] = (king, now_ts)
+        return
+
+    # Build Snapshot pair and qualify
+    before = Snapshot(
+        ticker=ticker, ts=last_ts, spot=spot, king=last_king,
+        floor=floor, ceiling=ceiling, pos_gex=pos_gex, neg_gex=neg_gex,
+        net_delta=net_delta, signal=signal,
+    )
+    after = Snapshot(
+        ticker=ticker, ts=now_ts, spot=spot, king=king,
+        floor=floor, ceiling=ceiling, pos_gex=pos_gex, neg_gex=neg_gex,
+        net_delta=net_delta, signal=signal,
+    )
+    ev = _qualify_gates(before, after)
+
+    # Persist regardless (qualified or not — useful for analysis)
+    try:
+        persist_event(ev)
+    except Exception as e:
+        print(f"[KING_MIG] persist error {ticker}: {e}")
+
+    # Fire only on qualified + cooldown elapsed
+    if ev.qualified:
+        last_fire = _live_last_fired.get(ticker, 0)
+        if now_ts - last_fire >= LIVE_FIRE_COOLDOWN_SEC:
+            _live_last_fired[ticker] = now_ts
+            print(
+                f"[KING_MIG] QUALIFIED {ticker}  "
+                f"${last_king:.0f}->${king:.0f} spot=${spot:.2f} "
+                f"ratio={before.ratio:.2f}->{after.ratio:.2f}"
+            )
+            asyncio.create_task(_send_king_migration_telegram(ev))
+
+    _live_last_king[ticker] = (king, now_ts)
+
+
+async def run_king_migration_live_loop(stop_event) -> None:
+    """Background task — poll cache every 30s for king changes.
+
+    Integration: started from main.py lifespan alongside worker.
+    """
+    from .cache import cache
+
+    print("[KING_MIG] live loop starting — interval=30s")
+    # Warm up: wait 60s for first worker cycle to populate cache
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=60.0)
+        return
+    except asyncio.TimeoutError:
+        pass
+
+    while not stop_event.is_set():
+        try:
+            snapshot = await cache.snapshot()
+            for ticker, state in snapshot.items():
+                try:
+                    await _check_ticker_live(ticker, state)
+                except Exception as e:
+                    print(f"[KING_MIG] {ticker} check error: {e}")
+        except Exception as e:
+            print(f"[KING_MIG] loop error: {e}")
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=30.0)
+            break
+        except asyncio.TimeoutError:
+            pass
+
+    print("[KING_MIG] live loop stopped")
+
+
 # ── Backfill CLI ──────────────────────────────────────────────────
 
 

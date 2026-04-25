@@ -56,6 +56,7 @@ _net_flow_task: asyncio.Task | None = None
 _net_flow_alert_task: asyncio.Task | None = None
 _net_flow_fast_task: asyncio.Task | None = None
 _zero_dte_task: asyncio.Task | None = None
+_king_mig_task: asyncio.Task | None = None
 
 
 @asynccontextmanager
@@ -128,6 +129,12 @@ async def lifespan(app: FastAPI):
     # selection + exit planning + Telegram push.
     from .zero_dte_loop import run_zero_dte_loop
     _zero_dte_task = asyncio.create_task(run_zero_dte_loop(_stop))
+    # King migration live detector — fires Telegram when +King jumps
+    # (structural runner signal, added 2026-04-24 after missing Mir's
+    # ARM 250C migration at 9:35 AM when detector was backfill-only).
+    global _king_mig_task
+    from .king_migration import run_king_migration_live_loop
+    _king_mig_task = asyncio.create_task(run_king_migration_live_loop(_stop))
     # Discord listener: opt-in via DISCORD_ENABLED=true in .env
     _discord_task = None
     s = get_settings()
@@ -146,7 +153,7 @@ async def lifespan(app: FastAPI):
         _stop.set()
         await streamer.stop()
         await db.stop()  # Drain write queue before shutdown
-        all_tasks = [_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task, _priority_task, _net_flow_task, _net_flow_alert_task, _net_flow_fast_task, _zero_dte_task]
+        all_tasks = [_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task, _priority_task, _net_flow_task, _net_flow_alert_task, _net_flow_fast_task, _zero_dte_task, _king_mig_task]
         for task in all_tasks:
             if task:
                 try:
