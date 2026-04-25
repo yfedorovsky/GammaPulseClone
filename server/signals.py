@@ -263,6 +263,91 @@ def _score_to_grade(score: float, max_score: float = 6) -> str:
     return "C"
 
 
+# ── Regime-context filter (added 2026-04-24) ─────────────────────────
+#
+# Backtest across 30 days / 1,384 deduped B+ signals exposed that win
+# rate is highly dependent on (signal_type, SPY 5d regime, IV band).
+# Some combos run 50-61% win (above break-even), others run 9-30% (net
+# losers). Pushing all B+ to Telegram mixed these and averaged out to
+# ~21% current week / ~42% 30-day — both net-negative EV at standard
+# 25%/50% discipline.
+#
+# This filter DOWNGRADES known losing combos to 'C' (still written to
+# DB for analysis but not pushed to Telegram), PRESERVES neutral combos
+# at their original grade, and downgrades A-grade SUPPORT BOUNCE to
+# B+ in trending-up regimes where its edge disappears.
+#
+# Regime classifier (same as backtest):
+#   SPY 5d return >= +1.5% → TREND_UP
+#   SPY 5d return <= -1.5% → TREND_DOWN
+#   otherwise              → CHOP
+#
+# IV bands:  <= 30 → low,  30-80 → mid,  > 80 → high
+
+
+# Combos with resolved win rate <= 35% across 30-day backtest.
+# Downgraded to 'C' so they don't hit Telegram.
+_LOSING_BP_COMBOS: set[tuple[str, str, str]] = {
+    ("MAGNET BREAKOUT",     "CHOP",      "low"),   #  9.1% (n=25)
+    ("MAGNET BREAKOUT",     "CHOP",      "high"),  # 17.6% (n=40)
+    ("PINNING PREMIUM SELL","CHOP",      "low"),   # 23.5% (n=27)
+    ("POST BOTTOM LAUNCH",  "CHOP",      "low"),   # 28.8% (n=82)
+    ("SUPPORT BOUNCE",      "CHOP",      "mid"),   # 27.8% (n=52) — but A-grade stays (see below)
+    ("MAGNET BREAKOUT",     "TREND_UP",  "high"),  # 29.7% (n=37)
+    ("SUPPORT BOUNCE",      "TREND_UP",  "high"),  # 30.0% (n=20)
+}
+
+
+def _regime_context_filter(
+    signal_type: str,
+    grade: str,
+    spy_5d_pct: float | None,
+    iv: float,
+) -> str:
+    """Return potentially adjusted grade. Never upgrades, only downgrades.
+
+    Two specific rules:
+      1. B+ in a 'losing combo' (see _LOSING_BP_COMBOS) -> 'C' (no Telegram).
+      2. A-grade SUPPORT BOUNCE only has edge in CHOP regime (85-100% win).
+         In TREND_UP it drops to 42-44%. Downgrade to B+ so it keeps its
+         ticket but doesn't get A-grade Kelly sizing.
+    """
+    if spy_5d_pct is None:
+        return grade
+
+    # Regime classification
+    if spy_5d_pct >= 1.5:
+        regime = "TREND_UP"
+    elif spy_5d_pct <= -1.5:
+        regime = "TREND_DOWN"
+    else:
+        regime = "CHOP"
+
+    # IV band
+    iv_val = iv or 0
+    if iv_val <= 30:
+        iv_band = "low"
+    elif iv_val <= 80:
+        iv_band = "mid"
+    else:
+        iv_band = "high"
+
+    # Rule 2: SUPPORT BOUNCE A-grade only keeps A in CHOP regime.
+    # In TREND_UP the pattern loses its edge (44% win vs 85% in CHOP).
+    # Downgrade to B+ — the signal is still valid for B+ tier.
+    if signal_type == "SUPPORT BOUNCE" and grade in ("A", "A+"):
+        if regime == "TREND_UP":
+            return "B+"
+
+    # Rule 1: B+ in a known-losing combo -> C (no Telegram).
+    if grade == "B+":
+        combo = (signal_type, regime, iv_band)
+        if combo in _LOSING_BP_COMBOS:
+            return "C"
+
+    return grade
+
+
 def _compute_signal_score(
     state: dict[str, Any],
     direction: str,  # "BULL" or "BEAR"
@@ -1413,6 +1498,19 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
         score, reasons = _compute_signal_score(state, direction, confluence, iv_universe)
         grade = _score_to_grade(score)
         signal_type = _determine_signal_type(state, direction)
+
+        # ── Regime-context filter (Apr 24 2026) ──────────────────────────
+        # Backtested across 30 days of resolved B+ and A signals.
+        # Downgrades known losing (signal_type, regime, iv_band) combos so
+        # they stop hitting Telegram while still persisting to DB/UI.
+        # See _regime_context_filter docstring for combo table.
+        iv_for_filter = state.get("iv") or (state.get("_rts") or {}).get("iv") or 0
+        spy_5d = (confluence or {}).get("SPY", {}).get("_rts", {}).get("returns", {}).get("5d")
+        orig_grade = grade
+        grade = _regime_context_filter(signal_type, grade, spy_5d, iv_for_filter)
+        if grade != orig_grade and _is_debug:
+            print(f"[SOE_DBG] {ticker} regime filter: {orig_grade} -> {grade} "
+                  f"(sig={signal_type}, spy_5d={spy_5d}, iv={iv_for_filter})")
 
         if _is_debug:
             print(f"[SOE_DBG] {ticker} dir={direction} score={score:.1f} grade={grade} type={signal_type}")
