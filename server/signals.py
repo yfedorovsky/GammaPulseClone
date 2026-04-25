@@ -747,12 +747,104 @@ def _compute_signal_score(
     return score, reasons
 
 
+# ── Dynamic stop helpers (Option 3 — added 2026-04-24) ──────────────
+#
+# Diagnostic: 54% of B+ losses take >2 hrs to materialize (slow drift).
+# 66% of losers fade within 1 hr post-fire. Static -3% trail isn't the
+# right shape for these — we want stops that adapt to:
+#   - Volatility (ATR or IV) — high-vol names need more room
+#   - Time decay (DTE) — closer expiry = tighter stop (theta accel)
+#
+# Output: stop distance as % of spot, then converted to absolute spot
+# level. Replaces the old static -3%/+3% trail in _select_contract's
+# RR cascade. Structural stops (Floor / Ceiling) stay as alternatives.
+
+
+def _compute_atr_pct_from_snapshots(ticker: str | None, days: int = 14) -> float | None:
+    """Compute average true range as % of spot from snapshot history.
+    Returns None if insufficient data (fall back to IV-based estimate)."""
+    if not ticker:
+        return None
+    import sqlite3
+    try:
+        s = get_settings()
+        conn = sqlite3.connect(s.snapshot_db)
+        cur = conn.execute(
+            "SELECT date(ts, 'unixepoch') as d, MIN(spot) as lo, MAX(spot) as hi "
+            "FROM snapshots WHERE ticker = ? AND ts >= ? "
+            "GROUP BY date(ts, 'unixepoch') ORDER BY d DESC LIMIT ?",
+            (ticker, int(time.time()) - days * 2 * 86400, days)
+        )
+        rows = cur.fetchall()
+        conn.close()
+        if len(rows) < 5:
+            return None
+        ranges_pct = []
+        for r in rows:
+            lo, hi = r[1], r[2]
+            if lo and hi and lo > 0:
+                mid = (lo + hi) / 2
+                ranges_pct.append((hi - lo) / mid * 100)
+        if not ranges_pct:
+            return None
+        return sum(ranges_pct) / len(ranges_pct)
+    except Exception:
+        return None
+
+
+def _dynamic_stop_distance_pct(
+    ticker: str | None, dte: int, iv: float | None,
+) -> tuple[float, str]:
+    """Return (stop_distance_pct, source_label) for the given contract.
+
+    Combines ATR (preferred, computed from snapshot daily ranges) or IV
+    (fallback) with a DTE-based scaling factor. Tighter stops on shorter
+    expiries (theta acceleration); looser stops on high-vol names (need
+    room to breathe past noise).
+    """
+    atr_pct = _compute_atr_pct_from_snapshots(ticker)
+    if atr_pct is not None:
+        base_pct = atr_pct
+        source = "ATR"
+    else:
+        iv_val = iv or 0
+        if iv_val >= 80:
+            base_pct = 4.0
+        elif iv_val >= 50:
+            base_pct = 3.0
+        elif iv_val >= 30:
+            base_pct = 2.0
+        else:
+            base_pct = 1.5
+        source = f"IV{int(iv_val)}"
+
+    # DTE scaling — tighter as expiry approaches
+    dte_val = dte if dte is not None else 7
+    if dte_val <= 0:
+        scale = 0.5
+    elif dte_val <= 2:
+        scale = 0.7
+    elif dte_val <= 7:
+        scale = 1.0
+    elif dte_val <= 14:
+        scale = 1.2
+    else:
+        scale = 1.5
+
+    final_pct = base_pct * scale
+    # Floor at 1.5%, ceiling at 8% — sanity bounds
+    final_pct = max(1.5, min(8.0, final_pct))
+    label = f"{source}/{dte_val}D"
+    return final_pct, label
+
+
 def _select_contract(
     state: dict[str, Any],
     direction: str,
     tradier_chains: dict | None = None,
     relaxed: bool = False,
     mir_mode: bool = False,
+    ticker: str | None = None,
 ) -> dict[str, Any] | None:
     """Select the optimal contract for the signal.
 
@@ -943,6 +1035,15 @@ def _select_contract(
     # and picks the combination with the best RR.
     ceiling = state.get("ceiling") or 0
     floor_v = state.get("floor") or 0
+
+    # Dynamic stop distance — Option 3 (replaces static -3%/+3% trail).
+    # Uses ATR (or IV fallback) scaled by DTE. Bounds [1.5%, 8%] of spot.
+    iv_for_stop = state.get("iv") or (state.get("_rts") or {}).get("iv")
+    dyn_stop_pct, dyn_stop_source = _dynamic_stop_distance_pct(
+        ticker, target_dte, iv_for_stop
+    )
+    dyn_stop_label = f"-{dyn_stop_pct:.1f}% {dyn_stop_source}"
+
     if direction == "BULL":
         tgt_options: list[tuple[float, str]] = []
         if king and king > spot:
@@ -952,12 +1053,12 @@ def _select_contract(
         if not tgt_options:
             tgt_options.append((spot * 1.02, "+2%"))
         stp_options: list[tuple[float, str]] = []
-        # Use floor as stop only if within 5% of spot (tighter stops beat
-        # distant floors for RR math). If floor is further than 5%, use
-        # spot*0.97 as the structural trailing stop proxy.
+        # Floor stays as a structural option when within 5% of spot
         if floor_v and floor_v < spot and (spot - floor_v) / spot <= 0.05:
             stp_options.append((floor_v, "Floor break"))
-        stp_options.append((spot * 0.97, "-3% trail"))
+        # Dynamic ATR-based stop replaces static -3% trail
+        dyn_stop = spot * (1 - dyn_stop_pct / 100)
+        stp_options.append((dyn_stop, dyn_stop_label))
         # Pick best RR pair
         best_rr, best = -1.0, None
         for tgt, tlbl in tgt_options:
@@ -982,7 +1083,10 @@ def _select_contract(
         stp_options: list[tuple[float, str]] = []
         if ceiling and ceiling > spot and (ceiling - spot) / spot <= 0.05:
             stp_options.append((ceiling, "Ceiling break"))
-        stp_options.append((spot * 1.03, "+3% trail"))
+        # Dynamic ATR-based stop (above spot for shorts)
+        dyn_stop = spot * (1 + dyn_stop_pct / 100)
+        # Stop label flipped to + sign for bear-direction clarity
+        stp_options.append((dyn_stop, dyn_stop_label.replace("-", "+", 1)))
         best_rr, best = -1.0, None
         for tgt, tlbl in tgt_options:
             for stp, slbl in stp_options:
@@ -1515,15 +1619,16 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
         if _is_debug:
             print(f"[SOE_DBG] {ticker} dir={direction} score={score:.1f} grade={grade} type={signal_type}")
 
-        # Mir-originated signals use narrower contract selection
+        # Mir-originated signals use narrower contract selection.
+        # Pass ticker so dynamic ATR-based stops can query snapshot history.
         if is_mir_originated:
             signal_type = "MIR_MOMENTUM"
-            contract = _select_contract(state, direction, mir_mode=True)
+            contract = _select_contract(state, direction, mir_mode=True, ticker=ticker)
             # Fallback to standard selection if mir_mode is too restrictive
             if not contract:
-                contract = _select_contract(state, direction)
+                contract = _select_contract(state, direction, ticker=ticker)
         else:
-            contract = _select_contract(state, direction)
+            contract = _select_contract(state, direction, ticker=ticker)
 
         spot = state.get("actual_spot") or state.get("_spot") or 0
 
