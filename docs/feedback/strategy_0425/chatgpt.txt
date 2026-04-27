@@ -1,0 +1,312 @@
+This is one of the tighter retail workflows I’ve seen. You’re already doing what most people never get to: separating signal selection from capital allocation and discipline.
+
+I’m going to skip the fluff and go straight to where this breaks.
+
+🔴 The weakest link (by far)
+Layer 3 → “Backtested Per-Ticker Edge” (10%) + its use in Kelly
+
+This is your structural flaw.
+
+You already called it out, but it’s worse than you think:
+
+Why it’s broken
+You’re conditioning on winners that survived your screen
+Then using their own past success to size them larger
+Then feeding that into Kelly, which explodes sizing errors
+
+This is classic:
+
+Selection bias + small sample + non-stationarity → Kelly overbet → drawdown cluster
+
+Your own example proves it:
+
+AAOI: +37%
+AESI: -15%
+
+That dispersion is regime + narrative + liquidity driven, not stable edge.
+
+🔧 Fix (actionable, no new data)
+1. Shrink per-ticker edge HARD (Bayesian)
+
+Instead of raw hit rate:
+
+p
+adj
+	​
+
+=
+n+k
+n
+	​
+
+⋅p
+ticker
+	​
+
++
+n+k
+k
+	​
+
+⋅p
+pooled
+	​
+
+Use k = 20–40
+If n = 10 → you’re mostly using pooled stats
+If n = 50 → ticker matters more
+
+👉 This alone will stop Kelly from overbetting fake edges
+
+2. Cap edge dispersion going into Kelly
+
+Even after shrinkage:
+
+Cap win rate input to [45%, 65%]
+Cap payoff ratio b ∈ [0.8, 2.5]
+
+👉 You are trading options — tails + slippage will kill theoretical edges
+
+3. Decouple scoring from sizing
+
+Right now:
+
+Score → grade → Kelly → size
+
+Better:
+
+Score determines inclusion + priority
+Kelly uses pooled setup stats, not ticker stats
+
+👉 Keep per-ticker edge as tie-breaker, not sizing driver
+
+🟠 Layer 3 weights (what’s wrong)
+
+Your weights aren’t terrible — they’re just not orthogonal.
+
+You’re triple-counting the same thing:
+Trend Quality (20)
+Relative Strength (15)
+Setup Pattern (10)
+
+👉 These are all momentum proxies
+
+🔧 Fix: collapse + reweight
+Suggested structure (cleaner + more defensible):
+Momentum composite (Trend + RS + Pattern): 40–45
+Volume / accumulation: 10
+Volatility / IV posture: 10
+Earnings timing: 10
+Sector / theme: 10
+Macro / regime: 10–15
+
+👉 Your macro at 5% is way too low — more on that below
+
+🔴 Biggest blind spot
+You have no breadth
+
+This is not optional.
+
+Your system assumes:
+
+“If individual setups look good, the market supports them”
+
+That fails hard in:
+
+Late-stage rallies
+Bear market rallies
+Rotation regimes
+🔧 Add ONE simple breadth metric (no complexity creep)
+
+Pick one:
+
+% of universe above SMA50
+% above SMA20
+Advance/Decline ratio (even crude)
+
+Then:
+
+>70% → risk-on
+40–70% → neutral
+<40% → defensive
+Where it plugs in
+Boost/reduce all scores by ±10 points
+OR adjust max position size
+
+👉 This will save you in 2022-type environments
+
+🟠 Macro / regime (you’re underweighting the only thing that matters)
+
+You currently have:
+
+SPY > 200d
+VIX < 25
+GEX positive
+
+At 5% weight
+
+That’s backwards.
+
+Reality:
+
+Momentum systems don’t degrade linearly — they flip regimes
+
+In risk-on → everything works
+In risk-off → everything mean-reverts
+🔧 Fix
+
+Make macro a gate, not a score:
+
+If SPY < 200d AND breadth < 50%:
+Cut position sizes by 50–70%
+Disable Zone C entries entirely
+
+👉 Don’t “score” regime — respect it
+
+🟡 B+ sizing (⅔ size)
+
+Your assumption:
+
+B+ ≈ 60% expectancy → ⅔ size
+
+This is too aggressive.
+
+Why:
+
+Score ≠ calibrated probability
+Your scoring noise is non-trivial
+Correlation between trades is high
+🔧 Fix
+
+Make sizing non-linear:
+
+A+ / A → full
+B+ → ½
+B → ¼
+
+👉 This reduces variance without killing expectancy
+
+🟡 Kelly + caps (are you double-clipping?)
+
+Short answer: no — you’re barely safe as-is
+
+Long answer:
+
+Kelly assumes independent bets + stable edge
+You have neither
+
+So:
+
+Half-Kelly ✅
+3% cap ✅
+0.25% floor ⚠️ (this one is questionable)
+🔧 Fix
+
+Replace floor with:
+
+“Only take trades where f > 0.5%”
+
+👉 Avoid forcing low-edge trades into the book
+
+🔴 Stop logic (this matters for options)
+
+Your current:
+
+-9.1% equity
+-50% premium
+
+This is inconsistent.
+
+Problem:
+Options PnL is non-linear
+ATR is underlying-based
+You’re mixing regimes
+🔧 Fix (clean)
+
+Drive everything off underlying:
+
+Stop = 2–2.5× ATR
+Then map to option PnL
+
+👉 This aligns with how momentum actually breaks
+
+🟡 Time stop (21 days)
+
+Your backtest is correct but your interpretation is off.
+
+21d = alpha half-life
+Not max holding period
+🔧 Fix
+If not at +1R by day 15 → exit ✅
+But:
+If already > +1R → let runner go beyond 21d
+
+👉 You’re currently cutting your best trades
+
+🟡 Correlation cap (8%)
+
+Blunt tool.
+
+Better (still simple)
+
+Instead of hard cap:
+
+Assign each position a sector bucket
+Max 2–3 names per sector
+Reduce size if >2
+
+👉 Correlation is clustered, not linear
+
+🟠 What to CUT (you asked for 3)
+
+To keep 90% performance:
+
+❌ Cut or merge:
+Setup Pattern Match (10)
+Already embedded in momentum + trend
+ATR Relative Strength (part of Volatility)
+Redundant with your ATR-based exits
+Sector / Theme Confirmation (10)
+Replace with breadth (more powerful)
+🟢 What actually moves expectancy (ranked)
+
+If you only improve 3 things:
+
+Fix Kelly inputs (debias + cap) → biggest impact
+Add breadth filter → avoids regime blowups
+Let winners run past 21d → increases payoff ratio
+🧠 Where this system breaks (2022 scenario)
+
+Failure sequence:
+
+Screen still finds “leaders” (false positives)
+Scores remain high (momentum still looks good locally)
+Entries trigger
+Mean reversion kills trades quickly
+Kelly sizing amplifies losses
+Correlated names all fail together
+Early warning trigger (add this)
+
+If:
+
+Breadth < 40%
+AND 10-day rolling win rate < 45%
+
+→ switch to:
+
+Half size globally
+No Zone B/C entries
+Final take
+
+Your system is already strong at:
+
+Entry discipline
+Exit structure
+Process consistency
+
+But:
+
+👉 You are overfitting edge at the ticker level
+👉 And underweighting regime + breadth
+
+Fix those two, and your PnL distribution will tighten immediately.

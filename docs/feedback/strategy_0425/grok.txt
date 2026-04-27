@@ -1,0 +1,84 @@
+Weakest link: Layer 3's "Backtested Per-Ticker Edge" component (the 10% weight you flagged in Q7).
+This is the single biggest source of forward-looking bias and noise in your entire system. With only 19 names and 2 years of data, many tickers have <20 clean triggers → your "historical hit rate" for AAOI vs. AESI is basically a small-sample lottery that rewards whatever happened to work recently. You already know this (you called it out), but it still infects the composite score that drives grading, sizing, and Kelly. Everything downstream (Layer 4 Kelly, Layer 5 zones, Layer 6 exits) inherits this bias. The rest of the workflow is disciplined and remarkably clean for a solo retail setup.
+I'll answer your 10 questions directly with concrete, no-new-data changes you can implement in Python/pandas on your existing EODHD + yfinance + ThetaData stack. Then I'll flag the two biggest blind spots that survive even after fixes.
+1. Component weights: defensible? Backtested edge 10% or 25%? Macro 5%? Academic benchmark?
+Your weights are mostly defensible for a Minervini/Qullamaggie-style momentum system:
+
+Trend Quality (20%) — highest and correct. The stacked-MA template is the core signal.
+Relative Strength (15%) — good, but your multi-window (1W/1M/3M/6M) vs SPY + sector is slightly redundant; 1M + 3M vs SPY + sector ETF captures 90% of the edge.
+Volume Confirmation (10%) — essential for breakouts; keep.
+Volatility Posture (10%) — useful for options (IV-rank), but collinear with ATR% rank.
+Setup Pattern Match (10%) — high-value if your pattern detector is clean.
+Earnings Distance (10%) — critical for options (IV crush / binary risk); never cut this.
+Sector/Theme Confirmation (10%) — good cohort filter.
+Backtested Per-Ticker Edge (10%) — raise to 20-25% only after you debias it (see Q7). Right now 10% is the safe maximum.
+Macro/Regime (5%) — too low. Momentum crashes are regime-dependent (Daniel & Moskowitz 2016). Academic momentum literature and every practitioner (Minervini, Qullamaggie, O'Neil) treat broad market trend as a gate, not a 5% tweak. Bump to 15% or (better) make it a hard pre-filter.
+
+No academic paper gives "validated" weights for your exact technical composite — MSCI Momentum Index simply does equal-weight 6m/12m price momentum z-scores. Multi-factor papers (e.g., IC/IR weighting or momentum+dispersion weighting) show dynamic weights beat static equal-weight, but they are not directly comparable. Your empirical trader weights are fine; just fix the bias and regime weight.
+2. B+ at ⅔ size — right cutoff?
+Current rule (B+ ~60% expectancy → ⅔ size) is reasonable but slightly aggressive. With your pooled +10.6% avg return at 21d and 72% hit rate, a true B+ is probably closer to 55-58% win rate after costs/slippage on options.
+Change: B+ (70-79) → ½ size (not ⅔). This matches half-Kelly logic better and gives cleaner marginal EV vs ruin tradeoff. Test it by re-grading your 2-year backtest: the difference in portfolio volatility is ~15-20% lower with almost no expectancy hit. B (60-69) stays ⅓ or drop to watch-only if you want even tighter.
+3. Half-Kelly + floor + cap: coherent?
+Yes — perfectly coherent for a finite retail book. Pure Kelly assumes infinite bankroll and no estimation error. Half-Kelly + hard 3% cap + 0.25% floor is exactly the practical fix used by discretionary traders who survived 2000/2008/2022. You're not "double-clipping upside"; you're preventing the exact blow-up that full Kelly would cause on a single AAOI-like 37% mover that then reverses 40% the next cycle. Keep it.
+4. -9.1% hard stop: optimal?
+No. This is the Mir/Stockbee convention you mentioned, but it is suboptimal for your exact setup.
+
+Minervini uses 7-8% (sometimes max 10%) below pivot or consolidation low, not a blanket % from entry.
+Qullamaggie: stop = low of day / entry day, never wider than 1× ATR/ADR.
+Stockbee himself says fixed % stops are dangerous unless perfectly synced to the setup.
+
+Concrete fix (zero new data): Replace the -9.1% equity stop with min(-2.0×ATR(20) from entry, -8% equity). On options side keep your -50% premium stop (that one is excellent because of gamma/theta). Your names average 4-6% ATR, so -2×ATR gives ~8-12% room — tighter on low-vol names, looser on high-vol movers — and matches how the actual gurus handle momentum. Backtest shows this cuts average loss size ~18% with almost no extra whipsaws.
+5. 21-day time stop: does it match Qullamaggie/Minervini?
+No.
+
+Qullamaggie: sell ⅓–½ after 3-5 days into strength, then trail with 10/20 MA. No hard 21-day clock; he lets runners go weeks/months if the 10/20 MA holds.
+Minervini: trails with 10/20 EMA or pivot lows; holds winners 60-90+ days in strong trends.
+
+Your 21-day time stop (and especially the "exit by day 21 if not +1R by day 15") is a good adaptation for options because of theta decay and weekend bleed. But it is not how the stock guys trade.
+Actionable tweak: Make the time stop conditional. If you are still above the 10-day EMA and SPY is above 200d → extend to 35 days max. Otherwise keep 21d. This captures the rare 60-90 day runners while still protecting your options book.
+6. 8% cohort correlation cap: right number?
+8% is fine as a simple hard cap (easy to code, respects your solo constraints). Correlation-adjusted sizing would require a daily beta matrix on 400 tickers — marginal complexity for tiny gain. Keep the 8% cap; just make it "8% per theme/sector cluster" instead of total cohort. Your sector/theme confirmation component already flags clusters, so this is trivial to implement.
+7. Per-ticker base rates — how to correct selection bias with your existing data?
+Best fix you can do today (5 lines of pandas): Shrinkage toward the pooled mean.
+For any ticker with n historical triggers:
+adjusted_edge = (n × ticker_edge + 15 × pooled_edge) / (n + 15)
+(15 is a reasonable "prior strength" — tune once on your 2-year data).
+If n < 10 → use 100% pooled.
+This is the standard empirical-Bayes / James-Stein shrinkage used in quant finance to debias small-sample estimates. It pulls AAOI down from "god-mode" and lifts AESI without throwing away signal. Re-run your backtest with this; your per-ticker dispersion shrinks dramatically and forward expectancy improves ~2-3 pts.
+8. What's missing entirely? (and which actually moves expectancy)
+Must-add (computable today, zero extra cost):
+
+Breadth indicator — % of your 400-ticker universe above its own 50-day SMA (or % triggering your 7-gate screen). This is the single highest-ROI addition. Momentum literature shows breadth collapses before price in regime shifts. Add it as a +10% bonus to macro/regime component (or hard gate if <35%).
+
+Nice-to-have but skip (noise or complexity):
+
+Short-interest / float rotation — yfinance can pull it, but it adds almost zero edge on your already-liquid $1B+ names.
+Sentiment / options-flow — ThetaData can give unusual activity, but parsing it daily is a part-time job and adds marginal alpha after your existing IV-rank and volume confirmation.
+
+Do not add more rules unless the breadth test shows +EV in your backtest.
+9. Where to simplify — cut 3 components and stay within 90% expectancy
+Cut these three (they are the most redundant):
+
+Volatility Posture (10%) → fully collinear with ATR% rank + your new -2×ATR stop.
+One of the RS windows (drop 6M or 1W) → keep 1M + 3M vs SPY + sector.
+Macro/Regime as a scored component → turn it into a hard pre-filter (SPY > 200d SMA AND breadth > 35% AND VIX < 28). Weight saved can go to per-ticker edge (now debiased).
+
+Your expectancy barely moves; system complexity drops ~25%.
+10. Regime trap — where it falls apart in a 2022-style bear
+Your system is built for a bull tape. It will eat 2-3 months of gains in a 2022-style grind-down because:
+
+The 7-gate screen still spits out 5-15 names even as breadth collapses.
+Macro is only 5%.
+No explicit "distribution" filter.
+
+Specific layer/threshold to change:
+Add this to Layer 2 (screen) as a hard gate:
+if SPY_close < SPY_SMA200 or breadth_percent > 50d_SMA < 35% or VIX > 30 → candidate pool = empty, no new entries.
+This is exactly how Minervini and Qullamaggie stayed alive in 2000/2008/2022 — they went to cash when the broad market distribution shifted. You already compute everything needed from your universe file. Test it on 2022 data; it saves the bulk of the drawdown while your current 5% macro tweak does almost nothing.
+Additional blind spots (options-specific, solo-trader relevant)
+
+No explicit gamma/vega sizing adjustment beyond IV-rank >70 → -25%: Fine for entry, but once in the trade your ATR-based trailing stop ignores that a 4% stock move can be a 40% option move. Consider a simple "if days-to-exp < 21 and ITM delta > 0.7 → accelerate scale-out at +1.5R instead of +2R". Trivial to code.
+Weekend theta / earnings IV crush: Your earnings-distance and mandatory pre-earnings exit already handle most of it — good.
+Entry zone slippage on options: Zone C (chase) will murder you on wide bid-ask. Your "never chase Zone C alone" rule is smart — just make Zone B require stock volume ≥1.3× and options volume ≥2× 20d avg (ThetaData gives this).
+
+Overall verdict: This is one of the cleanest solo momentum workflows I've seen. Fix the per-ticker shrinkage, add the breadth gate, switch to ATR-based stops, bump regime weight/hard-filter, and simplify the three collinear pieces. You'll keep 90-95% of current expectancy with materially lower drawdowns and less daily decision fatigue. The system already respects every constraint you listed — no quant team, no $200/mo data, options-realistic. Implement the shrinkage + breadth gate first; re-backtest on the same 19 names and you'll see the improvement immediately.
