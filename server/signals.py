@@ -840,6 +840,87 @@ def _momentum_confirmation_check(ticker: str, direction: str) -> bool:
         return True  # fail-open on any error
 
 
+# ── Convergence bonus (Apr 27 — NVDA case study) ────────────────────
+#
+# When 2+ independent signal systems detect the same setup on a ticker
+# within 30 min, that's institutional convergence — the highest-conviction
+# setup pattern. Validation: today NVDA fired SOE PINNING PREMIUM SELL +
+# NET FLOW (twice) + $7.72M call sweep + Mir's call within 100 min, and
+# the SOE-picked $215C 5/6 closed +86% intraday.
+#
+# Signals counted (must match BULL or BEAR direction):
+#   1. net_flow_alerts row in last 30 min, gap_direction matches
+#   2. flow_alerts row in last 30 min with notional >= $5M, sentiment matches
+#
+# If ≥1 of those fires (alongside the SOE itself = 2+ total), add 0.5 to
+# score. This pushes borderline B+ → A and biases sizing/Telegram toward
+# the convergence trade.
+
+CONVERGENCE_LOOKBACK_SEC = 1800  # 30 min
+CONVERGENCE_FLOW_NOTIONAL_USD = 5_000_000  # $5M floor for flow_alert match
+CONVERGENCE_BONUS_PTS = 0.5
+
+
+def _check_convergence_bonus(ticker: str, direction: str) -> tuple[float, list[str]]:
+    """Return (bonus_pts, reasons) for cross-signal convergence on this
+    ticker+direction in the last 30 min. Fail-open returns (0, [])."""
+    if not ticker or direction not in ("BULL", "BEAR"):
+        return 0.0, []
+    import sqlite3
+    bonus = 0.0
+    reasons: list[str] = []
+    try:
+        s = get_settings()
+        conn = sqlite3.connect(s.snapshot_db)
+        cutoff = int(time.time()) - CONVERGENCE_LOOKBACK_SEC
+
+        # 1. net_flow_alerts match
+        gap_match = "bullish" if direction == "BULL" else "bearish"
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM net_flow_alerts "
+                "WHERE ticker = ? AND ts >= ? AND gap_direction = ?",
+                (ticker, cutoff, gap_match),
+            ).fetchone()
+            if row and row[0] > 0:
+                bonus += CONVERGENCE_BONUS_PTS
+                reasons.append(f"net_flow_alert {gap_match} ({row[0]}x)")
+        except sqlite3.OperationalError:
+            pass  # table not created yet (cold env)
+
+        # 2. flow_alerts match — direction-aligned + size threshold
+        sentiment_match = "BULLISH" if direction == "BULL" else "BEARISH"
+        opt_type = "call" if direction == "BULL" else "put"
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*), MAX(COALESCE(sweep_notional, notional)) "
+                "FROM flow_alerts "
+                "WHERE ticker = ? AND ts >= ? AND sentiment = ? "
+                "AND option_type = ? "
+                "AND COALESCE(sweep_notional, notional, 0) >= ?",
+                (ticker, cutoff, sentiment_match, opt_type,
+                 CONVERGENCE_FLOW_NOTIONAL_USD),
+            ).fetchone()
+            if row and row[0] > 0:
+                bonus += CONVERGENCE_BONUS_PTS
+                reasons.append(
+                    f"flow_alert {sentiment_match} {opt_type}s "
+                    f"(largest ${(row[1] or 0)/1e6:.1f}M, {row[0]}x)"
+                )
+        except sqlite3.OperationalError:
+            pass
+
+        conn.close()
+    except Exception:
+        return 0.0, []  # fail-open
+
+    # Cap bonus at +1.0 even if both fire — don't double-promote a borderline
+    # signal more than one grade tier.
+    if bonus > 1.0:
+        bonus = 1.0
+    return bonus, reasons
+
+
 # ── Dynamic stop helpers (Option 3 — added 2026-04-24) ──────────────
 #
 # Diagnostic: 54% of B+ losses take >2 hrs to materialize (slow drift).
@@ -1693,6 +1774,15 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
                 state["_breadth"] = breadth_data
 
         score, reasons = _compute_signal_score(state, direction, confluence, iv_universe)
+
+        # Convergence bonus — Apr 27. If net_flow_alerts or large flow_alerts
+        # fired in same direction within 30 min, +0.5 each (capped +1.0).
+        # Pushes borderline B+ to A on multi-signal confirmation setups.
+        conv_bonus, conv_reasons = _check_convergence_bonus(ticker, direction)
+        if conv_bonus > 0:
+            score += conv_bonus
+            reasons.append(f"convergence +{conv_bonus} ({'; '.join(conv_reasons)})")
+
         grade = _score_to_grade(score)
         signal_type = _determine_signal_type(state, direction)
 
