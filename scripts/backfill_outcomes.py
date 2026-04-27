@@ -433,7 +433,7 @@ def main() -> int:
             h1w = stats["horizons"]["1w"]
             print(
                 f"[OUTCOMES] {stype} BUY cohort: n={stats['cohort_size']} | "
-                f"1d hit={h1d['rate']*100:.0f}% (n={h1d['n']}) | "
+                f"1d hit={(h1d['rate'] or 0)*100:.0f}% (n={h1d['n']}) | "
                 f"1w hit={(h1w['rate'] or 0)*100:.0f}% (n={h1w['n']})"
             )
 
