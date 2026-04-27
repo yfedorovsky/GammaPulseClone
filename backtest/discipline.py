@@ -103,6 +103,11 @@ def kelly_size(
     cb_level: int = 0,
     avg_win: float = 0,
     avg_loss: float = 0,
+    n_trades: int = 0,
+    pooled_win_rate: float | None = None,
+    pooled_payoff: float | None = None,
+    shrinkage: bool = False,
+    clip_inputs: bool = False,
 ) -> dict[str, Any]:
     """Compute Quarter-Kelly position size using actual BSM payoff ratios.
 
@@ -113,20 +118,49 @@ def kelly_size(
         cb_level: circuit breaker level (0-3)
         avg_win: actual average win % from trade log (e.g. 46.3)
         avg_loss: actual average loss % from trade log (e.g. 78.7, positive number)
+        n_trades: per-ticker historical trade count (for shrinkage). Defaults to 0.
+        pooled_win_rate: pooled win-rate across cohort, percent. Required when
+            shrinkage=True.
+        pooled_payoff: pooled avg-win/avg-loss ratio across cohort. Required
+            when shrinkage=True and avg_win/avg_loss provided.
+        shrinkage: apply Bayesian shrinkage to win_rate (Phase 1 #2). Off by
+            default for backward compat with existing callers.
+        clip_inputs: clip win-rate to [45,65] and payoff to [0.8,2.5] before
+            Kelly (Phase 1 #3). Off by default for backward compat.
 
-    Returns: {size_pct, capped_by, kelly_raw, quarter_kelly}
+    Returns: {size_pct, capped_by, kelly_raw, quarter_kelly, debias_reason}
     """
     if tier == "BELOW_FLOOR":
         return {"size_pct": 0, "capped_by": "BELOW_FLOOR", "kelly_raw": 0, "quarter_kelly": 0}
 
-    p = max(win_rate / 100, KELLY_BASE_RATE)
-    q = 1 - p
+    debias_reason = "raw"
+
+    # Phase 1 #2: Bayesian shrinkage — pull thin-sample ticker rates toward pooled.
+    effective_wr = win_rate
+    if shrinkage and pooled_win_rate is not None and n_trades > 0:
+        from .shrinkage import shrunk_win_rate
+        wins = round(win_rate / 100 * n_trades)
+        effective_wr = shrunk_win_rate(wins, n_trades, pooled_win_rate)
+        debias_reason = f"shrunk(n={n_trades})"
 
     # Use actual payoff ratio if available, else fallback to tier defaults
     if avg_win > 0 and avg_loss > 0:
         b = avg_win / avg_loss  # actual BSM-calibrated payoff
+        if shrinkage and pooled_payoff is not None and n_trades > 0:
+            from .shrinkage import shrunk_payoff
+            b = shrunk_payoff(avg_win, avg_loss, n_trades, pooled_payoff)
     else:
         b = PAYOFF_RATIOS.get(tier, 0.5)
+
+    # Phase 1 #3: clip inputs to prevent freak rates from blowing up Kelly.
+    if clip_inputs:
+        from .shrinkage import clip_kelly_inputs
+        effective_wr, b, clip_reason = clip_kelly_inputs(effective_wr, b)
+        if clip_reason != "OK":
+            debias_reason = f"{debias_reason}+clip({clip_reason})"
+
+    p = max(effective_wr / 100, KELLY_BASE_RATE)
+    q = 1 - p
 
     kelly_raw = max(0, (p * b - q) / b)
     quarter_kelly = kelly_raw * 0.25
@@ -166,6 +200,9 @@ def kelly_size(
         "capped_by": capped_by,
         "kelly_raw": round(kelly_raw * 100, 2),
         "quarter_kelly": round(quarter_kelly * 100, 2),
+        "debias_reason": debias_reason,
+        "effective_win_rate": round(effective_wr, 2),
+        "effective_payoff": round(b, 3),
     }
 
 
@@ -253,6 +290,120 @@ def five_factor_gate(
         "label": label,
         "factors": factors,
         "earnings_blocked": earnings_blocked,
+    }
+
+
+# ── Grade-Based Size Modifier ──────────────────────────────────────────
+#
+# Phase 1 #5 from the cross-LLM synthesis. Two of three LLMs (ChatGPT, Grok)
+# explicitly recommended dropping B+ from 2/3 to 1/2 of intended size; the
+# third (Perplexity) noted the 3% cap dominates so the dollar difference
+# is small but did not object.
+#
+# Rationale (Grok): half-Kelly logic implies B+ at ~57-58% real win-rate
+# is closer to half-size than two-thirds. ~15-20% portfolio variance
+# reduction with negligible expectancy hit per Grok backtest claim.
+#
+# Returns the multiplier applied to intended-full-size (Kelly-derived).
+# Use this as a multiplier on top of kelly_size() output, not as a
+# replacement for it.
+
+GRADE_SIZE_MULTIPLIER = {
+    "A+": 1.0,
+    "A":  1.0,
+    "B+": 0.5,   # was 0.667 (2/3); cross-LLM consensus dropped to 1/2
+    "B":  0.33,  # 1/3 — runner mentality, conviction-light
+    "C":  0.0,   # watch-only
+    "D":  0.0,   # watch-only
+}
+
+
+def grade_size_modifier(grade: str) -> float:
+    """Return the size multiplier for a Layer-3 letter grade.
+
+    Phase 1 #5 update: B+ moved from 0.667 to 0.5.
+
+    Use as: final_size_pct = kelly_size_pct * grade_size_modifier(grade)
+    Returns 0 for ineligible grades (C/D and any unknown grade).
+    """
+    return GRADE_SIZE_MULTIPLIER.get(grade.upper() if grade else "", 0.0)
+
+
+# ── ATR-Based Hard Stop ────────────────────────────────────────────────
+#
+# Phase 1 #4 from the cross-LLM synthesis. All three LLMs flagged the legacy
+# fixed -9.1% equity stop as instrument-agnostic: for cohort names with
+# 4-6% ATR, 9.1% is only ~1.5-2x ATR — within normal noise.
+#
+# Consensus: drive the equity-side stop off ATR (2.5x default), capped at
+# -12% so a temporarily inflated ATR (post-earnings gap) doesn't generate
+# an absurd stop. The -50% premium stop on the options leg is unchanged
+# (gamma/theta non-linearity validates that one).
+#
+# Reference: Minervini uses 7-8% below pivot, Qullamaggie uses ~1x ADR/ATR.
+# 2.5x ATR is the cross-LLM compromise.
+
+ATR_STOP_MULTIPLE = 2.5
+ATR_STOP_CAP_PCT = 12.0  # never wider than -12%
+
+
+def atr_based_stop(
+    entry_price: float,
+    atr: float,
+    direction: str = "BULL",
+    multiple: float = ATR_STOP_MULTIPLE,
+    cap_pct: float = ATR_STOP_CAP_PCT,
+) -> dict[str, Any]:
+    """Compute hard stop price using ATR-multiple, capped at fixed pct.
+
+    Args:
+        entry_price: entry price of the underlying.
+        atr: current ATR (e.g. ATR(14) on entry day).
+        direction: "BULL" (long, stop below) or "BEAR" (short, stop above).
+        multiple: ATR multiplier (default 2.5).
+        cap_pct: maximum stop distance as percent of entry (default 12.0).
+
+    Returns:
+        {
+            "stop_price": float,
+            "stop_pct": float,        # absolute % from entry, signed by direction
+            "atr_distance": float,    # multiple * atr
+            "cap_distance": float,    # cap_pct% of entry
+            "binding": "ATR" | "CAP", # which one bound
+        }
+    """
+    if entry_price <= 0 or atr <= 0:
+        return {
+            "stop_price": 0.0,
+            "stop_pct": 0.0,
+            "atr_distance": 0.0,
+            "cap_distance": 0.0,
+            "binding": "INVALID",
+        }
+
+    atr_distance = multiple * atr
+    cap_distance = entry_price * (cap_pct / 100.0)
+
+    if atr_distance <= cap_distance:
+        distance = atr_distance
+        binding = "ATR"
+    else:
+        distance = cap_distance
+        binding = "CAP"
+
+    if direction.upper() == "BULL":
+        stop_price = entry_price - distance
+        stop_pct = -100.0 * distance / entry_price
+    else:
+        stop_price = entry_price + distance
+        stop_pct = 100.0 * distance / entry_price
+
+    return {
+        "stop_price": round(stop_price, 4),
+        "stop_pct": round(stop_pct, 2),
+        "atr_distance": round(atr_distance, 4),
+        "cap_distance": round(cap_distance, 4),
+        "binding": binding,
     }
 
 

@@ -240,6 +240,28 @@ def open_position(signal_id: int, contracts: int | None = None) -> dict[str, Any
                 "reason": "DTE_TOO_SHORT",
             }
 
+        # Phase 2 #4 — Sector-bucket cohort cap.
+        # Replaces flat 8% cohort cap with per-bucket position-count limits.
+        # Photonics (7-name bucket) capped at 3, OFS/Materials/Memory/Biotech
+        # capped at 2. Default for uncategorized: 2.
+        try:
+            from .sector_cap import gate as sector_gate
+            open_rows = c.execute(
+                "SELECT ticker FROM paper_positions WHERE status = 'OPEN'"
+            ).fetchall()
+            open_tickers = [r["ticker"] for r in open_rows]
+            sg = sector_gate(sig.get("ticker", ""), open_tickers)
+            if sg.get("blocked"):
+                return {
+                    "error": f"Blocked: {sg['reason']}",
+                    "bucket": sg["bucket"],
+                    "current_count": sg["current_count"],
+                    "cap": sg["cap"],
+                    "reason": "SECTOR_BUCKET_CAP",
+                }
+        except Exception as e:
+            print(f"[paper_trading] sector_cap check skipped (fail-open): {e}")
+
         # Max-pay discipline gate (Mir rule enforcement).
         # If an active BUY-side watch exists for this exact contract AND
         # the entry price exceeds the declared cap, reject the open. This
@@ -302,6 +324,57 @@ def open_position(signal_id: int, contracts: int | None = None) -> dict[str, Any
                 from .discipline import compute_kelly_size
                 kelly = compute_kelly_size(sig["ticker"], is_0dte=(sig.get("dte") or 99) == 0, account_value=cash)
                 target_dollars = kelly.get("size_dollars", 0) or 0
+
+                # Phase 6A.2: route grade × regime through `combine_sizing`
+                # min() policy. Currently only grade is wired; macro_context
+                # regime modifiers are observation-only pending live data
+                # validation. When/if wired, they pass through min() not
+                # multiplication. See server/sizing_policy.py.
+                try:
+                    from backtest.discipline import grade_size_modifier
+                    from .sizing_policy import combine_sizing
+                    grade_mult = grade_size_modifier(sig.get("grade", ""))
+                    if grade_mult == 0:
+                        return {"error": f"Grade {sig.get('grade')} not eligible for auto-trade (size_mult=0)"}
+
+                    base_dollars = target_dollars  # Kelly output before any modifiers
+                    # Future: pass breadth_mod, stress_mod, alignment_mod here
+                    # when macro_context is wired in. For now grade_mult only.
+                    combined = combine_sizing(
+                        kelly_pct=base_dollars,  # using $ as the unit; same math
+                        grade_mult=grade_mult,
+                    )
+                    target_dollars = combined["final_pct"]
+                    if grade_mult < 1.0:
+                        print(f"[PAPER] Grade {sig.get('grade')} mult {grade_mult:.2f}x "
+                              f"(via combine_sizing): ${base_dollars:,.0f} -> "
+                              f"${target_dollars:,.0f}")
+                except ImportError:
+                    pass
+
+                # Phase 2 #3 — Zone-A bonus.
+                #
+                # DEMOTED Apr 26 night per Phase 6A.0c edge survival test.
+                # The +13pp 5d hit-rate edge does NOT survive realistic slippage:
+                # 0/19 names ship, 17/19 KILL even at ATM neutral IV. The hit-
+                # rate edge translates to ~6.5% PnL edge on options, which is
+                # eaten by 8-22% per-name round-trip friction.
+                #
+                # Behavior change: Zone A is now LOGGED for observation but
+                # does NOT modify size. The zone_classifier output remains
+                # available via dashboard for manual decision-making.
+                # See docs/feedback/strategy_0427_review/SYNTHESIS.md Part 11.
+                try:
+                    from .zone_classifier import is_zone_a, COHORT_ZONED
+                    if (sig["ticker"].upper() in COHORT_ZONED
+                            and sig.get("direction") == "BULL"
+                            and is_zone_a(sig["ticker"])):
+                        sig["_zone_a_observation"] = True
+                        print(f"[PAPER] Zone-A observation for {sig['ticker']} "
+                              f"(no size mult — demoted post Phase 6A.0c)")
+                except (ImportError, Exception) as e:
+                    if not isinstance(e, ImportError):
+                        print(f"[PAPER] Zone-A check failed (fail-open): {e}")
             except Exception:
                 target_dollars = cash * 0.015  # 1.5% fallback
 
@@ -719,6 +792,43 @@ async def update_positions() -> None:
                 reason = "STOP_HIT" if not stop_moved else "STOP_BE"
                 close_position(pos["id"], exit_price=estimated_price, reason=reason,
                                exit_bid=cur_bid, exit_ask=cur_ask)
+            # 2b. Phase 2 #5 — Conditional 21-day time stop.
+            # Cross-LLM consensus: don't cap winners at day 21; let runners go
+            # on EMA21 trail. But DO close losers at day 21. Grok addition:
+            # only allow runners to extend when SPY > 200d AND breadth > 50%.
+            elif spot_valid and pos.get("opened_ts"):
+                try:
+                    from datetime import datetime as _dt
+                    days_held = (now_dt - _dt.fromtimestamp(pos["opened_ts"])).days
+                    if days_held >= 21:
+                        # Was the position above +1R at day 15?
+                        # Approximate +1R as MFE >= 1.0 (entered with stop at -50%
+                        # premium, so +1R = +50% premium). Use mfe_pct on the row.
+                        mfe = (pos.get("mfe_pct") or 0)
+                        # Also need: is current trade > breakeven NOW?
+                        currently_winning = unrealized > 0
+                        was_runner = mfe >= 50  # +1R proxy on premium
+                        # Regime check for runner extension
+                        regime_ok = True
+                        try:
+                            from .regime_breadth import get_breadth_regime
+                            _r = get_breadth_regime()
+                            regime_ok = (_r.get("regime") == "FULL_BULL"
+                                         and _r.get("pct_above_200d", 0) > 50)
+                        except Exception:
+                            pass
+                        # Only extend if BOTH winner AND favorable regime; else close.
+                        if not was_runner or not currently_winning or not regime_ok:
+                            close_position(pos["id"], exit_price=estimated_price,
+                                           reason="TIME_STOP_21D",
+                                           exit_bid=cur_bid, exit_ask=cur_ask)
+                            continue
+                        # Otherwise: runner is allowed past day 21. The existing
+                        # spot stop (which may have been moved to BE on partial)
+                        # acts as the trailing stop. No additional action needed.
+                except Exception as _e:
+                    pass
+
             # 3. 0DTE EOD sweep — close expired/expiring-today contracts any time
             #    between 3:55 PM and midnight. Options with <5min left before close
             #    and any time AFTER close are effectively frozen/expired.

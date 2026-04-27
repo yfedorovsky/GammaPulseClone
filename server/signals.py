@@ -1924,6 +1924,46 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
         _seen_signals.add(dedup_key)
         new_signals.append(sig)
 
+        # Phase 1 #1 — Breadth-regime gate for new BULL entries.
+        # All three LLMs (cross-LLM synthesis Apr 25) converged on:
+        # promote macro/regime to a hard pre-filter, not a 5% scoring tweak.
+        # Threshold: % of universe above 200d MA. <40% → no new longs;
+        # 40-60% → A/A+ only.
+        # Only applies to BULL direction (puts/BEAR signals are unaffected).
+        regime_blocks_long = False
+        regime_grade_blocks = False
+        _regime_label = "UNKNOWN"
+        try:
+            from .regime_breadth import get_breadth_regime
+            _regime = get_breadth_regime()
+            _regime_label = _regime.get("regime", "FULL_BULL")
+            if direction == "BULL":
+                if _regime_label == "BEAR":
+                    regime_blocks_long = True
+                elif _regime_label == "TRANSITIONAL" and grade in ("B", "B+"):
+                    regime_grade_blocks = True
+        except Exception as e:
+            # Fail-open: if breadth lookup errors, don't block legitimate signals.
+            # The breadth gate is a safety net, not a load-bearing rail.
+            print(f"[SOE] regime_breadth check failed (fail-open): {e}")
+
+        # Phase 2 #2 — IV-rank regime gate (per iv_rank_factor_verdict.md).
+        # Block HIGH-IV BULL entries during BEAR/TRANSITIONAL regime; in those
+        # regimes HIGH-IV positions historically had 33% hit rate / -7.31% avg
+        # at 21d (n=120). FULL_BULL regime has only +7pp delta, so gate inactive.
+        # Biotech tickers excluded (reverse pattern in T1 per-ticker analysis).
+        iv_blocks_long = False
+        _iv_gate_reason = "n/a"
+        try:
+            if direction == "BULL" and _regime_label in ("BEAR", "TRANSITIONAL"):
+                from .iv_rank_cache import gate_iv_for_regime
+                _iv_gate = gate_iv_for_regime(ticker, _regime_label)
+                _iv_gate_reason = _iv_gate.get("reason", "")
+                if _iv_gate.get("blocked"):
+                    iv_blocks_long = True
+        except Exception as e:
+            print(f"[SOE] iv_rank gate check failed (fail-open): {e}")
+
         # Auto-open paper position:
         #   - MIR_MOMENTUM: always (frozen spec v1.0)
         #   - GEX pathway A grade: auto-open (high conviction validated setups)
@@ -1935,6 +1975,21 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
             should_auto_trade = True
         elif grade == "B+" and ticker in ("SPY", "QQQ") and dte <= 1:
             should_auto_trade = True
+
+        # Apply breadth gate to auto-trade decision.
+        if (regime_blocks_long or regime_grade_blocks) and should_auto_trade:
+            should_auto_trade = False
+            sig["_breadth_blocked"] = True
+            print(f"[SOE] Breadth gate blocked auto-open for {ticker} "
+                  f"({_regime_label}, {grade}, %above200d="
+                  f"{_regime.get('pct_above_200d', '?')}%)")
+
+        # Apply IV-rank gate to auto-trade decision (Phase 2).
+        if iv_blocks_long and should_auto_trade:
+            should_auto_trade = False
+            sig["_iv_rank_blocked"] = True
+            print(f"[SOE] IV-rank gate blocked auto-open for {ticker}: "
+                  f"{_iv_gate_reason}")
 
         if should_auto_trade and signal_id:
             try:
@@ -1961,6 +2016,10 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
             mir_ok = (mir_sig or {}).get("conviction", "").upper() in ("HIGH", "MEDIUM")
             if (spread_ok and oi_ok and rr_ok) or mir_ok:
                 should_push = True
+
+        # Apply breadth + IV-rank gates to Telegram push as well.
+        if regime_blocks_long or regime_grade_blocks or iv_blocks_long:
+            should_push = False
 
         if should_push and not sig.get("_suppress_telegram"):
             try:

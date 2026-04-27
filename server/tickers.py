@@ -202,6 +202,14 @@ TIER_3 = [
     # Mir Monis top-20 "trade without looking at anything else" list (Apr 19)
     # 19/20 already covered — TSEM was the only gap
     "TSEM",  # Tower Semiconductor — Israeli specialty foundry, RF/analog/SiGe, 86% YTD
+    # Qullamaggie x Minervini screener (Sat Apr 25) — adds filling 3 thematic gaps:
+    # specialty chemicals, lithium revival, semi-equip peer. Oilfield-services
+    # block (AESI/PUMP/RES/PTEN/NBR) intentionally limited to AESI (most liquid
+    # frac leader) — others can be added if the OFS theme persists.
+    "CAMT",  # Camtek — semi inspection/metrology, direct peer to ICHR/UCTT/NVMI
+    "LAR",   # Lithium Argentina — A-setup, lithium cycle revival after 2-yr drawdown
+    "TROX",  # Tronox — TiO2 chemicals leader, A- setup, +60% 63d
+    "AESI",  # Atlas Energy Solutions — frac sand leader, OFS pure-play (gap fill)
 ]
 
 

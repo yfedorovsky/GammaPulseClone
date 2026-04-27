@@ -208,14 +208,85 @@ TIER_SIZE_MODIFIER = {
 }
 
 
+_pooled_stats_cache: tuple[float, dict[str, float]] = (0.0, {})
+
+
+def get_pooled_stats(ttl_sec: int = 3600) -> dict[str, float]:
+    """Pooled (cohort-wide) win-rate and payoff for shrinkage prior.
+
+    Phase 1 #2 dependency. Aggregates across ALL tickers in trade log;
+    cached for an hour to avoid hitting SQLite on every Kelly call.
+
+    Returns: {pooled_win_rate (pct), pooled_payoff (b), pooled_n_trades}
+    """
+    global _pooled_stats_cache
+    cached_ts, cached = _pooled_stats_cache
+    if cached and time.time() - cached_ts < ttl_sec:
+        return cached
+
+    all_stats = get_ticker_stats()
+    total_trades = 0
+    total_wins = 0
+    total_avg_win = 0.0
+    total_avg_loss = 0.0
+    n_w = 0
+    n_l = 0
+    for t, s in all_stats.items():
+        total_trades += s.get("trades", 0)
+        total_wins += s.get("wins", 0)
+        if s.get("avg_win", 0) > 0 and s.get("wins", 0) > 0:
+            total_avg_win += s["avg_win"] * s["wins"]
+            n_w += s["wins"]
+        if s.get("avg_loss", 0) < 0 and s.get("losses", 0) > 0:
+            total_avg_loss += abs(s["avg_loss"]) * s["losses"]
+            n_l += s["losses"]
+    pooled_wr = (100.0 * total_wins / total_trades) if total_trades else 22.8
+    pooled_aw = (total_avg_win / n_w) if n_w else 200
+    pooled_al = (total_avg_loss / n_l) if n_l else 91.4
+    pooled_payoff = pooled_aw / pooled_al if pooled_al > 0 else 2.2
+
+    # Phase 6A.2: also compute cohort cross-sectional variance for
+    # Gemini's dynamic shrinkage formula (k_dynamic = p(1-p) / sigma_prior_sq)
+    cohort_hit_rates = []
+    for t, s in all_stats.items():
+        if s.get("trades", 0) >= 5:  # need minimum sample for valid p
+            cohort_hit_rates.append(s.get("win_rate", 0))
+    sigma_prior_sq = 0.0
+    if len(cohort_hit_rates) >= 2:
+        try:
+            from backtest.shrinkage import cohort_prior_variance
+            sigma_prior_sq = cohort_prior_variance(cohort_hit_rates)
+        except ImportError:
+            pass
+
+    out = {
+        "pooled_win_rate": pooled_wr,
+        "pooled_payoff": pooled_payoff,
+        "pooled_n_trades": total_trades,
+        "cohort_hit_rates": cohort_hit_rates,
+        "sigma_prior_sq": sigma_prior_sq,
+    }
+    _pooled_stats_cache = (time.time(), out)
+    return out
+
+
 def compute_kelly_size(
     ticker: str,
     is_0dte: bool = False,
     account_value: float = 10000,
+    shrinkage: bool = True,
+    clip_inputs: bool = True,
 ) -> dict[str, Any]:
-    """Compute Quarter-Kelly position size for a given ticker."""
+    """Compute Quarter-Kelly position size for a given ticker.
+
+    Phase 1 #2/#3: applies Bayesian shrinkage on per-ticker win-rate toward
+    the pooled mean (k=20, n<10 → 100% pooled), then clips win-rate to
+    [45,65]% and payoff to [0.8,2.5] before Kelly. Both default ON now;
+    pass shrinkage=False / clip_inputs=False to compare against legacy.
+    """
     tier_info = get_tier(ticker)
     tier = tier_info["tier"]
+    n_trades = tier_info.get("trades", 0)
 
     if tier == "BELOW_FLOOR":
         return {
@@ -229,15 +300,59 @@ def compute_kelly_size(
             "capped_by": "BELOW_FLOOR",
         }
 
-    # Win probability from base rate, floored at account-wide 22.8%
-    # (calibrated from 569 closed MirBot trades, Apr 2026)
-    p = tier_info["win_rate"] / 100
+    debias_reason = "raw"
+
+    # Phase 6A.2: Bayesian shrinkage toward pooled win-rate, now using
+    # DYNAMIC k_dynamic = p(1-p)/sigma_prior_sq (Gemini Apr 26 follow-up)
+    # instead of hardcoded k=20. Falls back to static k=20 if cohort
+    # variance can't be computed (insufficient data).
+    raw_wr_pct = tier_info["win_rate"]
+    effective_wr_pct = raw_wr_pct
+    if shrinkage:
+        try:
+            from backtest.shrinkage import shrunk_win_rate_dynamic, shrunk_win_rate
+            pooled = get_pooled_stats()
+            sigma_sq = pooled.get("sigma_prior_sq", 0.0)
+            if sigma_sq > 1e-6 and len(pooled.get("cohort_hit_rates", [])) >= 5:
+                # Use dynamic shrinkage
+                r = shrunk_win_rate_dynamic(
+                    tier_info.get("wins", 0), n_trades,
+                    pooled_win_rate=pooled["pooled_win_rate"],
+                    sigma_prior_sq=sigma_sq,
+                )
+                effective_wr_pct = r["shrunk_pct"]
+                k_label = f"k_dyn={r['k_used']:.1f}" if not r["fell_back_to_pooled"] else "pooled"
+                debias_reason = f"shrunk(n={n_trades}, {k_label}, ->{effective_wr_pct:.1f}%)"
+            else:
+                # Fallback to static k=20
+                effective_wr_pct = shrunk_win_rate(
+                    tier_info.get("wins", 0), n_trades, pooled["pooled_win_rate"],
+                )
+                debias_reason = f"shrunk(n={n_trades}, k=20 static, ->{effective_wr_pct:.1f}%)"
+        except ImportError:
+            pass  # backtest module not available — fall back to raw
+
+    # Win probability from (possibly shrunk) base rate, floored at 22.8%.
+    p = effective_wr_pct / 100
     if p <= 0:
         p = 0.228  # account-wide base rate (569 trades)
     q = 1 - p
 
     # Payoff ratio
     b = PAYOFF_RATIOS.get(tier, 2.2)
+
+    # Phase 1 #3 — clip Kelly inputs to [45,65]% / [0.8,2.5] payoff.
+    if clip_inputs:
+        try:
+            from backtest.shrinkage import clip_kelly_inputs
+            wr_clipped, b_clipped, clip_reason = clip_kelly_inputs(p * 100, b)
+            if clip_reason != "OK":
+                p = wr_clipped / 100
+                q = 1 - p
+                b = b_clipped
+                debias_reason = f"{debias_reason}+clip({clip_reason})"
+        except ImportError:
+            pass
 
     # Kelly fraction
     kelly_raw = (p * b - q) / b if b > 0 else 0
@@ -279,8 +394,11 @@ def compute_kelly_size(
         "tier_info": tier_info,
         "kelly_raw": round(kelly_raw * 100, 2),
         "quarter_kelly": round(quarter_kelly * 100, 2),
-        "reason": f"{tier} ({tier_info['win_rate']}% WR, {tier_info['trades']} trades) → {round(size_pct, 1)}% account",
+        "reason": f"{tier} ({tier_info['win_rate']}% WR raw → {round(p*100, 1)}% effective, {n_trades} trades) → {round(size_pct, 1)}% account",
         "capped_by": capped_by,
+        "debias_reason": debias_reason,
+        "effective_win_rate": round(p * 100, 2),
+        "effective_payoff": round(b, 3),
     }
 
 
