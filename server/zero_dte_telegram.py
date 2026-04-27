@@ -95,6 +95,16 @@ def format_zero_dte_alert(alert: Any) -> str:
     pricing_lines.append(f"Time stop: {alert.time_stop_minutes}min")
     pricing = "\n".join(pricing_lines)
 
+    # Management reminder — added after Apr 27 audit of 5 0DTE alerts
+    # showed avg MFE +90% in ~42min but avg end-of-window -38% (128pp
+    # giveback). 100% of alerts gave a +50% scalp at some point; 0/5
+    # reached target_mid (3x). Buy-and-hold to time-stop is structurally
+    # losing; active management is the entire game.
+    manage = (
+        "⚠ MANAGE: scalp at +50%, trail rest. "
+        "MFE usually in 20-70min — don't hold to time-stop"
+    )
+
     # Confluence breakdown
     conf_header = f"Confluence {alert.total_points}/{alert.max_points}:"
     conf_lines = []
@@ -136,7 +146,8 @@ def format_zero_dte_alert(alert: Any) -> str:
     # Assemble
     return (
         f"{header}\n"
-        f"{pricing}\n\n"
+        f"{pricing}\n"
+        f"{manage}\n\n"
         f"{conf_header}\n"
         f"{chr(10).join(conf_lines)}"
         f"{quality_note}\n\n"
