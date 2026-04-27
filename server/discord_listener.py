@@ -36,6 +36,160 @@ ROLE_ID_MAP = {
 }
 
 
+# ── Mir convergence cross-reference (Apr 27) ────────────────────────
+#
+# When Mir posts a callout (CHAT_RELAY or ENTRY), look back at the last
+# 30 min of system-detected signals and report which ones agree. Pulls
+# from soe_signals, net_flow_alerts, flow_alerts, and current snapshot
+# state. Fail-open everywhere — a Mir alert must NEVER be blocked by
+# a cross-ref query failure.
+
+MIR_CROSSREF_LOOKBACK_SEC = 1800  # 30 min
+MIR_CROSSREF_FLOW_NOTIONAL_USD = 5_000_000
+
+
+def _mir_direction_from_otype(option_type: str | None) -> str | None:
+    """CALL → BULL, PUT → BEAR, anything else → None."""
+    if not option_type:
+        return None
+    o = option_type.upper()
+    if o.startswith("C"):
+        return "BULL"
+    if o.startswith("P"):
+        return "BEAR"
+    return None
+
+
+def _crossref_mir_signal(ticker: str, direction: str | None) -> dict[str, Any]:
+    """Return a dict of system signals corroborating this Mir callout in
+    the last 30 min. Output:
+      {
+        'has_convergence': bool,
+        'soe': [...], 'net_flow': [...], 'flow_alerts': [...],
+        'gex': {king, floor, ceiling, regime, signal, spot},
+      }
+    All fields fail-open empty on any DB error.
+    """
+    out: dict[str, Any] = {
+        "has_convergence": False,
+        "soe": [], "net_flow": [], "flow_alerts": [], "gex": {},
+    }
+    if not ticker:
+        return out
+    import sqlite3
+    try:
+        s = get_settings()
+        conn = sqlite3.connect(s.snapshot_db)
+        conn.row_factory = sqlite3.Row
+        cutoff = int(time.time()) - MIR_CROSSREF_LOOKBACK_SEC
+
+        # 1. Recent SOE signals (any direction — we filter below if direction known)
+        try:
+            rows = conn.execute(
+                "SELECT id, ts, direction, grade, signal_type, score, "
+                "strike, option_type FROM soe_signals "
+                "WHERE ticker = ? AND ts >= ? ORDER BY ts DESC LIMIT 5",
+                (ticker, cutoff),
+            ).fetchall()
+            for r in rows:
+                d = dict(r)
+                # Direction in soe_signals is "BULL"/"BEAR" or "▲"/"▼"
+                d_dir = d.get("direction", "")
+                norm_dir = "BULL" if d_dir in ("BULL", "▲", "LONG", "BUY") else \
+                           ("BEAR" if d_dir in ("BEAR", "▼", "SHORT", "SELL") else d_dir)
+                d["_direction_norm"] = norm_dir
+                if direction is None or norm_dir == direction:
+                    out["soe"].append(d)
+        except sqlite3.OperationalError:
+            pass
+
+        # 2. Recent NET FLOW alerts in matching direction
+        if direction is not None:
+            gap_match = "bullish" if direction == "BULL" else "bearish"
+            try:
+                rows = conn.execute(
+                    "SELECT ts, signal, confidence, gap_direction, ncp, npp "
+                    "FROM net_flow_alerts "
+                    "WHERE ticker = ? AND ts >= ? AND gap_direction = ? "
+                    "ORDER BY ts DESC LIMIT 5",
+                    (ticker, cutoff, gap_match),
+                ).fetchall()
+                out["net_flow"] = [dict(r) for r in rows]
+            except sqlite3.OperationalError:
+                pass
+
+        # 3. Large flow_alerts (≥$5M, direction-aligned)
+        if direction is not None:
+            sentiment_match = "BULLISH" if direction == "BULL" else "BEARISH"
+            opt_type = "call" if direction == "BULL" else "put"
+            try:
+                rows = conn.execute(
+                    "SELECT ts, sentiment, option_type, strike, expiration, "
+                    "COALESCE(sweep_notional, notional) AS notional, is_sweep "
+                    "FROM flow_alerts "
+                    "WHERE ticker = ? AND ts >= ? AND sentiment = ? "
+                    "AND option_type = ? "
+                    "AND COALESCE(sweep_notional, notional, 0) >= ? "
+                    "ORDER BY notional DESC LIMIT 5",
+                    (ticker, cutoff, sentiment_match, opt_type,
+                     MIR_CROSSREF_FLOW_NOTIONAL_USD),
+                ).fetchall()
+                out["flow_alerts"] = [dict(r) for r in rows]
+            except sqlite3.OperationalError:
+                pass
+
+        # 4. Current GEX state (latest snapshot)
+        try:
+            row = conn.execute(
+                "SELECT spot, king, floor, ceiling, zgl, regime, signal "
+                "FROM snapshots WHERE ticker = ? ORDER BY ts DESC LIMIT 1",
+                (ticker,),
+            ).fetchone()
+            if row:
+                out["gex"] = dict(row)
+        except sqlite3.OperationalError:
+            pass
+
+        conn.close()
+    except Exception:
+        return out
+
+    out["has_convergence"] = (
+        len(out["soe"]) > 0 or len(out["net_flow"]) > 0 or len(out["flow_alerts"]) > 0
+    )
+    return out
+
+
+def _format_mir_convergence_block(xref: dict[str, Any]) -> str | None:
+    """Render the convergence block for the Telegram alert. None if nothing."""
+    if not xref.get("has_convergence"):
+        return None
+    lines = ["", "🎯 <b>SYSTEM CONVERGENCE</b>"]
+    for s in xref["soe"][:3]:
+        ago_min = int((time.time() - s["ts"]) / 60)
+        lines.append(
+            f"  ✓ SOE {s['grade']} {s['signal_type']} "
+            f"({ago_min}min ago, score {s['score']})"
+        )
+    for nf in xref["net_flow"][:2]:
+        ago_min = int((time.time() - nf["ts"]) / 60)
+        ncp_m = (nf.get("ncp") or 0) / 1e6
+        lines.append(
+            f"  ✓ NET FLOW {nf['confidence']} {nf['gap_direction']} "
+            f"({ago_min}min ago, NCP +${ncp_m:.2f}M)"
+        )
+    for fa in xref["flow_alerts"][:3]:
+        ago_min = int((time.time() - fa["ts"]) / 60)
+        notional_m = (fa.get("notional") or 0) / 1e6
+        sweep_tag = " sweep" if fa.get("is_sweep") else ""
+        lines.append(
+            f"  ✓ Flow${notional_m:.1f}M{sweep_tag} {fa['sentiment']} "
+            f"${fa['strike']:.0f}{fa['option_type'][:1].upper()} "
+            f"({ago_min}min ago)"
+        )
+    return "\n".join(lines)
+
+
 def _resolve_mentions(content: str) -> str:
     """Resolve Discord role/user mentions to readable text."""
     def replace_role(m):
@@ -444,16 +598,30 @@ class MirDiscordClient:
         print(f"[DISCORD]   -> CHAT_RELAY {ticker} "
               f"{parsed.get('strike')}{parsed.get('option_type')} stored (LOW)")
 
+        # Cross-reference with system signals in the last 30 min. If any
+        # SOE / NET FLOW / large flow_alert agrees with Mir's direction,
+        # surface them inline so the user sees the convergence at a glance.
+        mir_direction = _mir_direction_from_otype(parsed.get("option_type"))
+        xref = _crossref_mir_signal(ticker, mir_direction)
+        convergence_block = _format_mir_convergence_block(xref)
+
         # Soft Telegram push — not forced, respects per-ticker cooldown.
         # Rationale: chat relays are informational, not actionable, so
-        # they shouldn't elbow out higher-conviction signals.
+        # they shouldn't elbow out higher-conviction signals — UNLESS we
+        # detect convergence with system signals, in which case we mark
+        # it MEDIUM and use the high-conviction emoji.
         try:
             strike = parsed.get("strike")
             otype = (parsed.get("option_type") or "").upper()
             price = parsed.get("price")
             spot = gex_context.get("spot")
 
-            lines = [f"💬 <b>MIR CHAT</b>: {ticker}"]
+            header_emoji = "🎯💬" if xref.get("has_convergence") else "💬"
+            conviction_label = (
+                "MEDIUM (system convergence)"
+                if xref.get("has_convergence") else "LOW"
+            )
+            lines = [f"{header_emoji} <b>MIR CHAT</b>: {ticker}"]
             if strike and otype:
                 lines.append(f"Contract: ${strike}{otype}")
             elif strike:
@@ -465,12 +633,41 @@ class MirDiscordClient:
             if spot:
                 lines.append(f"Spot: ${spot:.2f}")
             lines.append(f"Channel: {channel_name}")
+
+            # GEX context (always — single line)
+            gex = xref.get("gex") or {}
+            if gex.get("regime") and gex.get("king"):
+                gex_line = (
+                    f"GEX: {gex['regime']} {gex.get('signal') or ''}".strip()
+                    + f"  K=${gex['king']:.0f}"
+                )
+                if gex.get("floor"):
+                    gex_line += f"  F=${gex['floor']:.0f}"
+                if gex.get("ceiling"):
+                    gex_line += f"  C=${gex['ceiling']:.0f}"
+                lines.append(gex_line)
+
+            # Inline convergence block (most important — prominent)
+            if convergence_block:
+                lines.append(convergence_block)
+
             lines.append("")
             raw = parsed.get("raw_content", "")
             if raw:
                 lines.append(f"<i>{raw[:250]}</i>")
             lines.append("")
-            lines.append("<i>LOW conviction — no auto-paper-trade.</i>")
+            lines.append(f"<i>{conviction_label} — no auto-paper-trade.</i>")
+
+            # Bump conviction stored in cache if convergence detected
+            if xref.get("has_convergence"):
+                mir_signal["conviction"] = "MEDIUM"
+                mir_signal["_system_convergence"] = {
+                    "soe_count": len(xref["soe"]),
+                    "net_flow_count": len(xref["net_flow"]),
+                    "flow_alerts_count": len(xref["flow_alerts"]),
+                }
+                # Re-cache with bumped conviction
+                await cache.set_mir_signal(ticker, mir_signal)
 
             from .telegram import send
             await send("\n".join(lines), ticker=ticker)
