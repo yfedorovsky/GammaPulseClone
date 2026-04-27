@@ -1964,17 +1964,40 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
         except Exception as e:
             print(f"[SOE] iv_rank gate check failed (fail-open): {e}")
 
+        # Phase 6 — A-grade SAFETY GUARD (Apr 27 grade audit finding).
+        # Empirical: A-grade signals have INVERSE 1d hit rate vs B+:
+        #   POST BOTTOM LAUNCH: A grade 0% hit (n=7) vs B+ 64% (n=374)
+        #   MAGNET BREAKOUT:    A grade 20% (n=5) vs B+ 68% (n=303)
+        #   PINNING PREMIUM SELL: A grade 0% (n=3) vs B+ 52% (n=118)
+        # Pattern: high-confluence A-grade pins-and-reverts off structural
+        # walls at 1d horizon. Don't auto-trade these specific A combos.
+        # See backtest/grade_audit.py + data/grade_audit.csv.
+        BROKEN_A_SIGNAL_TYPES = {
+            "POST BOTTOM LAUNCH",
+            "MAGNET BREAKOUT",
+            "PINNING PREMIUM SELL",
+        }
+        is_broken_a_combo = (
+            grade in ("A+", "A")
+            and (sig.get("signal_type") or "").upper() in BROKEN_A_SIGNAL_TYPES
+        )
+
         # Auto-open paper position:
         #   - MIR_MOMENTUM: always (frozen spec v1.0)
-        #   - GEX pathway A grade: auto-open (high conviction validated setups)
+        #   - GEX pathway A grade: auto-open EXCEPT broken signal_types
         #   - GEX pathway B+ with 0DTE/1DTE SPY/QQQ: auto-open (scalp validation)
         should_auto_trade = False
         if is_mir_originated:
             should_auto_trade = True
-        elif grade in ("A+", "A"):
+        elif grade in ("A+", "A") and not is_broken_a_combo:
             should_auto_trade = True
         elif grade == "B+" and ticker in ("SPY", "QQQ") and dte <= 1:
             should_auto_trade = True
+
+        if is_broken_a_combo:
+            sig["_broken_a_blocked"] = True
+            print(f"[SOE] A-grade SAFETY block: {ticker} {sig.get('signal_type')} "
+                  f"— historical 1d hit 0-20%; signal logged but NOT auto-traded")
 
         # Apply breadth gate to auto-trade decision.
         if (regime_blocks_long or regime_grade_blocks) and should_auto_trade:
@@ -2004,9 +2027,10 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
             except Exception as e:
                 print(f"[SOE] Paper auto-open error: {e}")
 
-        # Telegram push: A/A+ always, B+ only if solid (flow or volume quality)
+        # Telegram push: A/A+ always EXCEPT broken signal_types,
+        # B+ only if solid (flow or volume quality)
         should_push = False
-        if sig.get("grade") in ("A+", "A"):
+        if sig.get("grade") in ("A+", "A") and not is_broken_a_combo:
             should_push = True
         elif sig.get("grade") == "B+" and contract:
             # B+ needs quality confirmation: tight spread + decent OI + good R:R
