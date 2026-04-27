@@ -30,6 +30,7 @@ import sys
 from pathlib import Path
 
 import httpx
+import io as _io
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -95,6 +96,46 @@ def fetch_earnings_tickers(days_ahead: int = 7) -> list[str]:
     return tickers
 
 
+THETA_REST = "http://127.0.0.1:25503"
+
+
+def list_expirations(ticker: str) -> list[dt.date]:
+    """Pull all available option expirations for a ticker from ThetaData REST.
+    Returns sorted list of date objects, [] on failure."""
+    try:
+        r = httpx.get(
+            f"{THETA_REST}/v3/option/list/expirations",
+            params={"symbol": ticker}, timeout=10,
+        )
+        if r.status_code != 200:
+            return []
+        out: list[dt.date] = []
+        for line in r.text.strip().split("\n")[1:]:  # skip header
+            parts = line.split(",")
+            if len(parts) < 2:
+                continue
+            try:
+                d = dt.date.fromisoformat(parts[1].strip().strip('"'))
+                out.append(d)
+            except ValueError:
+                continue
+        return sorted(out)
+    except Exception:
+        return []
+
+
+def resolve_expiry(ticker: str, target: dt.date) -> tuple[str, int]:
+    """Find the smallest available expiry >= target. Returns (iso_date, days_diff).
+    days_diff > 7 means monthly fallback was used and the implied move
+    includes extra time premium."""
+    exps = list_expirations(ticker)
+    candidates = [e for e in exps if e >= target]
+    if not candidates:
+        return target.isoformat(), 0
+    chosen = candidates[0]
+    return chosen.isoformat(), (chosen - target).days
+
+
 def _f(v, default=0.0):
     if v is None or v == "":
         return default
@@ -136,15 +177,19 @@ def mid(q: dict) -> float | None:
     return (bid + ask) / 2
 
 
-async def run(expiry: str, tickers: list[str]):
+async def run(target_expiry: str, tickers: list[str]):
     client = ThetaDataClient()
-    print(f"\nComputing ATM straddle implied moves for expiry {expiry}")
+    target_date = dt.date.fromisoformat(target_expiry)
+    print(f"\nComputing ATM straddle implied moves (target expiry {target_expiry})")
     print(f"Tickers: {', '.join(tickers)}\n")
-    print(f"{'Ticker':<8}{'Spot':>10}{'ATM K':>10}{'Call':>8}{'Put':>8}"
-          f"{'Strdl':>8}{'Impl%':>9}{'IV_C':>8}{'IV_P':>8}")
-    print("-" * 77)
+    print(f"{'Ticker':<8}{'Expiry':>12}{'+d':>4}{'Spot':>10}{'ATM K':>10}"
+          f"{'Call':>8}{'Put':>8}{'Strdl':>8}{'Impl%':>9}{'IV_C':>8}{'IV_P':>8}")
+    print("-" * 95)
 
     for t in tickers:
+        # Per-ticker expiry resolution: smallest available >= target.
+        # Falls back to monthly when ticker has no weeklies (e.g. KLAC).
+        expiry, days_offset = resolve_expiry(t, target_date)
         try:
             rows, spot = await client.snapshot_chain_greeks(t, expiration=expiry)
         except Exception as e:
@@ -157,13 +202,13 @@ async def run(expiry: str, tickers: list[str]):
 
         atm_call, atm_put = find_atm_pair(rows, spot, expiry)
         if not atm_call or not atm_put:
-            print(f"{t:<8}  no ATM pair found near ${spot:.2f}")
+            print(f"{t:<8}  no ATM pair found near ${spot:.2f} on {expiry}")
             continue
 
         c_mid = mid(atm_call)
         p_mid = mid(atm_put)
         if c_mid is None or p_mid is None:
-            print(f"{t:<8}  invalid quote (bid/ask missing)")
+            print(f"{t:<8}  invalid quote on {expiry} (bid/ask missing)")
             continue
 
         straddle = c_mid + p_mid
@@ -172,10 +217,19 @@ async def run(expiry: str, tickers: list[str]):
         iv_c = _f(atm_call.get("implied_vol")) * 100
         iv_p = _f(atm_put.get("implied_vol")) * 100
 
-        print(f"{t:<8}{spot:>10.2f}{atm_k:>10.2f}"
+        # Flag monthly fallback in the offset column. Anything > 7 days off
+        # the target Friday is contaminated by extra time premium and the
+        # implied % overstates the pure earnings vol.
+        offset_str = f"+{days_offset}" if days_offset else "  "
+        if days_offset > 7:
+            offset_str = f"+{days_offset}*"
+
+        print(f"{t:<8}{expiry:>12}{offset_str:>4}{spot:>10.2f}{atm_k:>10.2f}"
               f"{c_mid:>8.2f}{p_mid:>8.2f}{straddle:>8.2f}"
               f"{impl_move_pct:>8.2f}%{iv_c:>8.1f}{iv_p:>8.1f}")
 
+    print("\n* = monthly fallback, no weekly available; Impl% includes "
+          "extra time premium beyond the earnings event")
     await client.close()
 
 
