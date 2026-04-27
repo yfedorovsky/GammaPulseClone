@@ -31,6 +31,11 @@ import anthropic
 import feedparser
 import httpx
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+
+# Load .env so ANTHROPIC_API_KEY is available without depending on the
+# shell having it exported (server/config.py does this for the live app).
+load_dotenv(".env")
 
 
 # ── Configuration ─────────────────────────────────────────────────────
