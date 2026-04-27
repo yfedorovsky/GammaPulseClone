@@ -321,7 +321,86 @@ def regime_summary(bars: list[dict[str, Any]]) -> dict[str, Any]:
 # startup is preferable to missing a real transition.
 
 import asyncio
+import json
+import sqlite3
 import time
+from contextlib import contextmanager
+
+
+# ── Persistence (added Phase 6 — was fire-and-forget Telegram only) ──
+
+NET_FLOW_ALERTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS net_flow_alerts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  ticker TEXT NOT NULL,
+  signal TEXT NOT NULL,           -- FLOW_LEADS_UP / FLOW_LEADS_DOWN / etc.
+  confidence TEXT NOT NULL,        -- high / medium / low
+  gap_direction TEXT NOT NULL,     -- bullish / bearish / neutral
+  spot REAL,
+  ncp REAL,                        -- net call premium ($)
+  npp REAL,                        -- net put premium ($)
+  price_roc_pct REAL,              -- price ROC over window
+  ncp_roc_dollars REAL,            -- NCP ROC over window
+  npp_roc_dollars REAL,            -- NPP ROC over window
+  description TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_nfa_ts ON net_flow_alerts(ts);
+CREATE INDEX IF NOT EXISTS idx_nfa_ticker ON net_flow_alerts(ticker, ts);
+CREATE INDEX IF NOT EXISTS idx_nfa_signal ON net_flow_alerts(signal, ts);
+"""
+
+
+@contextmanager
+def _nfa_conn():
+    from .config import get_settings
+    s = get_settings()
+    c = sqlite3.connect(s.snapshot_db, timeout=30.0)
+    try:
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA busy_timeout=10000")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        yield c
+        c.commit()
+    finally:
+        c.close()
+
+
+def init_net_flow_alerts_db() -> None:
+    with _nfa_conn() as c:
+        c.executescript(NET_FLOW_ALERTS_SCHEMA)
+
+
+def persist_net_flow_alert(
+    ticker: str, signal: str, confidence: str, gap_direction: str,
+    latest: dict[str, Any] | None, regime_info: dict[str, Any],
+) -> None:
+    """Insert one fire into net_flow_alerts (idempotent enough — no
+    natural unique key, dedup is upstream via cooldown)."""
+    try:
+        l = latest or {}
+        with _nfa_conn() as c:
+            c.execute(
+                """INSERT INTO net_flow_alerts
+                    (ts, ticker, signal, confidence, gap_direction, spot,
+                     ncp, npp, price_roc_pct, ncp_roc_dollars, npp_roc_dollars,
+                     description)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    int(time.time()), ticker, signal, confidence, gap_direction,
+                    l.get("price"),
+                    l.get("ncp"),
+                    l.get("npp"),
+                    regime_info.get("price_roc_pct"),
+                    regime_info.get("ncp_roc_dollars"),
+                    regime_info.get("npp_roc_dollars"),
+                    regime_info.get("description", ""),
+                ),
+            )
+    except Exception as e:
+        print(f"[NET_FLOW_ALERT] persist failed for {ticker}: {e}")
 
 
 # Seconds of cooldown between alerts for the same ticker. Set via env or
@@ -532,6 +611,12 @@ async def run_net_flow_alert_loop(stop_event: asyncio.Event) -> None:
                     )
                 )
                 state.mark_fired(ticker, regime)
+
+                # Persist to net_flow_alerts table (Phase 6 — was previously
+                # fire-and-forget Telegram, no WR data).
+                persist_net_flow_alert(
+                    ticker, regime, confidence, gap_dir, latest, regime_info
+                )
 
                 print(
                     f"[NET_FLOW_ALERT] {ticker} → {regime} ({confidence}, {gap_dir}) — fired"

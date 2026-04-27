@@ -59,7 +59,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Backfill forward returns for alerts/signals")
     p.add_argument(
         "--source", type=str, default=None,
-        choices=[None, "sweep", "flow_alert", "soe_signal", "setup_forming"],
+        choices=[None, "sweep", "flow_alert", "soe_signal", "setup_forming", "net_flow_alert"],
         help="Limit to one source type (default: all).",
     )
     p.add_argument(
@@ -225,6 +225,23 @@ def load_setup_forming(days_back: int) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def load_net_flow_alerts(days_back: int) -> list[dict[str, Any]]:
+    """Load NET FLOW alerts. Direction derived from gap_direction (bullish/bearish)."""
+    cutoff = int(time.time()) - days_back * 86400
+    with _conn() as c:
+        try:
+            rows = c.execute(
+                """SELECT id, ts, ticker, signal, confidence, gap_direction, spot
+                   FROM net_flow_alerts
+                   WHERE ts >= ? AND ticker IS NOT NULL
+                   ORDER BY ts""",
+                (cutoff,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+    return [dict(r) for r in rows]
+
+
 # ── Direction normalization ────────────────────────────────────────
 
 
@@ -313,6 +330,9 @@ def main() -> int:
     if args.source in (None, "setup_forming"):
         sources["setup_forming"] = load_setup_forming(args.days_back)
         print(f"[OUTCOMES] Loaded {len(sources['setup_forming'])} setup_forming rows")
+    if args.source in (None, "net_flow_alert"):
+        sources["net_flow_alerts"] = load_net_flow_alerts(args.days_back)
+        print(f"[OUTCOMES] Loaded {len(sources['net_flow_alerts'])} net_flow_alerts rows")
 
     # 2. Group by ticker so we load each close-map once
     by_ticker: dict[str, list[tuple[str, dict]]] = {}
@@ -363,6 +383,21 @@ def main() -> int:
                 grade = f"S{int(row.get('score') or 0)}"
                 is_sweep = 0
                 sweep_venues = None
+            elif stype == "net_flow_alerts":
+                # gap_direction is bullish/bearish/neutral
+                gd = (row.get("gap_direction") or "").lower()
+                if gd == "bullish":
+                    direction = "BUY"
+                elif gd == "bearish":
+                    direction = "SELL"
+                else:
+                    direction = "NEUTRAL"
+                source_type = "net_flow_alert"
+                notional = None
+                # Pack signal_type + confidence into grade for cohort filtering
+                grade = f"{row.get('signal','?')}/{row.get('confidence','?')}"
+                is_sweep = 0
+                sweep_venues = None
             else:
                 continue
 
@@ -391,7 +426,7 @@ def main() -> int:
 
     # 5. Quick sanity summary
     from server.signal_outcomes import get_hit_rate
-    for stype in ("sweep", "flow_alert", "soe_signal", "setup_forming"):
+    for stype in ("sweep", "flow_alert", "soe_signal", "setup_forming", "net_flow_alert"):
         stats = get_hit_rate(source_type=stype, lookback_days=args.days_back, direction="BUY")
         if stats["cohort_size"]:
             h1d = stats["horizons"]["1d"]

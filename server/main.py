@@ -69,6 +69,8 @@ async def lifespan(app: FastAPI):
     init_signals_db()
     init_ab_db()
     init_setup_forming_db()
+    from .net_flow_signals import init_net_flow_alerts_db
+    init_net_flow_alerts_db()
     init_paper_db()
     init_discipline_db()
     init_breadth_db()
