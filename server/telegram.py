@@ -223,6 +223,24 @@ def format_soe_signal(sig: dict[str, Any]) -> str:
         if grade == "B+" else None
     )
 
+    # Convergence callout — Apr 27. When a SOE alert fires alongside
+    # corroborating institutional flow (NET_FLOW gap_direction or
+    # ≥$5M aligned sweep) within 30 min, surface it prominently.
+    # NVDA case study: SOE+NET_FLOW+Mir convergence → +86% intraday.
+    conv_bonus = sig.get("convergence_bonus", 0) or 0
+    conv_reasons = sig.get("convergence_reasons", []) or []
+    score_pre = sig.get("score_pre_convergence")
+    convergence_block = None
+    if conv_bonus > 0:
+        bonus_str = f"+{conv_bonus:.1f}"
+        delta_str = ""
+        if score_pre is not None and score_pre < score:
+            delta_str = f" (was {score_pre} → {score})"
+        convergence_block = (
+            f"🎯 <b>CONVERGENCE {bonus_str}</b>{delta_str}\n"
+            + "\n".join(f"  ↳ {r}" for r in conv_reasons)
+        )
+
     lines = [
         f"{emoji} <b>SOE {grade}</b>: {direction} {ticker}",
         f"<b>{signal_type}</b>",
@@ -235,6 +253,7 @@ def format_soe_signal(sig: dict[str, Any]) -> str:
         f"Mid: ${mid:.2f}" if mid else None,
         f"Size: {kelly}%" if kelly else None,
         f"Greeks: {source.upper()}",
+        convergence_block,
         drift_warning,
     ]
     return "\n".join(l for l in lines if l is not None)

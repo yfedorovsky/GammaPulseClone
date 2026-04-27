@@ -1774,6 +1774,7 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
                 state["_breadth"] = breadth_data
 
         score, reasons = _compute_signal_score(state, direction, confluence, iv_universe)
+        score_pre_convergence = score
 
         # Convergence bonus — Apr 27. If net_flow_alerts or large flow_alerts
         # fired in same direction within 30 min, +0.5 each (capped +1.0).
@@ -2026,6 +2027,9 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
             "spread_pct": contract.get("spread_pct"),
             "contract_oi": contract.get("contract_oi"),
             "reasoning": "\n".join(f"✓ {r}" for r in reasons),
+            "convergence_bonus": conv_bonus,
+            "convergence_reasons": conv_reasons,
+            "score_pre_convergence": round(score_pre_convergence, 1),
             "status": "PENDING",
             "greeks_source": state.get("_greeks_source", "tradier"),
             "greeks_age_seconds": round(greeks_age, 1),
