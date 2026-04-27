@@ -51,6 +51,10 @@ TIER_2 = [
     "AMKR",  # Amkor Technology — packaging, CoWoS adjacent, Group #7
     "KEYS",  # Keysight — measurement/test, Group #9 Scientific
     "MPWR",  # Monolithic Power — power mgmt for data centers, Group #38
+    # Added Apr 27 — Mir flagged in Q1 cascade thesis but missing from universe.
+    # RMBS dropped -10% AH on its print without any system warning, validating
+    # the gap. Memory-systems IP company; sympathy-trades with MU/SNDK earnings.
+    "RMBS",  # Rambus — high-perf memory IP, sympathy-trades semis cycle
     # Financials
     "WFC", "C", "GS", "MS", "SCHW", "AXP", "BLK", "SPGI", "BRK.B", "ICE",
     "CME", "PNC", "USB", "COF", "TFC",
