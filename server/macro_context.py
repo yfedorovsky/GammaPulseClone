@@ -45,6 +45,18 @@ async def get_macro_context() -> dict[str, Any]:
     except Exception as e:
         vex_state = {"error": str(e)}
 
+    # Phase 6: macro pivot detection — fires Telegram alert on STRONG (rare,
+    # high-conviction). Dedupe state file prevents double-alerting. Errors
+    # silent (don't break the dashboard if Telegram is down).
+    pivot_detection: dict[str, Any] | None = None
+    try:
+        from .macro_pivot_detector import detect_macro_pivot, fire_telegram_alert
+        pivot_detection = await detect_macro_pivot()
+        if pivot_detection.get("fires"):
+            await fire_telegram_alert(pivot_detection)
+    except Exception as e:
+        pivot_detection = {"error": str(e)}
+
     # Combined sizing modifier — most-restrictive rule wins.
     # Both regime alignment and stress have a size_modifier; take the lower.
     align_mod = align.get("size_modifier", 1.0)
@@ -93,6 +105,7 @@ async def get_macro_context() -> dict[str, Any]:
         "stress_composite": stress,
         "spy_forecast": forecast,
         "spy_vex": vex_state,
+        "macro_pivot": pivot_detection,
         "dominant_filtered": filtered_dominant,
         "dominant_raw": raw_dominant,
         "in_transition": is_changing,

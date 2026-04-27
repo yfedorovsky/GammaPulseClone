@@ -352,6 +352,70 @@ async def detect_macro_pivot() -> dict[str, Any]:
     }
 
 
+async def fire_telegram_alert(detection: dict[str, Any]) -> bool:
+    """Send a high-priority Telegram alert when macro pivot STRONG fires.
+
+    Called from the live worker after detect_macro_pivot() returns
+    `fires=True`. Idempotent via state file (won't double-alert on the
+    same date).
+
+    Returns True if alert was sent, False if suppressed (duplicate or error).
+    """
+    if not detection.get("fires"):
+        return False
+
+    import datetime
+    import json
+    from pathlib import Path
+
+    # Dedupe state — one alert per pivot day
+    state_path = Path(__file__).resolve().parent.parent / "data" / "macro_pivot_alert_state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    today = datetime.date.today().isoformat()
+    try:
+        state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        state = {}
+    if state.get("last_alert_date") == today:
+        return False  # already alerted today
+
+    # Build the message
+    g1 = detection["gates"]["G1"]
+    g2 = detection["gates"]["G2"]
+    g3 = detection["gates"]["G3"]
+    spot = detection.get("spot_inputs", {})
+    msg_lines = [
+        "🔥 MACRO PIVOT DETECTED — all 3 gates fired",
+        "",
+        f"NYMO: {spot.get('nymo'):+.0f}  |  breadth: {spot.get('pct_above_200d')}%  |  VIX: {spot.get('vix')}",
+        "",
+        f"G1 EXTREME_OVERSOLD: {g1['summary']}",
+        f"G2 DE_ESCALATION: {g2['summary']}",
+        f"G3 VIX_CONTANGO + VEX: {g3['summary']}",
+        "",
+        "Suggested trade: SPY long calls 60-90 DTE, 2-3% OTM",
+        "Size: 3.5% of account (3-4% cap per protocol)",
+        "WARNING: cohort is likely in max drawdown — effective exposure ~2× the SPY position alone",
+        "",
+        "MANUAL execution required. Verify gates still fire on entry day.",
+    ]
+    msg = "\n".join(msg_lines)
+
+    try:
+        from .telegram import send
+        await send(msg, ticker="SPY", priority=True, force=True)
+    except Exception as e:
+        print(f"[MACRO_PIVOT] Telegram send failed: {e}")
+        return False
+
+    # Persist state
+    state["last_alert_date"] = today
+    state["last_alert_summary"] = detection.get("summary", "")
+    state_path.write_text(json.dumps(state, indent=2))
+    print(f"[MACRO_PIVOT] 🔥 Telegram alert sent for {today}")
+    return True
+
+
 def propose_trade(detection: dict[str, Any], account_value: float,
                   cohort_open_count: int = 0) -> dict[str, Any]:
     """Translate a STRONG pivot detection into a concrete trade proposal.
