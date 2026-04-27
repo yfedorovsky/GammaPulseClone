@@ -12,3 +12,15 @@ dist/
 history.txt
 data/
 backtest_*.json
+
+# Phase 6 cleanup: runtime DBs and ad-hoc JSON dumps
+flow_alerts.db
+king_breakouts.db
+king_migrations.db
+zero_dte_alerts.db
+*_dump.json
+live_*.json
+setup_cooldown.json
+aaoi*.json
+nvda.json
+oklo.json
