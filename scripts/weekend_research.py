@@ -66,12 +66,23 @@ SOURCES: dict[str, dict[str, str]] = {
         "type": "rss",
         "url": "https://thediligencestack.com/feed",
     },
-    "JPM Market Insights": {
-        "type": "html",
-        "url": "https://am.jpmorgan.com/us/en/asset-management/adv/insights/market-insights/market-updates/weekly-market-recap/",
-    },
-    # Mirae Asset removed — JS-rendered page returned only navbar in tests.
+    # JPM Market Insights removed Apr 27 — page is fully React-rendered, 0 <p>
+    # tags reachable via httpx. Replaced by Finnhub macro/earnings (--macro flag).
+    # Mirae Asset removed earlier — same JS-rendered issue.
     # User can add Substack / Kakao / specific research PDFs manually.
+}
+
+
+# Mega-cap tickers that warrant a featured callout in the earnings calendar
+# (sized + tape-moving). Anything outside this list still appears but as a
+# secondary tier.
+EARNINGS_MEGA_CAP = {
+    "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA", "TSLA",
+    "AVGO", "ORCL", "ADBE", "NFLX", "AMD", "QCOM", "INTC", "TSM", "ASML",
+    "JPM", "BAC", "WFC", "GS", "MS", "BRK.B",
+    "XOM", "CVX", "WMT", "COST", "HD", "UNH", "JNJ", "PG", "V", "MA",
+    "MU", "MRVL", "AMAT", "KLAC", "LRCX", "CRWD", "PANW", "PLTR",
+    "SMCI", "ANET", "VRT", "DELL",
 }
 
 
@@ -97,8 +108,17 @@ Three to five numbered themes. Each with:
 A markdown table: | Ticker | Catalyst | Source | Direction (Long/Short/Watch) |
 Only include tickers with a CONCRETE near-term catalyst from the source material. Do not speculate beyond the sources.
 
+## Macro Week Ahead
+ONLY if economic-calendar / earnings-calendar source material is provided.
+Flag the HIGH-impact events first (FOMC, CPI, NFP, PCE, etc.) with date + time.
+Then list mega-cap earnings prints by date, calling out which day they cluster
+on and which themes they expose (semis, megacap tech, banks, retail).
+End with one sentence on which event is the dominant risk vector for the week.
+
 ## Risks to Monitor
-Bulleted list of 3-5 downside scenarios from the source material.
+Bulleted list of 3-5 downside scenarios. Include BOTH semi-specific risks (from
+narrative sources) AND macro/positioning risks if calendar data is provided.
+Don't ignore FOMC / earnings just because the narrative sources didn't mention them.
 
 ## What Changed This Week
 1-2 sentences on how the picture shifted vs prior weeks (call out if sources agree or diverge).
@@ -186,7 +206,88 @@ def fetch_source(name: str, spec: dict[str, str], use_cache: bool = True) -> str
     return body
 
 
-def aggregate_corpus(use_cache: bool = True) -> tuple[str, dict[str, int]]:
+def fetch_finnhub_economic(days_ahead: int = 7) -> str:
+    """Pull the next N days of US economic events (FOMC, CPI, NFP, etc.)
+    from Finnhub. Returns a compact summary suitable for LLM context."""
+    key = os.environ.get("FINNHUB_API_KEY")
+    if not key:
+        return "[macro disabled — FINNHUB_API_KEY not set]"
+    today = dt.date.today()
+    end = today + dt.timedelta(days=days_ahead)
+    url = "https://finnhub.io/api/v1/calendar/economic"
+    params = {"from": today.isoformat(), "to": end.isoformat(), "token": key}
+    try:
+        with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
+            r = c.get(url, params=params)
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        return f"[economic calendar fetch error: {e}]"
+    events = data.get("economicCalendar", []) or []
+    us_events = [e for e in events if e.get("country") == "US"]
+    if not us_events:
+        return "[no US economic events in next 7 days]"
+    # Sort by time, prioritize HIGH impact
+    us_events.sort(key=lambda x: (x.get("impact") != "high", x.get("time", "")))
+    lines = []
+    for e in us_events[:25]:
+        impact = (e.get("impact") or "?").upper()
+        time_str = e.get("time", "")
+        event = e.get("event", "?")
+        actual = e.get("actual")
+        estimate = e.get("estimate")
+        prev = e.get("prev")
+        prev_str = f" prev={prev}" if prev is not None else ""
+        est_str = f" est={estimate}" if estimate is not None else ""
+        lines.append(f"[{impact}] {time_str}  {event}{est_str}{prev_str}")
+    return "\n".join(lines)
+
+
+def fetch_finnhub_earnings(days_ahead: int = 7) -> str:
+    """Pull next N days of US earnings, separating mega-cap from rest."""
+    key = os.environ.get("FINNHUB_API_KEY")
+    if not key:
+        return "[macro disabled — FINNHUB_API_KEY not set]"
+    today = dt.date.today()
+    end = today + dt.timedelta(days=days_ahead)
+    url = "https://finnhub.io/api/v1/calendar/earnings"
+    params = {"from": today.isoformat(), "to": end.isoformat(), "token": key}
+    try:
+        with httpx.Client(timeout=REQUEST_TIMEOUT) as c:
+            r = c.get(url, params=params)
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        return f"[earnings calendar fetch error: {e}]"
+    items = data.get("earningsCalendar", []) or []
+    if not items:
+        return "[no earnings in next 7 days]"
+    # Sort: mega-caps first, then by date
+    items.sort(key=lambda x: (
+        x.get("symbol") not in EARNINGS_MEGA_CAP,
+        x.get("date", ""),
+        x.get("symbol", "")
+    ))
+    mega = [i for i in items if i.get("symbol") in EARNINGS_MEGA_CAP]
+    other = [i for i in items if i.get("symbol") not in EARNINGS_MEGA_CAP]
+
+    lines: list[str] = []
+    if mega:
+        lines.append("MEGA-CAP / TAPE-MOVING:")
+        for i in mega[:30]:
+            sym = i.get("symbol", "?")
+            date = i.get("date", "")
+            hour = i.get("hour", "")
+            eps_est = i.get("epsEstimate")
+            eps_str = f" EPS_est={eps_est}" if eps_est is not None else ""
+            lines.append(f"  {date} {hour:>3}  {sym}{eps_str}")
+    if other:
+        lines.append(f"\nOTHER ({len(other)} more): " +
+                     ", ".join(i.get("symbol", "?") for i in other[:40]))
+    return "\n".join(lines)
+
+
+def aggregate_corpus(use_cache: bool = True, include_macro: bool = True) -> tuple[str, dict[str, int]]:
     """Fetch all sources, join into one corpus with source delimiters.
     Returns (corpus, stats) where stats maps source name → byte count."""
     parts: list[str] = []
@@ -196,6 +297,25 @@ def aggregate_corpus(use_cache: bool = True) -> tuple[str, dict[str, int]]:
         body = fetch_source(name, spec, use_cache=use_cache)
         stats[name] = len(body)
         parts.append(f"=== SOURCE: {name} ({spec['url']}) ===\n{body}")
+
+    # Macro layer (Finnhub economic calendar + earnings calendar). Cached
+    # the same way as RSS sources so we don't hammer the API on re-runs.
+    if include_macro:
+        for name, fetcher in [
+            ("Finnhub Economic Calendar (next 7d)", fetch_finnhub_economic),
+            ("Finnhub Earnings Calendar (next 7d)", fetch_finnhub_earnings),
+        ]:
+            cache_path = _cache_path(name)
+            if use_cache and _cache_fresh(cache_path):
+                body = cache_path.read_text(encoding="utf-8")
+                print(f"[fetch] {name} (cached)", flush=True)
+            else:
+                print(f"[fetch] {name} (finnhub api)", flush=True)
+                body = fetcher()
+                cache_path.write_text(body, encoding="utf-8")
+            stats[name] = len(body)
+            parts.append(f"=== SOURCE: {name} ===\n{body}")
+
     corpus = "\n\n".join(parts)
     return corpus, stats
 
@@ -343,10 +463,15 @@ def main():
                     help="Fetch sources only, skip LLM call + report write.")
     ap.add_argument("--no-cache", action="store_true",
                     help="Bypass the 6h source cache (always re-fetch).")
+    ap.add_argument("--no-macro", action="store_true",
+                    help="Skip Finnhub economic + earnings calendar fetch.")
     args = ap.parse_args()
 
     # Fetch sources first so we can abort cheaply if all sources are dead.
-    corpus, stats = aggregate_corpus(use_cache=not args.no_cache)
+    corpus, stats = aggregate_corpus(
+        use_cache=not args.no_cache,
+        include_macro=not args.no_macro,
+    )
     print()
     for name, n in stats.items():
         print(f"  {name}: {n:,} chars", flush=True)
