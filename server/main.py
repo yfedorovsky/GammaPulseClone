@@ -6,8 +6,10 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import json
@@ -138,6 +140,17 @@ async def lifespan(app: FastAPI):
     global _king_mig_task
     from .king_migration import run_king_migration_live_loop
     _king_mig_task = asyncio.create_task(run_king_migration_live_loop(_stop))
+    # GLW earnings primer (Apr 27 - Apr 29 window). Hourly scan during
+    # market hours of GLW/COHR/LITE/RMBS for SOE/NET FLOW/large flow_alerts.
+    # Self-disables after Wed 4/29 close. No-op outside the active dates.
+    global _glw_primer_task
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from scripts.glw_earnings_primer import run_glw_primer_loop
+        _glw_primer_task = asyncio.create_task(run_glw_primer_loop(_stop))
+    except Exception as e:
+        _glw_primer_task = None
+        print(f"[STARTUP] glw_primer task NOT started: {e}")
     # Discord listener: opt-in via DISCORD_ENABLED=true in .env
     _discord_task = None
     s = get_settings()

@@ -211,3 +211,92 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ── Server-side background loop ─────────────────────────────────────
+#
+# Runs the primer every hour during market hours on Tue 4/28 and Wed 4/29
+# (the GLW earnings window). Auto-disables after Wed 4/29 close. Only
+# pushes Telegram if there's a qualifying signal — silent runs are no-ops
+# to avoid spam.
+#
+# Wired into main.py startup as an asyncio task so it lives alongside
+# run_signal_engine, run_net_flow_alert_loop, etc.
+
+from datetime import time as _time
+
+PRIMER_ACTIVE_DATES = {
+    # Mir's Q1 cascade window — auto-expires after Wed 4/29 close
+    datetime(2026, 4, 28).date(),
+    datetime(2026, 4, 29).date(),
+}
+
+PRIMER_MARKET_OPEN_ET = _time(9, 30)
+PRIMER_MARKET_CLOSE_ET = _time(16, 0)
+PRIMER_INTERVAL_S = 3600  # hourly
+PRIMER_LOOKBACK_HOURS = 1  # only "new since last hour" to avoid duplicate alerts
+
+
+async def run_glw_primer_loop(stop_event) -> None:
+    """Hourly scan during GLW earnings window. Sends Telegram only when
+    a qualifying signal fires on the cascade tickers. Self-disables once
+    PRIMER_ACTIVE_DATES are all in the past."""
+    import asyncio
+    print("[glw_primer] loop starting — active "
+          + ", ".join(d.isoformat() for d in sorted(PRIMER_ACTIVE_DATES)))
+
+    while not stop_event.is_set():
+        now_et = datetime.now()
+        today = now_et.date()
+        active = today in PRIMER_ACTIVE_DATES
+        in_market_hours = (PRIMER_MARKET_OPEN_ET <= now_et.time() <=
+                           PRIMER_MARKET_CLOSE_ET)
+        past_window = max(PRIMER_ACTIVE_DATES) < today
+
+        if past_window:
+            print("[glw_primer] earnings window passed — exiting loop")
+            return
+
+        if not active or not in_market_hours:
+            # Sleep until next check (5 min granularity is fine)
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=300)
+                return
+            except asyncio.TimeoutError:
+                continue
+
+        # In window — scan
+        try:
+            cutoff = int(time.time()) - PRIMER_LOOKBACK_HOURS * 3600
+            s = get_settings()
+            c = sqlite3.connect(s.snapshot_db)
+            c.row_factory = sqlite3.Row
+            scans = [scan_ticker(c, t, cutoff) for t in CASCADE_TICKERS]
+            c.close()
+
+            any_signal = any(sc["has_signal"] for sc in scans)
+            if any_signal:
+                report = format_report(scans, PRIMER_LOOKBACK_HOURS)
+                try:
+                    from server.telegram import send
+                    await send(report, ticker="GLW", force=True)
+                    print(f"[glw_primer] {now_et:%H:%M} sent — "
+                          + ", ".join(sc["ticker"] for sc in scans
+                                      if sc["has_signal"]))
+                except Exception as e:
+                    print(f"[glw_primer] telegram send error: {e}")
+            else:
+                print(f"[glw_primer] {now_et:%H:%M} silent (no signals "
+                      f"on {', '.join(CASCADE_TICKERS)})")
+        except Exception as e:
+            print(f"[glw_primer] scan error: {e}")
+
+        # Sleep until next hour
+        try:
+            await asyncio.wait_for(stop_event.wait(),
+                                   timeout=PRIMER_INTERVAL_S)
+            return
+        except asyncio.TimeoutError:
+            continue
+
+    print("[glw_primer] loop stopped")
