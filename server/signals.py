@@ -152,6 +152,36 @@ def init_ab_db() -> None:
         c.executescript(AB_SCHEMA)
 
 
+SETUP_FORMING_SCHEMA = """
+CREATE TABLE IF NOT EXISTS setup_forming (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  ticker TEXT NOT NULL,
+  score INTEGER NOT NULL,
+  spot REAL,
+  king REAL,
+  floor REAL,
+  regime TEXT,
+  signal TEXT,
+  rts_score INTEGER,
+  ivp REAL,
+  contract TEXT,
+  reasons TEXT,
+  flow_note TEXT,
+  in_mir_sector INTEGER DEFAULT 0,
+  is_pm INTEGER DEFAULT 1,
+  is_monday INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_setup_forming_ts ON setup_forming(ts);
+CREATE INDEX IF NOT EXISTS idx_setup_forming_ticker ON setup_forming(ticker, ts);
+"""
+
+
+def init_setup_forming_db() -> None:
+    with _conn() as c:
+        c.executescript(SETUP_FORMING_SCHEMA)
+
+
 _seen_signals: set[str] = set()
 
 def _load_recent_signals() -> None:
@@ -2459,6 +2489,30 @@ async def scan_setups() -> list[dict[str, Any]]:
             setups.append(setup)
             _setup_seen[ticker] = now_ts
             _save_setup_seen()  # persist immediately — survives --reload
+
+            # Persist to setup_forming table for outcome tracking (Phase 6 —
+            # was previously fire-and-forget Telegram only, no WR data).
+            try:
+                with _conn() as _c:
+                    _c.execute(
+                        """INSERT INTO setup_forming
+                            (ts, ticker, score, spot, king, floor, regime, signal,
+                             rts_score, ivp, contract, reasons, flow_note,
+                             in_mir_sector, is_pm, is_monday)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            int(now_ts), ticker, score, spot, king, floor_v,
+                            regime, signal,
+                            rts_score if rts_score else None,
+                            ivp,
+                            contract_line,
+                            _json.dumps(reasons),
+                            flow_note,
+                            int(in_sector), int(is_pm), int(is_monday),
+                        ),
+                    )
+            except Exception as e:
+                print(f"[SETUP] persist failed for {ticker}: {e}")
 
     # Sort by score descending, take top 3
     setups.sort(key=lambda x: x["score"], reverse=True)

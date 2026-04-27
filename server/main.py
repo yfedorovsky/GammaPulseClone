@@ -25,7 +25,7 @@ from .flow_alerts import init_alert_db, get_alerts as get_flow_alerts, run_flow_
 from .option_flow_daily import init_flow_daily_db, get_flow_daily, get_golden_flow, is_golden_flow, GOLDEN_FLOW_RULES, get_tail_flow, is_tail_flow, TAIL_FLOW_RULES
 from .signal_outcomes import init_outcomes_db, get_hit_rate
 from .discipline import init_discipline_db, get_ticker_stats, compute_kelly_size, get_circuit_breaker, log_trade
-from .signals import init_signals_db, init_ab_db, get_signals, get_signal_stats, run_signal_engine
+from .signals import init_signals_db, init_ab_db, init_setup_forming_db, get_signals, get_signal_stats, run_signal_engine
 from .paper_trading import init_paper_db
 from .scalp_alerts import run_scalp_scanner
 from .trade_tracker import init_tracker_db, get_all_trades, run_position_monitor
@@ -68,6 +68,7 @@ async def lifespan(app: FastAPI):
     init_tracker_db()
     init_signals_db()
     init_ab_db()
+    init_setup_forming_db()
     init_paper_db()
     init_discipline_db()
     init_breadth_db()

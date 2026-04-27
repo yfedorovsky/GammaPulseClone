@@ -59,7 +59,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Backfill forward returns for alerts/signals")
     p.add_argument(
         "--source", type=str, default=None,
-        choices=[None, "sweep", "flow_alert", "soe_signal"],
+        choices=[None, "sweep", "flow_alert", "soe_signal", "setup_forming"],
         help="Limit to one source type (default: all).",
     )
     p.add_argument(
@@ -208,6 +208,23 @@ def load_soe_signals(days_back: int) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def load_setup_forming(days_back: int) -> list[dict[str, Any]]:
+    """Load SETUP FORMING fires. Always BUY (POS regime + king-magnet-up by design)."""
+    cutoff = int(time.time()) - days_back * 86400
+    with _conn() as c:
+        try:
+            rows = c.execute(
+                """SELECT id, ts, ticker, score, spot
+                   FROM setup_forming
+                   WHERE ts >= ? AND ticker IS NOT NULL
+                   ORDER BY ts""",
+                (cutoff,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+    return [dict(r) for r in rows]
+
+
 # ── Direction normalization ────────────────────────────────────────
 
 
@@ -293,6 +310,9 @@ def main() -> int:
     if args.source in (None, "soe_signal"):
         sources["soe_signals"] = load_soe_signals(args.days_back)
         print(f"[OUTCOMES] Loaded {len(sources['soe_signals'])} soe_signals rows")
+    if args.source in (None, "setup_forming"):
+        sources["setup_forming"] = load_setup_forming(args.days_back)
+        print(f"[OUTCOMES] Loaded {len(sources['setup_forming'])} setup_forming rows")
 
     # 2. Group by ticker so we load each close-map once
     by_ticker: dict[str, list[tuple[str, dict]]] = {}
@@ -334,6 +354,15 @@ def main() -> int:
                 grade = row.get("grade")
                 is_sweep = 0
                 sweep_venues = None
+            elif stype == "setup_forming":
+                # SETUP FORMING is always bullish by construction
+                # (POS regime + king magnet UP). Score stored as grade.
+                direction = "BUY"
+                source_type = "setup_forming"
+                notional = None
+                grade = f"S{int(row.get('score') or 0)}"
+                is_sweep = 0
+                sweep_venues = None
             else:
                 continue
 
@@ -362,7 +391,7 @@ def main() -> int:
 
     # 5. Quick sanity summary
     from server.signal_outcomes import get_hit_rate
-    for stype in ("sweep", "flow_alert", "soe_signal"):
+    for stype in ("sweep", "flow_alert", "soe_signal", "setup_forming"):
         stats = get_hit_rate(source_type=stype, lookback_days=args.days_back, direction="BUY")
         if stats["cohort_size"]:
             h1d = stats["horizons"]["1d"]
