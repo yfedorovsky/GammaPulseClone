@@ -1964,23 +1964,39 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
         except Exception as e:
             print(f"[SOE] iv_rank gate check failed (fail-open): {e}")
 
-        # Phase 6 — A-grade SAFETY GUARD (Apr 27 grade audit finding).
-        # Empirical: A-grade signals have INVERSE 1d hit rate vs B+:
-        #   POST BOTTOM LAUNCH: A grade 0% hit (n=7) vs B+ 64% (n=374)
-        #   MAGNET BREAKOUT:    A grade 20% (n=5) vs B+ 68% (n=303)
-        #   PINNING PREMIUM SELL: A grade 0% (n=3) vs B+ 52% (n=118)
-        # Pattern: high-confluence A-grade pins-and-reverts off structural
-        # walls at 1d horizon. Don't auto-trade these specific A combos.
-        # See backtest/grade_audit.py + data/grade_audit.csv.
-        BROKEN_A_SIGNAL_TYPES = {
-            "POST BOTTOM LAUNCH",
-            "MAGNET BREAKOUT",
-            "PINNING PREMIUM SELL",
-        }
-        is_broken_a_combo = (
-            grade in ("A+", "A")
-            and (sig.get("signal_type") or "").upper() in BROKEN_A_SIGNAL_TYPES
-        )
+        # Phase 6 — A-grade STRUCTURAL SAFETY GUARD (Apr 27 grade audit).
+        # Empirical decomposition (n=810 A+B+ signals): A grade catastrophically
+        # fails when fired in EXTENDED conditions because the "all walls align"
+        # bonus pushes B+ → A precisely at LOCAL TOPS.
+        #
+        # Failure modes (each independently catastrophic for A grade):
+        #   IV > 45:                A 23-27% hit vs B+ 53-57%
+        #   Spot 15-30% above ZGL:  A 8% hit    vs B+ 48% ← worst dead zone
+        #   R:R > 2.5:              A 34% hit   vs B+ 68%
+        #
+        # Mechanism: high-IV + extended-spot + far-target = paying up for
+        # premium that will crush, no mean-reversion attractor pull,
+        # chasing extension. Classic late-cycle pin-and-reverse setup.
+        # Block A auto-trade if 2+ risk factors fire (allow 1 — those still
+        # average 50%+ hit rate; 2+ drops to <30%).
+        is_broken_a_combo = False
+        risk_factors_fired = []
+        if grade in ("A+", "A"):
+            sig_iv = sig.get("iv") or 0
+            sig_spot = sig.get("spot") or 0
+            sig_zgl = sig.get("zgl") or 0
+            sig_rr = sig.get("rr_ratio") or 0
+            spot_to_zgl_pct = ((sig_spot - sig_zgl) / sig_spot * 100
+                                if sig_spot > 0 else 0)
+            if sig_iv > 45:
+                risk_factors_fired.append(f"IV>{45} ({sig_iv:.0f})")
+            if 15 <= spot_to_zgl_pct <= 30:
+                risk_factors_fired.append(
+                    f"spot in dead zone 15-30% above ZGL ({spot_to_zgl_pct:.0f}%)"
+                )
+            if sig_rr > 2.5:
+                risk_factors_fired.append(f"R:R>{2.5} ({sig_rr:.1f})")
+            is_broken_a_combo = len(risk_factors_fired) >= 2
 
         # Auto-open paper position:
         #   - MIR_MOMENTUM: always (frozen spec v1.0)
@@ -1996,8 +2012,10 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
 
         if is_broken_a_combo:
             sig["_broken_a_blocked"] = True
-            print(f"[SOE] A-grade SAFETY block: {ticker} {sig.get('signal_type')} "
-                  f"— historical 1d hit 0-20%; signal logged but NOT auto-traded")
+            sig["_broken_a_factors"] = list(risk_factors_fired)
+            print(f"[SOE] A-grade STRUCTURAL block: {ticker} {sig.get('signal_type')} "
+                  f"— {len(risk_factors_fired)} risk factors fired: "
+                  f"{'; '.join(risk_factors_fired)}; signal logged but NOT auto-traded")
 
         # Apply breadth gate to auto-trade decision.
         if (regime_blocks_long or regime_grade_blocks) and should_auto_trade:
