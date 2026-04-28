@@ -55,6 +55,14 @@ TIER_2 = [
     # RMBS dropped -10% AH on its print without any system warning, validating
     # the gap. Memory-systems IP company; sympathy-trades with MU/SNDK earnings.
     "RMBS",  # Rambus — high-perf memory IP, sympathy-trades semis cycle
+    # Breadth / concentration proxies (added Apr 27 — macro regime layer).
+    # QQQE = equal-weight Nasdaq-100. Compared to QQQ (cap-weighted) it
+    # surfaces narrow-leadership tape: QQQ up + QQQE flat = "only mega-caps
+    # working." XMAG = large-cap ex-Magnificent-7. RSP = equal-weight S&P 500.
+    # Used by macro_regime.py to compute participation/concentration tilt.
+    "QQQE",  # Direxion Nasdaq-100 Equal Weight ETF
+    "XMAG",  # Roundhill Magnificent Seven ex-mag-7 (large-cap minus FAANG)
+    "RSP",   # Invesco S&P 500 Equal Weight ETF
     # Financials
     "WFC", "C", "GS", "MS", "SCHW", "AXP", "BLK", "SPGI", "BRK.B", "ICE",
     "CME", "PNC", "USB", "COF", "TFC",

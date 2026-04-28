@@ -69,7 +69,11 @@ CREATE TABLE IF NOT EXISTS soe_signals (
   reasoning TEXT,
   status TEXT DEFAULT 'PENDING',
   outcome_price REAL,
-  outcome_ts INTEGER
+  outcome_ts INTEGER,
+  -- Apr 27: macro regime tag (shadow mode). Captures NONE/SOFT/HARD/A_ONLY
+  -- per server.macro_regime.compute_macro_regime() at fire time. After
+  -- 1-2 weeks of accumulated outcomes we'll backtest WR by tag.
+  macro_regime_tag TEXT DEFAULT 'NONE'
 );
 CREATE INDEX IF NOT EXISTS idx_soe_ts ON soe_signals(ts);
 CREATE INDEX IF NOT EXISTS idx_soe_ticker ON soe_signals(ticker, ts);
@@ -859,6 +863,17 @@ def _momentum_confirmation_check(ticker: str, direction: str) -> bool:
 CONVERGENCE_LOOKBACK_SEC = 1800  # 30 min
 CONVERGENCE_FLOW_NOTIONAL_USD = 5_000_000  # $5M floor for flow_alert match
 CONVERGENCE_BONUS_PTS = 0.5
+
+
+def _safe_macro_regime_tag() -> str:
+    """Wrap macro_regime_tag() with belt-and-suspenders fail-open. Apr 27
+    shadow-mode addition; never blocks signal generation if calendar cache
+    or breadth query fails."""
+    try:
+        from .macro_regime import macro_regime_tag
+        return macro_regime_tag()
+    except Exception:
+        return "NONE"
 
 
 def _check_convergence_bonus(ticker: str, direction: str) -> tuple[float, list[str]]:
@@ -2030,6 +2045,7 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
             "convergence_bonus": conv_bonus,
             "convergence_reasons": conv_reasons,
             "score_pre_convergence": round(score_pre_convergence, 1),
+            "macro_regime_tag": _safe_macro_regime_tag(),
             "status": "PENDING",
             "greeks_source": state.get("_greeks_source", "tradier"),
             "greeks_age_seconds": round(greeks_age, 1),
@@ -2210,8 +2226,8 @@ def _insert_signal(sig: dict[str, Any]) -> int | None:
              strike, expiration, option_type, target, target_label, stop, stop_label,
              rr_ratio, spot, king, floor_level, ceiling_level, zgl, regime, iv,
              delta, gamma, reasoning, status,
-             entry_price, mid_price, bid, ask)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             entry_price, mid_price, bid, ask, macro_regime_tag)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 int(time.time()),
                 sig["ticker"], sig["direction"], sig["signal_type"],
@@ -2226,6 +2242,7 @@ def _insert_signal(sig: dict[str, Any]) -> int | None:
                 sig.get("mid_price"),
                 sig.get("bid"),
                 sig.get("ask"),
+                sig.get("macro_regime_tag", "NONE"),
             ),
         )
         row = c.execute("SELECT last_insert_rowid()").fetchone()

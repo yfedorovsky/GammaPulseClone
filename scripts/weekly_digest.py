@@ -79,6 +79,48 @@ def run_backfill(days: int) -> None:
         print("  WARN: backfill timed out at 10min")
 
 
+def macro_regime_summary(days: int) -> None:
+    """Apr 27 shadow-mode addition. Shows SOE WR sliced by macro_regime_tag
+    (NONE/SOFT/HARD/A_ONLY). Validates the rule before flipping it live."""
+    print(f"\n--- Macro Regime tag analysis (SOE only, last {days} days) ---")
+    cutoff = int(time.time()) - days * 86400
+    s = get_settings()
+    c = sqlite3.connect(s.snapshot_db)
+    try:
+        df = pd.read_sql_query("""
+            SELECT s.macro_regime_tag, s.grade, s.signal_type,
+                   o.return_1d, o.return_3d, o.hit_1d, o.hit_3d
+            FROM soe_signals s
+            LEFT JOIN signal_outcomes o
+              ON o.source_type = 'soe_signal' AND o.source_id = CAST(s.id AS TEXT)
+            WHERE s.ts >= ?
+        """, c, params=(cutoff,))
+    finally:
+        c.close()
+
+    if df.empty:
+        print("  No SOE signals in window")
+        return
+
+    df["macro_regime_tag"] = df["macro_regime_tag"].fillna("NONE")
+    print(f"  Total SOE signals: {len(df)}")
+    print(f"  By tag (count, then 1d outcomes where forward data is available):")
+    for tag, sub in df.groupby("macro_regime_tag"):
+        with_outcomes = sub.dropna(subset=["return_1d"])
+        if len(with_outcomes) == 0:
+            print(f"    {tag:<8} n={len(sub):>4}  (no forward data yet)")
+            continue
+        # Direction-aware hit (we don't have direction here, so use raw return > 0)
+        # for SOE which is mostly BULL signals
+        hit = (with_outcomes["return_1d"] > 0).mean() * 100
+        avg = with_outcomes["return_1d"].mean() * 100
+        print(f"    {tag:<8} n={len(sub):>4}  with_outcomes={len(with_outcomes):>3}  "
+              f"1d_hit={hit:>5.1f}%  avg_ret={avg:+5.2f}%")
+
+    print(f"\n  Reading: if HARD has materially LOWER hit% than NONE (5pp+),")
+    print(f"  the rule is justified. Run again next week — current shadow mode.")
+
+
 def signal_outcomes_summary(days: int) -> None:
     print(f"\n[2/3] Signal-outcome WR by source_type (last {days} days)")
     print("-" * 70)
@@ -259,6 +301,7 @@ def main() -> int:
         print("[1/3] Skipping backfill (--no-backfill)")
 
     signal_outcomes_summary(args.days)
+    macro_regime_summary(args.days)
     zero_dte_audit(args.days)
 
     print()
