@@ -117,17 +117,60 @@ def load(days: int) -> pd.DataFrame:
         return "PM"
     df["time_of_day"] = df["hour_et"].apply(_tod)
 
-    # Promoted A inference: A/A+ signal with "convergence" in reasoning
+    # Promoted A inference (only for OLD score-boosted convergence — new
+    # convergence is FLAG-only and won't promote any A's). The text format
+    # discriminates: old = "convergence +X.X (...)", new = "convergence FLAG (...)".
     df["is_a_grade"] = df["grade"].isin(["A", "A+"])
     df["was_promoted"] = (
         df["is_a_grade"]
-        & df["reasoning"].fillna("").str.contains("convergence", case=False)
+        & df["reasoning"].fillna("").str.contains(r"convergence \+", regex=True)
+    )
+    df["has_convergence_flag"] = (
+        df["reasoning"].fillna("").str.contains("convergence", case=False)
     )
     df["a_class"] = df.apply(
         lambda r: "PROMOTED_A" if r["is_a_grade"] and r["was_promoted"]
         else ("ORIGINAL_A" if r["is_a_grade"] else "NOT_A"),
         axis=1,
     )
+
+    # Score band bucketing — Perplexity Apr 27 follow-up: split convergence
+    # WR by score band to detect "does convergence add info in 3.8-4.4
+    # band where score-PnL hasn't inverted yet?"
+    def _score_band(s):
+        if pd.isna(s):
+            return "?"
+        if s < 3.75:
+            return "<3.75 (low)"
+        if s < 4.2:
+            return "3.75-4.1 (sweet)"
+        if s < 4.5:
+            return "4.2-4.4 (mid)"
+        if s < 4.8:
+            return "4.5-4.7 (warn)"
+        return "≥4.8 (FADE)"
+    df["score_band"] = df["score"].apply(_score_band)
+
+    # Mean-revert detection for high-score signals — Perplexity #1.
+    # Definition: signal direction was BULL, but 1d return < -0.3% (or
+    # 1d return < 0 AND 3d return < 0). Captures "system said up, tape
+    # went down." For BEAR signals, mirrored. NaN if no outcome yet.
+    def _mean_reverted(row):
+        ret_1d = row.get("return_1d")
+        ret_3d = row.get("return_3d")
+        if pd.isna(ret_1d):
+            return None
+        d = (row.get("direction") or "").upper()
+        if d in ("BEAR", "▼", "SHORT"):
+            # Bear signal: mean-revert = price went UP
+            if ret_1d > 0.003:
+                return 1
+            return 0
+        # Default BULL: mean-revert = price went DOWN
+        if ret_1d < -0.003:
+            return 1
+        return 0
+    df["mean_reverted_24h"] = df.apply(_mean_reverted, axis=1)
 
     # Direction-aware hit (for BULL: ret > 0; BEAR: ret < 0). Default to
     # BULL since the engine fires mostly bullish.
@@ -310,11 +353,75 @@ def main():
         print(f"\n  Regime comparison needs ≥{args.min_n} samples in each bucket.")
         print(f"  Have HARD={len(valid_hard)}, NONE={len(valid_none)}.")
 
-    # ── Slice 5: Self-rated quality vs realized outcomes (if journal data) ──
+    # ── Slice 5a: Convergence × score band (Perplexity follow-up) ────
+    print("\n" + "=" * 100)
+    print("SLICE 5a: Convergence flag × score band (does convergence add info per band?)")
+    print("If convergence helps in 3.75-4.4 band but hurts in 4.5+, that's the inflection.")
+    print("=" * 100)
+    rows = []
+    for (band, has_conv), sub in df.groupby(["score_band", "has_convergence_flag"]):
+        conv_str = "with_conv" if has_conv else "no_conv"
+        r = _slice_summary(sub, f"{band} | {conv_str}", args.min_n)
+        if r:
+            rows.append(r)
+    if rows:
+        print_table(rows, "Score band × convergence flag:")
+    else:
+        print(f"  No slices with n >= {args.min_n} forward outcomes.")
+
+    # ── Slice 5b: HIGH-SCORE FADE — did the LLM thesis hold? ─────────
+    print("\n" + "=" * 100)
+    print("SLICE 5b: HIGH-SCORE FADE WATCH (score >= 4.8) — did mean-revert thesis hold?")
+    print("Mean-reverted def: BULL signal but 1d return < -0.3% (or BEAR + ret > 0.3%)")
+    print("=" * 100)
+    fade_zone = df[df["score"] >= 4.8]
+    if fade_zone.empty:
+        print("  No score >= 4.8 signals in window.")
+    else:
+        valid = fade_zone.dropna(subset=["mean_reverted_24h"])
+        if len(valid) >= args.min_n:
+            mean_rev_pct = valid["mean_reverted_24h"].mean() * 100
+            hit_pct = (valid["return_1d"] > 0).mean() * 100
+            avg_ret = valid["return_1d"].mean() * 100
+            avg_3d = valid["return_3d"].dropna().mean() * 100 if len(valid["return_3d"].dropna()) else None
+            print(f"  Score >= 4.8 signals: n={len(fade_zone)}  with_outcome={len(valid)}")
+            print(f"  1d hit rate (direction-aware): {hit_pct:.0f}%")
+            print(f"  Sharp mean-reverted (>0.3% adverse): {mean_rev_pct:.0f}%")
+            print(f"  Chop/bleed (no clean trend either way): "
+                  f"{100 - hit_pct - mean_rev_pct:.0f}%")
+            print(f"  Avg 1d return: {avg_ret:+.2f}%   Avg 3d: "
+                  + (f"{avg_3d:+.2f}%" if avg_3d is not None else "n/a"))
+            # Verdict logic — 4-LLM thesis is confirmed if either:
+            #   (a) sharp reversals dominate (≥50%), OR
+            #   (b) hit rate is materially below baseline (45% all-SOE)
+            #       AND avg return is negative
+            baseline_hit = 45.0  # all-SOE 1d hit baseline
+            thesis_confirmed = (
+                mean_rev_pct >= 50
+                or (hit_pct < baseline_hit - 15 and avg_ret < 0)
+            )
+            if thesis_confirmed:
+                print(f"\n  → 4-LLM FADE THESIS CONFIRMED:")
+                print(f"     Hit rate {hit_pct:.0f}% vs all-SOE {baseline_hit:.0f}% baseline")
+                print(f"     Avg return {avg_ret:+.2f}% (chop+bleed pattern, "
+                      f"not sharp reversal)")
+                print(f"     RECOMMENDATION: keep auto-trade BLOCK, "
+                      f"investigate fading these directly")
+            elif hit_pct < baseline_hit:
+                print(f"\n  → Underperformance present but inconclusive.")
+                print(f"     Hit {hit_pct:.0f}% vs baseline {baseline_hit:.0f}% — "
+                      f"keep monitoring.")
+            else:
+                print(f"\n  → 4-LLM FADE THESIS NOT CONFIRMED.")
+                print(f"     Hit {hit_pct:.0f}% is at or above baseline. Revisit rule.")
+        else:
+            print(f"  Need >= {args.min_n} samples with outcomes. Have {len(valid)}.")
+
+    # ── Slice 6: Self-rated quality vs realized outcomes (if journal data) ──
     journal_present = "journal_quality" in df.columns and df["journal_quality"].notna().any()
     if journal_present:
         print("\n" + "=" * 100)
-        print("SLICE 5: Self-rated felt_quality vs realized 1d outcomes")
+        print("SLICE 6: Self-rated felt_quality vs realized 1d outcomes")
         print("Are your gut quality calls predictive? (1=worst, 5=best)")
         print("=" * 100)
         rows = []
