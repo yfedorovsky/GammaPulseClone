@@ -241,6 +241,23 @@ def format_soe_signal(sig: dict[str, Any]) -> str:
             + "\n".join(f"  ↳ {r}" for r in conv_reasons)
         )
 
+    # Macro regime footer — Apr 27 shadow mode. Compact one-liner so
+    # the trader sees regime context at the moment of decision, not just
+    # in postmortem. NONE = no badge (avoid clutter on normal days).
+    regime_tag = sig.get("macro_regime_tag", "NONE") or "NONE"
+    regime_reasons = sig.get("macro_regime_reasons", []) or []
+    regime_footer = None
+    if regime_tag != "NONE":
+        # Visual badge by severity
+        badge = {"SOFT": "⚪", "HARD": "⚠", "A_ONLY": "🛑"}.get(regime_tag, "·")
+        # Compact reason — first 2 reasons joined with ' | ', max ~60 chars
+        reason_str = " | ".join(regime_reasons[:2])[:60]
+        regime_footer = (
+            f"{badge} <b>Regime: {regime_tag}</b>"
+            + (f" — {reason_str}" if reason_str else "")
+            + " <i>(shadow)</i>"
+        )
+
     lines = [
         f"{emoji} <b>SOE {grade}</b>: {direction} {ticker}",
         f"<b>{signal_type}</b>",
@@ -255,6 +272,7 @@ def format_soe_signal(sig: dict[str, Any]) -> str:
         f"Greeks: {source.upper()}",
         convergence_block,
         drift_warning,
+        regime_footer,
     ]
     return "\n".join(l for l in lines if l is not None)
 

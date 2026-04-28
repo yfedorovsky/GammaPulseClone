@@ -876,6 +876,20 @@ def _safe_macro_regime_tag() -> str:
         return "NONE"
 
 
+def _safe_macro_regime_full() -> dict[str, Any]:
+    """Return the full regime dict (tag + reasons) for sig payload. Used
+    by the Telegram formatter to render the footer line."""
+    try:
+        from .macro_regime import compute_macro_regime
+        r = compute_macro_regime()
+        return {
+            "tag": r.get("tag", "NONE"),
+            "reasons": r.get("reasons", []),
+        }
+    except Exception:
+        return {"tag": "NONE", "reasons": []}
+
+
 def _check_convergence_bonus(ticker: str, direction: str) -> tuple[float, list[str]]:
     """Return (bonus_pts, reasons) for cross-signal convergence on this
     ticker+direction in the last 30 min. Fail-open returns (0, [])."""
@@ -2045,7 +2059,10 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
             "convergence_bonus": conv_bonus,
             "convergence_reasons": conv_reasons,
             "score_pre_convergence": round(score_pre_convergence, 1),
-            "macro_regime_tag": _safe_macro_regime_tag(),
+            **{
+                f"macro_regime_{k}": v
+                for k, v in _safe_macro_regime_full().items()
+            },
             "status": "PENDING",
             "greeks_source": state.get("_greeks_source", "tradier"),
             "greeks_age_seconds": round(greeks_age, 1),
