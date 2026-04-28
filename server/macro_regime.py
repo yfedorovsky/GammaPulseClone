@@ -324,6 +324,41 @@ def macro_regime_tag() -> str:
         return "NONE"
 
 
+# ── Cached fast-path for high-frequency callers (flow_alerts) ───────
+#
+# flow_alerts can fire dozens per minute during active flow. Computing
+# the full regime each insert would be wasteful — calendar pressure
+# changes hourly, breadth changes per minute. Cache the result for 60s.
+
+_CACHE_TTL_SEC = 60
+_cached_regime: dict[str, Any] | None = None
+_cached_at: float = 0.0
+
+
+def cached_macro_regime() -> dict[str, Any]:
+    """60s-cached regime computation. Safe for high-frequency callers.
+    Returns the same dict shape as compute_macro_regime()."""
+    global _cached_regime, _cached_at
+    now = time.time()
+    if _cached_regime is not None and (now - _cached_at) < _CACHE_TTL_SEC:
+        return _cached_regime
+    try:
+        _cached_regime = compute_macro_regime()
+        _cached_at = now
+    except Exception:
+        _cached_regime = {"tag": "NONE", "reasons": [], "calendar": {}, "breadth": {}}
+        _cached_at = now
+    return _cached_regime
+
+
+def cached_macro_regime_tag() -> str:
+    """Convenience: cached tag-only fetch for high-freq insert paths."""
+    try:
+        return cached_macro_regime().get("tag", "NONE")
+    except Exception:
+        return "NONE"
+
+
 if __name__ == "__main__":
     import sys
     import io

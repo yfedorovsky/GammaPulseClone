@@ -81,7 +81,22 @@ _SWEEP_MIGRATIONS = [
     "ALTER TABLE flow_alerts ADD COLUMN sweep_prints INTEGER",
     "ALTER TABLE flow_alerts ADD COLUMN sweep_window_s INTEGER",
     "CREATE INDEX IF NOT EXISTS idx_flow_sweep ON flow_alerts(is_sweep, ts) WHERE is_sweep = 1",
+    # Apr 27: macro regime tag (Perplexity feedback). Cross-family
+    # consistency — tag flow_alerts the same way as soe_signals so
+    # we can ask "did sweep-followed trades degrade in HARD regime?"
+    # alongside SOE WR. Uses 60s cache (cached_macro_regime_tag).
+    "ALTER TABLE flow_alerts ADD COLUMN macro_regime_tag TEXT DEFAULT 'NONE'",
 ]
+
+
+def _safe_regime_tag() -> str:
+    """Cached regime fetch for high-frequency flow_alerts inserts.
+    Fail-open returns NONE on any error."""
+    try:
+        from .macro_regime import cached_macro_regime_tag
+        return cached_macro_regime_tag()
+    except Exception:
+        return "NONE"
 
 _seen: set[str] = set()
 
@@ -128,8 +143,8 @@ def insert_sweep_alert(rollup: dict[str, Any], gex_info: dict[str, Any] | None =
              last_price, bid, ask, side, sentiment, iv, delta, notional, spot,
              conviction, status, king, floor_level, ceiling_level, signal, regime,
              is_sweep, sweep_side, sweep_notional, sweep_contracts, sweep_venues,
-             sweep_prints, sweep_window_s)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             sweep_prints, sweep_window_s, macro_regime_tag)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 int(time.time()),
                 rollup["ticker"],
@@ -162,6 +177,7 @@ def insert_sweep_alert(rollup: dict[str, Any], gex_info: dict[str, Any] | None =
                 rollup.get("sweep_venues"),
                 rollup.get("sweep_prints"),
                 rollup.get("sweep_window_s"),
+                _safe_regime_tag(),
             ),
         )
 
@@ -268,8 +284,9 @@ def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) 
             """INSERT INTO flow_alerts
             (ts, ticker, strike, expiration, option_type, volume, oi, vol_oi,
              last_price, bid, ask, side, sentiment, iv, delta, notional, spot,
-             conviction, status, king, floor_level, ceiling_level, signal, regime)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             conviction, status, king, floor_level, ceiling_level, signal, regime,
+             macro_regime_tag)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 int(time.time()),
                 alert["ticker"],
@@ -295,6 +312,7 @@ def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) 
                 gex_info.get("ceiling") if gex_info else None,
                 gex_info.get("signal") if gex_info else None,
                 gex_info.get("regime") if gex_info else None,
+                _safe_regime_tag(),
             ),
         )
 

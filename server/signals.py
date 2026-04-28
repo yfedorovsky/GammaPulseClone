@@ -73,7 +73,11 @@ CREATE TABLE IF NOT EXISTS soe_signals (
   -- Apr 27: macro regime tag (shadow mode). Captures NONE/SOFT/HARD/A_ONLY
   -- per server.macro_regime.compute_macro_regime() at fire time. After
   -- 1-2 weeks of accumulated outcomes we'll backtest WR by tag.
-  macro_regime_tag TEXT DEFAULT 'NONE'
+  macro_regime_tag TEXT DEFAULT 'NONE',
+  -- Apr 27 (Perplexity feedback): persist the factor blob so postmortems
+  -- can answer "was HARD driven by event pressure, weak breadth, or
+  -- concentration?" instead of only seeing the label. JSON blob.
+  macro_regime_factors TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_soe_ts ON soe_signals(ts);
 CREATE INDEX IF NOT EXISTS idx_soe_ticker ON soe_signals(ticker, ts);
@@ -877,17 +881,37 @@ def _safe_macro_regime_tag() -> str:
 
 
 def _safe_macro_regime_full() -> dict[str, Any]:
-    """Return the full regime dict (tag + reasons) for sig payload. Used
-    by the Telegram formatter to render the footer line."""
+    """Return the full regime dict (tag + reasons + factors blob) for sig
+    payload. Used by the Telegram formatter and persisted to DB so
+    postmortems can answer 'was HARD driven by event pressure, weak
+    breadth, or concentration?' (Perplexity Apr 27 suggestion)."""
     try:
+        import json as _json
         from .macro_regime import compute_macro_regime
         r = compute_macro_regime()
+        # Persist a compact JSON blob with the discriminating factors.
+        # Keep the most decision-relevant fields; skip noise like
+        # individual ticker pcts unless they're the discriminator.
+        factors = {
+            "hours_to_fomc": r.get("calendar", {}).get("hours_to_fomc"),
+            "weighted_megacap_72h": r.get("calendar", {}).get("weighted_megacap_72h"),
+            "weighted_megacap_48h": r.get("calendar", {}).get("weighted_megacap_48h"),
+            "earnings_names": r.get("calendar", {}).get("earnings_names", [])[:8],
+            "qqq_pct": r.get("breadth", {}).get("qqq_pct"),
+            "qqqe_pct": r.get("breadth", {}).get("qqqe_pct"),
+            "spy_pct": r.get("breadth", {}).get("spy_pct"),
+            "xmag_pct": r.get("breadth", {}).get("xmag_pct"),
+            "is_narrow_leadership": r.get("breadth", {}).get("is_narrow_leadership"),
+            "is_concentrated_in_mag7": r.get("breadth", {}).get("is_concentrated_in_mag7"),
+            "have_breadth_data": r.get("breadth", {}).get("have_breadth_data"),
+        }
         return {
             "tag": r.get("tag", "NONE"),
             "reasons": r.get("reasons", []),
+            "factors_json": _json.dumps(factors, default=str),
         }
     except Exception:
-        return {"tag": "NONE", "reasons": []}
+        return {"tag": "NONE", "reasons": [], "factors_json": "{}"}
 
 
 def _check_convergence_bonus(ticker: str, direction: str) -> tuple[float, list[str]]:
@@ -2243,8 +2267,9 @@ def _insert_signal(sig: dict[str, Any]) -> int | None:
              strike, expiration, option_type, target, target_label, stop, stop_label,
              rr_ratio, spot, king, floor_level, ceiling_level, zgl, regime, iv,
              delta, gamma, reasoning, status,
-             entry_price, mid_price, bid, ask, macro_regime_tag)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             entry_price, mid_price, bid, ask,
+             macro_regime_tag, macro_regime_factors)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 int(time.time()),
                 sig["ticker"], sig["direction"], sig["signal_type"],
@@ -2260,6 +2285,7 @@ def _insert_signal(sig: dict[str, Any]) -> int | None:
                 sig.get("bid"),
                 sig.get("ask"),
                 sig.get("macro_regime_tag", "NONE"),
+                sig.get("macro_regime_factors_json"),
             ),
         )
         row = c.execute("SELECT last_insert_rowid()").fetchone()
