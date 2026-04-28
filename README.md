@@ -1,6 +1,10 @@
 # GammaPulse
 
-A real-time options analytics platform with **OPRA-level flow detection**, **gamma exposure mapping**, and **institutional insider-pattern signals**. Originally reverse-engineered from [GammaPulse Pro](https://gammapulse.rstechnology.org/), now substantially beyond it in signal coverage.
+A real-time options analytics platform with **OPRA-level flow detection**, **gamma exposure mapping**, and **institutional insider-pattern signals** — wrapped in a **measurement-first validation discipline** that tags every signal with regime context, persists outcomes, and refuses to ship rules that aren't empirically defensible.
+
+Originally reverse-engineered from [GammaPulse Pro](https://gammapulse.rstechnology.org/), now substantially beyond it in signal coverage AND in the rigor of the meta-system that decides which signals to trust.
+
+> **What's new (Apr 27 2026):** Cross-LLM critique cycle (Gemini/Grok/OpenAI/Perplexity) independently converged on the system's biggest empirical finding: **score is inversely correlated with 1d outcome** (5.0+ score = 9% hit on n=33; 3.75-4.1 score = 67%). High-score fade rule shipped + convergence bonus demoted to flag-only + macro regime tagger added (calendar pressure × breadth × VIX term + SKEW). All in shadow mode pending Friday's audit. See [docs/feedback/strategy_0427/](docs/feedback/strategy_0427/).
 
 **Current capability comparison:**
 
@@ -58,11 +62,29 @@ Full architecture: [docs/research/SESSION_APR18_UW_PARITY.md](docs/research/SESS
 
 ### Signal pathways
 
-- **SOE engine** — 5-factor signal generator (Structure, King distance, S/R, IV environment, Macro) with A/A+/B+ grading, discipline layer (Kelly sizing, circuit breaker), contract quality gates
-- **Mir momentum** — Discord listener + native scorer, sector-leader selection, 7-14 DTE swings
+- **SOE engine** — 5-factor signal generator (Structure, King distance, S/R, IV environment, Macro) with A/A+/B+ grading, discipline layer (Kelly sizing, circuit breaker), contract quality gates. **Phase 6 finding: score is inversely correlated with 1d outcome at the high end** — auto-trade now blocked for score ≥ 4.8 with ⚠ FADE WATCH banner.
+- **SETUP FORMING scanner** — Mir-style proactive scoring (0-10) for POS-regime + king-magnet + RTS leader + Mir sector basket + cheap IVP. Parallel rubric to SOE; persisted Apr 27 for outcome tracking.
+- **NET FLOW alerts** — NCP/NPP rate-of-change regime (FLOW_LEADS_UP/DOWN, divergences, stalls). Persisted Apr 27 for outcome tracking.
+- **0DTE confluence engine** — combines GEX + NetFlow + Sweep + Golden into 0-20 score, A+/A/B+/B/C grading. ⚠ MANAGE banner per Apr 27 audit (avg MFE +90% but avg end-of-90min -38% on n=5).
+- **Mir momentum** — Discord listener + native scorer + Apr 27 cross-reference layer (looks back 30min, surfaces every system signal that agrees with Mir's direction inline on his Telegram alert)
 - **Scalp alerts** — 0DTE/1DTE SPY/QQQ structure patterns with VIX regime filtering
 - **Runner tracker** — multi-day explosive breakout state machine
 - **Swing scanner** — RS/trend/sector/options-quality watchlist
+
+### Macro regime layer (Apr 27 — shadow mode)
+
+Tags every SOE alert with NONE / SOFT / HARD / A_ONLY based on:
+- **Calendar pressure** — hours to next FOMC + weighted megacap earnings count (FAANG 1.0, sector leaders 0.7, others 0.2)
+- **Participation tilt** — QQQ vs QQQE intraday return gap (>0.5pp = narrow leadership)
+- **Concentration tilt** — SPY vs XMAG gap (>0.4pp = mag-7 carrying tape)
+- **Vol state** — VIX/VIX3M ratio (>1.0 = backwardation = stress) + SPX SKEW (>145 = institutional put bid). Realtime via Tradier.
+- **Modifiers** — healthy breadth clips HARD→SOFT (not NONE), post-event reset 2h after FOMC, vol stress upgrades NONE/SOFT→HARD
+
+Telegram footer renders: `⚠ Regime: HARD — FOMC 45h | weighted megacap 7.4 (shadow)`. NO score/size modification yet — flips live IF Friday audit shows HARD WR ≥5pp below NONE on ~150-200 sample.
+
+### Convergence detection (Apr 27 v2 — informational flag)
+
+When a SOE fires AND a NET FLOW or large flow_alert (per-ticker tier floor) co-fires same direction within 30min, surface a 🔎 CONVERGENCE FLAG block. Per 4-LLM critique consensus, the score boost was REMOVED (correlated signals are not independent confirmation). Detection survives for postmortem analysis via the audit harness.
 
 ### UI tabs
 
@@ -105,6 +127,15 @@ GammaPulse/
 │   ├── sweep_detector.py      # live ISO sweep stream consumer
 │   ├── live_flow_aggregator.py  # live Golden/Tail transition detection + Telegram
 │   ├── option_flow_daily.py   # per-contract-day aggregates + Golden/Tail classifiers
+│   ├── net_flow.py            # NCP/NPP per-ticker rolling aggregator
+│   ├── net_flow_signals.py    # NET FLOW regime detector + Telegram + persistence
+│   ├── net_flow_fast.py       # 10s sub-minute aggregator for 0DTE
+│   ├── zero_dte_engine.py     # 0DTE confluence scoring (0-20)
+│   ├── zero_dte_loop.py       # 0DTE async loop + DB persistence
+│   ├── zero_dte_telegram.py   # 0DTE alert formatter + ⚠ MANAGE banner
+│   ├── king_migration.py      # live king-flip detector (separate DB)
+│   ├── macro_regime.py        # Apr 27 — calendar pressure + breadth + vol state
+│   ├── macro_context.py       # regime alignment + stress composite + forecast cells
 │   ├── signal_outcomes.py     # forward-return tracking + hit-rate aggregation
 │   │
 │   ├── paper_trading.py       # $20K simulated account + position lifecycle
@@ -123,12 +154,28 @@ GammaPulse/
 │   ├── rts.py                 # Relative Trend Strength engine
 │   ├── basket.py              # PIT quarterly sector selection
 │   └── requirements.txt
-├── scripts/                   # one-off runners + backfills
+├── scripts/                   # operational + research scripts
+│   ├── preflight_monday.py    # daily pre-market sanity check
+│   ├── weekly_digest.py       # Friday EOD WR digest by source_type + regime tag
+│   ├── trade_journal.py       # minimal manual trade journal (6 fields)
+│   ├── glw_earnings_primer.py # earnings cascade scanner (auto-expires)
+│   ├── track_tsm_outcomes.py  # ad-hoc TSM signal tracker
+│   ├── backtest_alerts_today.py  # parse Telegram alerts, pull ThetaData, MFE/MAE
+│   ├── earnings_week_implied.py  # ATM straddle implied move per ticker
+│   ├── weekend_research.py    # Sunday research synthesis (Finnhub macro layer)
+│   ├── qm_universe_refresh.py # weekly Qullamaggie momentum cohort refresh
 │   ├── backfill_sweeps.py     # ISO sweeps via /v3/option/history/trade_quote
 │   ├── backfill_option_flow.py  # full aggressive flow daily aggregates
 │   ├── backfill_outcomes.py   # forward returns per alert/signal
 │   ├── thetadata_stream_smoke.py  # WebSocket transport smoke test
-│   └── ...
+│   └── ...                    # ~30 total — see docs/SCRIPTS_CHEAT_SHEET.md
+├── backtest/                  # research + validation harnesses
+│   ├── regime_convergence_audit.py  # KEYSTONE — WR by regime + score band
+│   ├── slippage_model.py      # nonlinear per-name options slippage
+│   ├── grade_audit.py         # SOE score-vs-outcome inversion analysis
+│   ├── replay_2022.py         # 2022 bear-regime existential test (PASSED — flat)
+│   ├── setup_forming_replay.py  # SETUP FORMING historical hit rate
+│   └── ...                    # ~40 total research scripts
 └── web/                       # Vite + React frontend
     └── src/
         ├── App.jsx            # top-level, tab routing, lazy-loaded
@@ -277,10 +324,38 @@ ThetaStream.trades() async iterator
 
 ---
 
+## Validation harness
+
+The Friday EOD routine to evaluate the live shadow-mode rules:
+
+```bash
+python scripts/backfill_outcomes.py --days-back 7        # populate forward returns
+python scripts/weekly_digest.py --utf8                   # WR by source_type + regime
+python backtest/regime_convergence_audit.py --days 14    # keystone — fade-rule verdict
+```
+
+The audit emits 6 slices ending with a HEADLINE VERDICT block:
+- **PROMOTED A's vs ORIGINAL A's by regime tag** (decides convergence keep/kill)
+- **All SOE WR by regime tag** (decides macro filter keep/kill)
+- **WR by signal_type × regime** (which setups degrade most)
+- **Promoted A's by time-of-day** (late-day = hedging vs initiation)
+- **Convergence flag × score band** (does flagging add info per band?)
+- **HIGH-SCORE FADE WATCH thesis verdict** (n=33 sample currently shows 9% hit, -0.53% avg = 4-LLM thesis confirmed)
+- **Self-rated felt_quality vs realized outcomes** (joins trade_journal entries)
+
+Cross-LLM critique cycle docs (paste-ready prompts + 4 LLM responses):
+- **[docs/feedback/strategy_0427/](docs/feedback/strategy_0427/)** — Apr 27 (high-score fade rule + convergence demotion + vol regime)
+- **[docs/feedback/strategy_0426_pivot/](docs/feedback/strategy_0426_pivot/)** — Apr 26 (Phase 6 cohort tier + slippage)
+- **[docs/feedback/strategy_0425/](docs/feedback/strategy_0425/)** — Apr 25 (IV-zone validation kill)
+
+---
+
 ## Session documentation
 
 Every major work session documented in `docs/research/`. Recent:
 
+- **[memory/phase6_critical_findings.md](memory/phase6_critical_findings.md)** *(in user's Claude memory dir)* — Apr 26-27 weekend that stripped phantom alpha. Cohort tier restructure (16 → 7 auto-trade names), score-PnL inversion finding, 2022 replay PASS, structural risk-factor guard. Required reading.
+- **[docs/SCRIPTS_CHEAT_SHEET.md](docs/SCRIPTS_CHEAT_SHEET.md)** — when to run each of the ~30 scripts (daily/weekly/monthly cadences + ad-hoc)
 - **[SESSION_APR18_INDEX.md](docs/research/SESSION_APR18_INDEX.md)** — Weekly cohort analysis + 4 discipline rules shipped + 3-week OOS Theta replay validation
 - **[SESSION_APR18_UW_PARITY.md](docs/research/SESSION_APR18_UW_PARITY.md)** — Golden/Tail flow detectors + A+/A/B/C/D grading + SPX coverage
 - **[theta_replay_summary.md](docs/research/theta_replay_summary.md)** — Out-of-sample engine edge validation
@@ -290,19 +365,24 @@ Every major work session documented in `docs/research/`. Recent:
 
 ## Philosophy
 
-- **Signal quality > signal volume**. Better to see 1 A-graded alert/day than 50 noisy ones.
+- **Measurement before behavior**. Ship hypothesis → instrument → run under fire → decide off data. Macro regime tag and convergence detection both run shadow-mode this week, evaluated Friday by `backtest/regime_convergence_audit.py`.
+- **Signal quality > signal volume**. Better to see 1 alert/day with proven edge than 50 noisy ones.
+- **The system can be wrong about its own setups**. The Phase 6 inversion finding (5.0+ score = 9% hit; 3.75-4.1 score = 67%) is the empirical proof. Auto-trade rules now respect this — score ≥ 4.8 is BLOCKED, not promoted.
 - **Data quality over inferred metrics**. ThetaData gives us raw OPRA; we compute our own analytics rather than trusting a black-box vendor.
-- **Paper trade everything first**. THE ONE RULE: no live auto-execution on a new signal pathway until 30+ paper outcomes prove the hit rate.
-- **Confluence beats standalone signals**. Mir + GEX + Golden Flow aligned > any one alone.
+- **Confluence is sometimes concentration, not confirmation**. Per 4-LLM critique consensus: when SOE + NET FLOW + sweeps + Mir all agree, you may be seeing one institutional event projected through 4 lenses, not 4 independent confirmations. Convergence is now a flag (informational), not a score boost.
+- **Paper trade everything first**. No live auto-execution on a new signal pathway until 30+ paper outcomes prove the hit rate net of slippage.
+- **Cross-LLM critique cycle for high-stakes changes**. Same self-contained prompt to Gemini/Grok/OpenAI/Perplexity; ship on convergence. Documented 3× now (Apr 25 IV-zone, Apr 26-27 cohort tier, Apr 27 fade-rule).
 
 ---
 
 ## Known limitations
 
 - Live TAIL on mega-cap equities covers only ~5.6% OTM (subscription budget trade-off). SPX/SPXW covers full 14%.
-- Hit-rate cohorts need 4-6 weeks of live alerts to be statistically meaningful. Currently using backfilled sweep outcomes as proxy.
+- Macro regime tagger is in **shadow mode through end of Apr 28-29 FOMC week**. Tag and footer render but don't modify score/size yet. Activation requires ~150-200 HARD-tagged signals showing materially different WR than NONE-tagged (per Perplexity statistical critique, the original 5pp threshold may need tightening to ~300-500 samples for true significance under options return variance).
+- Auto-trade cohort tier still LIQUID + MEDIUM only (7 names: MU, SNDK, AAOI, CAMT, CIEN, GLW, VICR) per Phase 6 slippage measurement. Other cohort names log signals but don't auto-execute.
 - SOE signal direction normalization has gaps — some cohort queries return n=0. Documented for future debug.
 - Holiday skips not implemented in trading-day calc (acceptable — ~0-2 days slop/year).
+- Trade journal is voluntary entry — won't catch trades unless user explicitly logs. Audit Slice 6 (felt_quality vs outcome) only populates if user runs `python scripts/trade_journal.py add` after each take.
 
 ---
 
