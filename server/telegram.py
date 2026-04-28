@@ -223,22 +223,30 @@ def format_soe_signal(sig: dict[str, Any]) -> str:
         if grade == "B+" else None
     )
 
-    # Convergence callout — Apr 27. When a SOE alert fires alongside
-    # corroborating institutional flow (NET_FLOW gap_direction or
-    # ≥$5M aligned sweep) within 30 min, surface it prominently.
-    # NVDA case study: SOE+NET_FLOW+Mir convergence → +86% intraday.
-    conv_bonus = sig.get("convergence_bonus", 0) or 0
+    # Convergence FLAG (Apr 27 v2 — was a score bonus, now informational
+    # only after 4-LLM critique on concentration risk). When system signals
+    # agree, surface them but DO NOT promote the grade. Reader's job to
+    # decide if convergence adds confidence or signals crowding.
     conv_reasons = sig.get("convergence_reasons", []) or []
-    score_pre = sig.get("score_pre_convergence")
     convergence_block = None
-    if conv_bonus > 0:
-        bonus_str = f"+{conv_bonus:.1f}"
-        delta_str = ""
-        if score_pre is not None and score_pre < score:
-            delta_str = f" (was {score_pre} → {score})"
+    if conv_reasons:
         convergence_block = (
-            f"🎯 <b>CONVERGENCE {bonus_str}</b>{delta_str}\n"
+            f"🔎 <b>CONVERGENCE FLAG</b> (informational, not score-boosted)\n"
             + "\n".join(f"  ↳ {r}" for r in conv_reasons)
+        )
+
+    # High-score FADE WATCH — Apr 27 (4-LLM consensus). Phase 6 audit
+    # shows score >= 4.8 historically inverts (5.0+ = 20% 1d hit). When
+    # the SOE engine fires above this threshold, auto-trade is blocked
+    # and we surface a prominent fade-watch warning with recommended size.
+    high_score_fade_block = None
+    if sig.get("is_high_score_fade"):
+        size_mult = sig.get("high_score_fade_size_mult", 0.25)
+        high_score_fade_block = (
+            f"⚠ <b>HIGH-SCORE FADE WATCH</b> — score {score} ≥ 4.8\n"
+            f"  ↳ historical: 5.0+ = 20% 1d hit, 3.75-4.1 = 67%\n"
+            f"  ↳ AUTO-TRADE BLOCKED. If taking manually: size at "
+            f"<b>{size_mult}× base</b> (mean-reversion risk dominates)"
         )
 
     # Macro regime footer — Apr 27 shadow mode. Compact one-liner so
@@ -270,6 +278,7 @@ def format_soe_signal(sig: dict[str, Any]) -> str:
         f"Mid: ${mid:.2f}" if mid else None,
         f"Size: {kelly}%" if kelly else None,
         f"Greeks: {source.upper()}",
+        high_score_fade_block,  # Above convergence so the warning lands first
         convergence_block,
         drift_warning,
         regime_footer,

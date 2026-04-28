@@ -69,6 +69,12 @@ CACHE_DIR = Path("data/weekend_research_cache")
 EARNINGS_CACHE = CACHE_DIR / "Finnhub_Earnings_Calendar_next_7d_.txt"
 ECONOMIC_CACHE = CACHE_DIR / "Finnhub_Economic_Calendar_next_7d_.txt"
 
+# Volatility-state thresholds (Apr 27 — 3-of-4 LLM consensus that calendar
+# alone is incomplete; need vol-regime context).
+VIX_BACKWARDATION_RATIO = 1.0  # VIX > VIX3M = stress regime
+SKEW_ELEVATED = 145.0  # SPX SKEW Index — above this = institutional put bid
+VOL_STATE_CACHE_TTL = 60  # seconds — Tradier index quotes are cheap
+
 
 # ── Calendar pressure ────────────────────────────────────────────────
 
@@ -258,6 +264,75 @@ def compute_breadth_state() -> dict[str, Any]:
     }
 
 
+# ── Volatility state (VIX term structure + SKEW) ────────────────────
+#
+# Three of four LLMs (Gemini/Grok/Perplexity) called out that calendar
+# pressure + breadth is necessary but incomplete. A real options desk
+# uses VIX term structure (VIX vs VIX3M ratio) and SKEW Index as the
+# primary regime indicators because they directly describe option
+# pricing pressure.
+
+_vol_state_cache: dict[str, Any] | None = None
+_vol_state_cached_at: float = 0.0
+
+
+def compute_vol_state() -> dict[str, Any]:
+    """Pull realtime VIX, VIX3M, VIX9D, SKEW from Tradier (cached 60s).
+    Returns vol-regime classifications. Fail-open returns empty dict."""
+    global _vol_state_cache, _vol_state_cached_at
+    now = time.time()
+    if _vol_state_cache is not None and (now - _vol_state_cached_at) < VOL_STATE_CACHE_TTL:
+        return _vol_state_cache
+
+    out: dict[str, Any] = {
+        "vix": None, "vix3m": None, "vix9d": None, "skew": None,
+        "vix_ratio": None,  # VIX/VIX3M; >1 = backwardation = stress
+        "is_backwardation": False,
+        "is_skew_elevated": False,
+        "is_vol_stress": False,
+    }
+
+    try:
+        import os
+        token = os.environ.get("TRADIER_TOKEN")
+        if not token:
+            _vol_state_cache = out
+            _vol_state_cached_at = now
+            return out
+        import requests as _req
+        r = _req.get(
+            "https://api.tradier.com/v1/markets/quotes",
+            params={"symbols": "VIX,VIX3M,VIX9D,SKEW"},
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            _vol_state_cache = out
+            _vol_state_cached_at = now
+            return out
+        quotes = r.json().get("quotes", {}).get("quote", [])
+        if isinstance(quotes, dict):
+            quotes = [quotes]
+        prices = {q.get("symbol"): q.get("last") for q in quotes if q.get("last")}
+        out["vix"] = prices.get("VIX")
+        out["vix3m"] = prices.get("VIX3M")
+        out["vix9d"] = prices.get("VIX9D")
+        out["skew"] = prices.get("SKEW")
+        if out["vix"] and out["vix3m"]:
+            out["vix_ratio"] = out["vix"] / out["vix3m"]
+            out["is_backwardation"] = out["vix_ratio"] > VIX_BACKWARDATION_RATIO
+        if out["skew"] is not None:
+            out["is_skew_elevated"] = out["skew"] > SKEW_ELEVATED
+        # Vol stress = backwardation OR elevated skew
+        out["is_vol_stress"] = out["is_backwardation"] or out["is_skew_elevated"]
+    except Exception:
+        pass  # fail-open, leave defaults
+
+    _vol_state_cache = out
+    _vol_state_cached_at = now
+    return out
+
+
 # ── Composite regime tagger ──────────────────────────────────────────
 
 def compute_macro_regime() -> dict[str, Any]:
@@ -266,6 +341,7 @@ def compute_macro_regime() -> dict[str, Any]:
     try:
         cal = compute_calendar_pressure()
         breadth = compute_breadth_state()
+        vol = compute_vol_state()
     except Exception as e:
         return {"tag": "NONE", "error": str(e)}
 
@@ -329,6 +405,25 @@ def compute_macro_regime() -> dict[str, Any]:
             f"(FOMC was {cal['hours_since_last_fomc']:.1f}h ago)"
         )
 
+    # VOL STATE OVERRIDE — Apr 27 (3-LLM consensus). Vol regime trumps
+    # calendar on the upside: backwardation OR elevated SKEW means
+    # institutional hedging is dominating, regardless of when FOMC is.
+    # In this state, calendar-driven NONE/SOFT gets upgraded to HARD.
+    if vol.get("is_vol_stress") and tag in ("NONE", "SOFT"):
+        prev_tag = tag
+        tag = "HARD"
+        if vol.get("is_backwardation"):
+            reasons.append(
+                f"vol stress upgrade {prev_tag} -> HARD "
+                f"(VIX/VIX3M = {vol.get('vix_ratio', 0):.2f} "
+                f"backwardation)"
+            )
+        if vol.get("is_skew_elevated"):
+            reasons.append(
+                f"vol stress upgrade {prev_tag} -> HARD "
+                f"(SKEW = {vol.get('skew', 0):.0f} elevated)"
+            )
+
     if breadth_modifier:
         reasons.append(breadth_modifier.strip(" []"))
     if breadth.get("is_narrow_leadership"):
@@ -347,6 +442,7 @@ def compute_macro_regime() -> dict[str, Any]:
         "reasons": reasons,
         "calendar": cal,
         "breadth": breadth,
+        "vol": vol,
         "live_mode": os.environ.get("MACRO_REGIME_LIVE", "").lower() == "true",
     }
 

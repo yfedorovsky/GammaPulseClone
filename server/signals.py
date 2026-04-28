@@ -864,6 +864,15 @@ def _momentum_confirmation_check(ticker: str, direction: str) -> bool:
 # score. This pushes borderline B+ → A and biases sizing/Telegram toward
 # the convergence trade.
 
+# High-score fade rule — Apr 27 (4-LLM consensus on the inverse score
+# finding). Phase 6 audit: 5.0+ = 20% 1d hit, 3.75-4.1 = 67% 1d hit.
+# When a SOE signal scores in the inversion zone, AUTO-TRADE IS BLOCKED
+# and Telegram renders a FADE WATCH footer with recommended manual size.
+# Rule converged across Gemini/Grok/OpenAI/Perplexity (3 specified 0.25x,
+# 1 specified 0.5x — taking the more conservative number).
+SOE_HIGH_SCORE_FADE_THRESHOLD = 4.8
+SOE_HIGH_SCORE_FADE_SIZE_MULT = 0.25  # recommended manual size when taking
+
 CONVERGENCE_LOOKBACK_SEC = 1800  # 30 min
 CONVERGENCE_MIN_AGE_SEC = 300  # flow must be >=5 min old (avoid self-referential)
 CONVERGENCE_BONUS_PTS = 0.5
@@ -1891,13 +1900,20 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
         score, reasons = _compute_signal_score(state, direction, confluence, iv_universe)
         score_pre_convergence = score
 
-        # Convergence bonus — Apr 27. If net_flow_alerts or large flow_alerts
-        # fired in same direction within 30 min, +0.5 each (capped +1.0).
-        # Pushes borderline B+ to A on multi-signal confirmation setups.
+        # Convergence DETECTION (Apr 27 v2 — was a +0.5 score bonus until
+        # 4-LLM critique converged on "concentration risk, not confirmation").
+        # We still detect when system signals agree, but no longer modify
+        # the score. Surfaced as informational FLAG in Telegram + persisted
+        # so the audit can backtest "convergence-flagged WR vs unflagged"
+        # without contaminating the grade pipeline.
         conv_bonus, conv_reasons = _check_convergence_bonus(ticker, direction)
-        if conv_bonus > 0:
-            score += conv_bonus
-            reasons.append(f"convergence +{conv_bonus} ({'; '.join(conv_reasons)})")
+        convergence_detected = conv_bonus > 0  # any source fired = flag
+        if convergence_detected:
+            reasons.append(f"convergence FLAG (informational): {'; '.join(conv_reasons)}")
+        # NOTE: conv_bonus is preserved in the sig dict for the Telegram
+        # formatter (which still renders the convergence block) but is NOT
+        # added to score. Set it to 0 to make this explicit downstream.
+        conv_bonus = 0.0
 
         grade = _score_to_grade(score)
         signal_type = _determine_signal_type(state, direction)
@@ -2145,6 +2161,14 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
             "convergence_bonus": conv_bonus,
             "convergence_reasons": conv_reasons,
             "score_pre_convergence": round(score_pre_convergence, 1),
+            # High-score fade flag — 4-LLM consensus (Apr 27): score ≥4.8
+            # historically pins/reverses; auto-trade blocked, manual size
+            # capped at 0.25× base.
+            "is_high_score_fade": score >= SOE_HIGH_SCORE_FADE_THRESHOLD,
+            "high_score_fade_size_mult": (
+                SOE_HIGH_SCORE_FADE_SIZE_MULT
+                if score >= SOE_HIGH_SCORE_FADE_THRESHOLD else 1.0
+            ),
             **{
                 f"macro_regime_{k}": v
                 for k, v in _safe_macro_regime_full().items()
@@ -2259,6 +2283,18 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
             print(f"[SOE] A-grade STRUCTURAL block: {ticker} {sig.get('signal_type')} "
                   f"— {len(risk_factors_fired)} risk factors fired: "
                   f"{'; '.join(risk_factors_fired)}; signal logged but NOT auto-traded")
+
+        # High-score fade gate (Apr 27 — 4-LLM consensus on inverse score
+        # finding). Phase 6 audit: 5.0+ = 20% 1d hit, 3.75-4.1 = 67% 1d.
+        # Block auto-trade for score >= 4.8 regardless of grade. Manual
+        # take is up to user but Telegram footer recommends 0.25× size.
+        if sig["is_high_score_fade"] and should_auto_trade:
+            should_auto_trade = False
+            sig["_high_score_fade_blocked"] = True
+            print(f"[SOE] HIGH-SCORE FADE block: {ticker} {sig.get('signal_type')} "
+                  f"score={score:.1f} >= {SOE_HIGH_SCORE_FADE_THRESHOLD} "
+                  f"(historical: 5.0+ = 20% 1d hit). Auto-trade BLOCKED. "
+                  f"Manual size capped at {SOE_HIGH_SCORE_FADE_SIZE_MULT}x.")
 
         # Apply breadth gate to auto-trade decision.
         if (regime_blocks_long or regime_grade_blocks) and should_auto_trade:
