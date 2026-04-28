@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ARM Runner Thread Charts</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#050810;color:#e2e8f0;font-family:'JetBrains Mono',monospace;padding:20px}
+.bar{display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.bar button{background:transparent;color:#64748b;border:1px solid #1e293b;padding:6px 14px;font-size:12px;font-family:inherit;cursor:pointer;border-radius:5px}
+.bar button.on{background:#1e293b;color:#22d3ee;border-color:#22d3ee33}
+.bar button:hover{border-color:#334155}
+.dl{background:#22d3ee;color:#0a0e17;border:none;padding:8px 16px;font-size:12px;font-family:inherit;font-weight:700;cursor:pointer;border-radius:5px}
+.dl:hover{background:#06b6d4}
+.dla{background:transparent;color:#22d3ee;border:1px solid #22d3ee33;padding:8px 16px;font-size:12px;font-family:inherit;font-weight:600;cursor:pointer;border-radius:5px}
+.dla:hover{background:#1e293b}
+.sep{width:1px;height:22px;background:#1e293b}
+.st{font-size:11px;color:#22c55e;margin-left:8px;opacity:0;transition:opacity .3s}
+.st.v{opacity:1}
+.lbl{font-size:11px;color:#475569;margin:6px 0;letter-spacing:1px}
+.cw{border:1px solid #1e293b;border-radius:8px;overflow:hidden;display:inline-block}
+</style>
+</head>
+<body>
+<div class="bar">
+<button id="b0" class="on" onclick="sC(0)">Price Journey</button>
+<button id="b1" onclick="sC(1)">King Migration</button>
+<button id="b2" onclick="sC(2)">Detector Receipt</button>
+<div class="sep"></div>
+<button class="dl" onclick="dlPNG(ac)">Download PNG</button>
+<button class="dla" onclick="dlAll()">Download all</button>
+<span class="st" id="st"></span>
+</div>
+<div id="main"></div>
+
+<script>
+const C={bg:'#0a0e17',cd:'#0f1729',gr:'#1a2035',tx:'#e2e8f0',mu:'#64748b',dm:'#334155',cy:'#22d3ee',rd:'#ef4444',gn:'#22c55e',or:'#f59e0b',pu:'#a78bfa',bl:'#3b82f6',gd:'#fbbf24'};
+const F="JetBrains Mono,monospace",W=1200,H=675;
+function hd(t,s,d){return`<text x="36" y="42" fill="${C.tx}" font-size="24" font-weight="600" font-family="${F}">${t}</text>${s?`<text x="36" y="68" fill="${C.mu}" font-size="15" font-family="${F}">${s}</text>`:''}<text x="${W-36}" y="42" fill="${C.dm}" font-size="14" font-family="${F}" text-anchor="end">${d||'April 22, 2026'}</text>`}
+function sv(g){return`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"><rect width="${W}" height="${H}" fill="${C.bg}"/>${g}<text x="${W-36}" y="${H-14}" fill="${C.dm}" font-size="12" font-family="${F}" text-anchor="end">Not financial advice</text></svg>`}
+
+// ─── CHART 0: ARM Price Journey ─────────────────────────────────
+function c0(){
+let g='';
+// ARM spot trajectory — key inflection points from snapshots.db
+const pts=[
+  {x:0, y:149, lbl:'4/10'},
+  {x:1, y:151, lbl:'4/13'},
+  {x:2, y:158, lbl:'4/14'},
+  {x:3, y:159, lbl:'4/15'},
+  {x:4, y:163, lbl:'4/16'},
+  {x:5, y:166, lbl:'4/17'},
+  {x:6, y:170, lbl:'4/20'},
+  {x:7, y:178, lbl:'4/21'},
+  {x:8, y:195, lbl:'4/22'},
+];
+// Mir entries — lineY is the value on the price line at that x (so dots
+// sit ON the line); spotLabel is the trader-reference entry spot.
+const entries=[
+  {x:4, lineY:163, spotLabel:160, desc:'170C @ $3',    exit:'$15',    color:C.cy},
+  {x:6, lineY:170, spotLabel:170, desc:'180C @ $6.60', exit:'$24',    color:C.gn},
+  {x:8, lineY:195, spotLabel:185, desc:'200C @ $8',    exit:'$14.40', color:C.gd},
+];
+
+const ox=110,oy=100,cw=W-260,ch=420;
+// yMax raised to 210 (from 200) to give the 4/22 peak headroom for
+// its card above the dot — matches the layout of the other two entries.
+const xMax=8, yMin=145, yMax=210;
+const sx=v=>ox+(v/xMax)*cw;
+const sy=v=>oy+(1-((v-yMin)/(yMax-yMin)))*ch;
+
+// Y gridlines
+for(let v=150;v<=200;v+=10){
+  const y=sy(v);
+  g+=`<line x1="${ox}" y1="${y}" x2="${ox+cw}" y2="${y}" stroke="${C.gr}" stroke-width="0.5"/>`;
+  g+=`<text x="${ox-12}" y="${y+5}" text-anchor="end" fill="${C.mu}" font-size="13" font-weight="600" font-family="${F}">$${v}</text>`;
+}
+// Y axis title
+g+=`<text x="26" y="${oy+ch/2}" fill="${C.dm}" font-size="12" font-weight="600" font-family="${F}" transform="rotate(-90,26,${oy+ch/2})" text-anchor="middle">ARM SPOT</text>`;
+
+// Area fill
+let areaD=`M${sx(0)},${sy(yMin)}`;
+pts.forEach(p=>{areaD+=` L${sx(p.x)},${sy(p.y)}`});
+areaD+=` L${sx(xMax)},${sy(yMin)} Z`;
+g+=`<defs><linearGradient id="ag0" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${C.cy}" stop-opacity="0.18"/><stop offset="100%" stop-color="${C.cy}" stop-opacity="0.01"/></linearGradient></defs>`;
+g+=`<path d="${areaD}" fill="url(#ag0)"/>`;
+
+// Price line
+let lineD='';
+pts.forEach((p,i)=>{lineD+=(i===0?'M':'L')+sx(p.x)+','+sy(p.y)+' '});
+g+=`<path d="${lineD.trim()}" fill="none" stroke="${C.cy}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
+
+// Date labels (x-axis)
+pts.forEach(p=>{
+  g+=`<text x="${sx(p.x)}" y="${oy+ch+24}" text-anchor="middle" fill="${C.mu}" font-size="11" font-family="${F}">${p.lbl}</text>`;
+});
+
+// Mir entry markers + cards — dots now sit ON the price line (lineY)
+entries.forEach((e,i)=>{
+  const px=sx(e.x), py=sy(e.lineY);
+  // Glow
+  g+=`<circle cx="${px}" cy="${py}" r="18" fill="${e.color}" opacity="0.15"/>`;
+  g+=`<circle cx="${px}" cy="${py}" r="9" fill="${C.bg}" stroke="${e.color}" stroke-width="2.5"/>`;
+  g+=`<circle cx="${px}" cy="${py}" r="4" fill="${e.color}"/>`;
+  // Card position — all three above-left of dot, leader from card
+  // bottom-middle angled down-right toward the dot (~10-15° below horizontal).
+  // Consistent pattern across all entries.
+  let cardX, cardY;
+  const cardW=180, cardH=68;
+  if(i===0){cardX=px-178; cardY=py-84;}
+  else if(i===1){cardX=px-200; cardY=py-96;}
+  else {cardX=px-190; cardY=py-88;}
+  g+=`<rect x="${cardX}" y="${cardY}" width="${cardW}" height="${cardH}" rx="6" fill="${C.bg}" stroke="${e.color}" stroke-width="1.5"/>`;
+  g+=`<text x="${cardX+14}" y="${cardY+22}" fill="${e.color}" font-size="13" font-weight="700" font-family="${F}">${e.desc}</text>`;
+  g+=`<text x="${cardX+14}" y="${cardY+42}" fill="${C.mu}" font-size="11" font-family="${F}">spot ~$${e.spotLabel}</text>`;
+  g+=`<text x="${cardX+14}" y="${cardY+58}" fill="${C.tx}" font-size="12" font-weight="600" font-family="${F}">→ ${e.exit}</text>`;
+  // Leader from card bottom-middle down to dot — uniform across entries
+  const lx = cardX+cardW/2;
+  const ly = cardY+cardH;
+  g+=`<line x1="${lx}" y1="${ly}" x2="${px}" y2="${py}" stroke="${e.color}" stroke-width="0.8" opacity="0.4"/>`;
+});
+
+// Summary footer
+g+=`<rect x="36" y="${H-70}" width="${W-72}" height="40" rx="6" fill="${C.cy}" opacity="0.06" stroke="${C.cy}" stroke-width="1"/>`;
+g+=`<text x="${W/2}" y="${H-44}" text-anchor="middle" fill="${C.cy}" font-size="15" font-weight="700" font-family="${F}">Three entries. Each roll further OTM. Each one caught a new call-wall level.</text>`;
+
+return sv(hd('ARM: Three Rolls in Seven Days','@TraderMir_ sequence — 4/10 through 4/22')+g);
+}
+
+// ─── CHART 1: King Migration Timeline ───────────────────────────
+function c1(){
+let g='';
+// Qualified king-migrations from king_migrations.db — 4 clean RTH/PM
+// rows that tell the story (removed the 4/15 18:45 overnight scan and
+// the 4/17 08:22 redundant pre-market event for public-facing clarity).
+const rows=[
+  {dt:'Fri 4/17 06:17', o:160, n:165, d:5,  rb:5.75, ra:6.77,  qual:true, note:''},
+  {dt:'Fri 4/17 14:26', o:165, n:170, d:5,  rb:7.09, ra:11.88, qual:true, note:''},
+  {dt:'Mon 4/20 11:26', o:170, n:180, d:10, rb:4.52, ra:5.36,  qual:true, note:'Mir roll #2'},
+  {dt:'Wed 4/22 10:18', o:180, n:200, d:20, rb:8.04, ra:8.86,  qual:true, note:'Mir roll #3'},
+];
+
+const top=108, rh=74, gap=4;
+// Total box
+g+=`<rect x="${W-210}" y="50" width="174" height="54" rx="8" fill="${C.gn}" opacity="0.1" stroke="${C.gn}" stroke-width="1.5"/>`;
+g+=`<text x="${W-123}" y="74" text-anchor="middle" fill="${C.gn}" font-size="28" font-weight="700" font-family="${F}">4 / 4</text>`;
+g+=`<text x="${W-123}" y="94" text-anchor="middle" fill="${C.gn}" font-size="11" font-weight="600" font-family="${F}" opacity="0.7">ALL QUALIFIED</text>`;
+
+// Column headers — POS/NEG GEX ratio column removed for public thread
+// (internal signal that confused readers; qualifier concept is covered
+// by Tweet 6 copy, doesn't need receipt on chart).
+const hy=top;
+g+=`<rect x="36" y="${hy}" width="${W-72}" height="28" rx="4" fill="${C.gr}" opacity="0.6"/>`;
+g+=`<text x="80"   y="${hy+18}" fill="${C.mu}" font-size="11" font-weight="600" letter-spacing="1" font-family="${F}">WHEN</text>`;
+g+=`<text x="420"  y="${hy+18}" fill="${C.mu}" font-size="11" font-weight="600" letter-spacing="1" font-family="${F}">OLD KING</text>`;
+g+=`<text x="620"  y="${hy+18}" fill="${C.mu}" font-size="11" font-weight="600" letter-spacing="1" font-family="${F}">NEW KING</text>`;
+g+=`<text x="820"  y="${hy+18}" fill="${C.mu}" font-size="11" font-weight="600" letter-spacing="1" font-family="${F}">JUMP</text>`;
+g+=`<text x="${W-130}" y="${hy+18}" text-anchor="middle" fill="${C.mu}" font-size="11" font-weight="600" letter-spacing="1" font-family="${F}">STATUS</text>`;
+
+let y=top+32;
+rows.forEach((r,i)=>{
+  const highlight = !!r.note;
+  // Row bg
+  g+=`<rect x="36" y="${y}" width="${W-72}" height="${rh}" rx="4" fill="${highlight?C.gd:C.gn}" opacity="${highlight?0.08:(i%2===0?0.05:0.02)}"/>`;
+  // Left accent
+  g+=`<rect x="36" y="${y}" width="3" height="${rh}" fill="${highlight?C.gd:C.gn}"/>`;
+  // When
+  g+=`<text x="80" y="${y+23}" fill="${C.tx}" font-size="14" font-weight="600" font-family="${F}">${r.dt}</text>`;
+  if(r.note){g+=`<text x="80" y="${y+43}" fill="${C.gd}" font-size="12" font-weight="700" font-family="${F}">★ ${r.note}</text>`;}
+  // Old king
+  g+=`<text x="420" y="${y+35}" fill="${C.mu}" font-size="20" font-weight="700" font-family="${F}">$${r.o}</text>`;
+  // Arrow (between old and new king columns)
+  g+=`<text x="560" y="${y+35}" fill="${C.dm}" font-size="20" font-family="${F}">→</text>`;
+  // New king
+  g+=`<text x="620" y="${y+35}" fill="${highlight?C.gd:C.cy}" font-size="20" font-weight="700" font-family="${F}">$${r.n}</text>`;
+  // Jump badge
+  g+=`<rect x="800" y="${y+12}" width="72" height="32" rx="5" fill="${C.cy}" opacity="0.15" stroke="${C.cy}" stroke-width="1"/>`;
+  g+=`<text x="836" y="${y+34}" text-anchor="middle" fill="${C.cy}" font-size="15" font-weight="700" font-family="${F}">+$${r.d}</text>`;
+  // Status
+  g+=`<rect x="${W-170}" y="${y+12}" width="100" height="32" rx="5" fill="${C.gn}" opacity="0.15" stroke="${C.gn}" stroke-width="1.5"/>`;
+  g+=`<text x="${W-120}" y="${y+34}" text-anchor="middle" fill="${C.gn}" font-size="14" font-weight="700" font-family="${F}">QUAL ✓</text>`;
+  y+=rh+gap;
+});
+
+// Summary
+g+=`<rect x="36" y="${y+8}" width="${W-72}" height="40" rx="6" fill="${C.gd}" opacity="0.08" stroke="${C.gd}" stroke-width="1"/>`;
+g+=`<text x="${W/2}" y="${y+34}" text-anchor="middle" fill="${C.gd}" font-size="15" font-weight="700" font-family="${F}">Both of Mir's live-posted rolls aligned with qualified king-migration events</text>`;
+
+return sv(hd('ARM +King Migration Timeline','$160 → $165 → $170 → $180 → $200 across 7 sessions')+g);
+}
+
+// ─── CHART 2: Detector Receipt ──────────────────────────────────
+function c2(){
+let g='';
+const cases=[
+  {
+    title:'Mon 4/20 11:26 AM',
+    subtitle:'Roll #2: $170 → $180',
+    mir:'11:25 AM',
+    detector:'11:26 AM',
+    gates:[
+      {n:1, label:'Magnet signal', val:'MAGNET UP', pass:true},
+      {n:2, label:'King jump', val:'+$10', pass:true},
+      {n:3, label:'Pre-ratio (mature)', val:'4.52', pass:true},
+      {n:4, label:'Floor leapfrog', val:'$170', pass:true},
+      {n:5, label:'Net delta growing', val:'14.0M → 14.8M', pass:true},
+    ],
+  },
+  {
+    title:'Wed 4/22 10:18 AM',
+    subtitle:'Roll #3: $180 → $200',
+    mir:'~10:00 AM',
+    detector:'10:18 AM',
+    gates:[
+      {n:1, label:'Magnet signal', val:'MAGNET UP', pass:true},
+      {n:2, label:'King jump', val:'+$20', pass:true},
+      {n:3, label:'Pre-ratio (mature)', val:'8.04', pass:true},
+      {n:4, label:'Floor leapfrog', val:'$180', pass:true},
+      {n:5, label:'Net delta growing', val:'16.2M → 16.9M', pass:true},
+    ],
+  },
+];
+
+const cardW=540, cardH=420, gapX=40;
+const startX=(W - (cardW*2 + gapX))/2;
+const startY=110;
+
+cases.forEach((cs,ci)=>{
+  const cx = startX + ci*(cardW+gapX);
+  // Card border
+  g+=`<rect x="${cx}" y="${startY}" width="${cardW}" height="${cardH}" rx="10" fill="${C.cd}" stroke="${C.gn}" stroke-width="1.5" opacity="0.95"/>`;
+  // Title bar
+  g+=`<rect x="${cx}" y="${startY}" width="${cardW}" height="60" rx="10" fill="${C.gn}" opacity="0.1"/>`;
+  g+=`<rect x="${cx}" y="${startY+50}" width="${cardW}" height="10" fill="${C.gn}" opacity="0.1"/>`;
+  g+=`<text x="${cx+24}" y="${startY+28}" fill="${C.gn}" font-size="18" font-weight="700" font-family="${F}">${cs.title}</text>`;
+  g+=`<text x="${cx+24}" y="${startY+50}" fill="${C.mu}" font-size="13" font-family="${F}">${cs.subtitle}</text>`;
+
+  // Timestamp match block
+  const tsY = startY+80;
+  g+=`<rect x="${cx+20}" y="${tsY}" width="${cardW-40}" height="52" rx="6" fill="${C.bg}" stroke="${C.gd}" stroke-width="1" opacity="0.9"/>`;
+  g+=`<text x="${cx+38}" y="${tsY+21}" fill="${C.mu}" font-size="12" font-family="${F}">Mir posted:</text>`;
+  g+=`<text x="${cx+150}" y="${tsY+21}" fill="${C.tx}" font-size="14" font-weight="700" font-family="${F}">${cs.mir}</text>`;
+  g+=`<text x="${cx+38}" y="${tsY+41}" fill="${C.mu}" font-size="12" font-family="${F}">Detector fired:</text>`;
+  g+=`<text x="${cx+170}" y="${tsY+41}" fill="${C.gd}" font-size="14" font-weight="700" font-family="${F}">${cs.detector}</text>`;
+
+  // Gates header
+  let gy = tsY+70;
+  g+=`<text x="${cx+24}" y="${gy}" fill="${C.mu}" font-size="11" font-weight="600" letter-spacing="1" font-family="${F}">5-GATE QUALIFIER</text>`;
+  gy += 14;
+
+  cs.gates.forEach((gt,gi)=>{
+    const rowY = gy + gi*38;
+    // Row bg
+    g+=`<rect x="${cx+20}" y="${rowY}" width="${cardW-40}" height="32" rx="4" fill="${C.gn}" opacity="0.05"/>`;
+    // Check
+    g+=`<circle cx="${cx+36}" cy="${rowY+16}" r="9" fill="${C.gn}" opacity="0.2" stroke="${C.gn}" stroke-width="1.5"/>`;
+    g+=`<text x="${cx+36}" y="${rowY+20}" text-anchor="middle" fill="${C.gn}" font-size="11" font-weight="700" font-family="${F}">✓</text>`;
+    // Label
+    g+=`<text x="${cx+54}" y="${rowY+20}" fill="${C.tx}" font-size="13" font-weight="600" font-family="${F}">${gt.label}</text>`;
+    // Value
+    g+=`<text x="${cx+cardW-30}" y="${rowY+20}" text-anchor="end" fill="${C.gn}" font-size="12" font-weight="700" font-family="${F}">${gt.val}</text>`;
+  });
+
+  // Footer: 5/5 passed
+  const fy = startY+cardH-44;
+  g+=`<rect x="${cx+20}" y="${fy}" width="${cardW-40}" height="30" rx="5" fill="${C.gn}" opacity="0.15" stroke="${C.gn}" stroke-width="1.5"/>`;
+  g+=`<text x="${cx+cardW/2}" y="${fy+20}" text-anchor="middle" fill="${C.gn}" font-size="14" font-weight="700" font-family="${F}">5 / 5 GATES PASSED — QUALIFIED</text>`;
+});
+
+// Bottom callout — reframed from "our detector matches" to
+// "the structure is measurable" so chart doesn't read as "app replaces trader"
+g+=`<text x="${W/2}" y="${H-50}" text-anchor="middle" fill="${C.gd}" font-size="15" font-weight="700" font-family="${F}">The structure was doing exactly what he was reading.</text>`;
+
+return sv(hd('The Structure Was Measurable','14-day backfill: both of Mir\'s live rolls hit every qualifying gate')+g);
+}
+
+// ─── META ──────────────────────────────────────────────────────
+const cFn=[c0,c1,c2];
+const LB=['Price Journey','King Migration','Detector Receipt'];
+const FN=['arm_price_journey','arm_king_migration','arm_detector_receipt'];
+let ac=0;
+
+function dlPNG(i){
+  const s=cFn[i](),cv=document.createElement('canvas');cv.width=1200;cv.height=675;
+  const ctx=cv.getContext('2d'),img=new Image(),b=new Blob([s],{type:'image/svg+xml;charset=utf-8'}),u=URL.createObjectURL(b);
+  img.onload=()=>{ctx.drawImage(img,0,0,1200,675);URL.revokeObjectURL(u);const a=document.createElement('a');a.download=FN[i]+'.png';a.href=cv.toDataURL('image/png');a.click();const st=document.getElementById('st');if(st){st.textContent='Saved '+FN[i]+'.png';st.classList.add('v');setTimeout(()=>st.classList.remove('v'),2000)}};
+  img.src=u;
+}
+function dlAll(){let i=0;(function n(){if(i<3){dlPNG(i);i++;setTimeout(n,600)}})()}
+function sC(i){ac=i;for(let j=0;j<3;j++){document.getElementById('b'+j).classList.toggle('on',i===j)}R()}
+function R(){
+  const el=document.getElementById('main');
+  el.innerHTML=`<div class="lbl">Chart ${ac+1} — ${LB[ac]} — 1200×675</div><div class="cw">${cFn[ac]()}</div>`;
+}
+R();
+</script>
+</body>
+</html>
