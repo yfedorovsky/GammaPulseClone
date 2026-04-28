@@ -865,8 +865,28 @@ def _momentum_confirmation_check(ticker: str, direction: str) -> bool:
 # the convergence trade.
 
 CONVERGENCE_LOOKBACK_SEC = 1800  # 30 min
-CONVERGENCE_FLOW_NOTIONAL_USD = 5_000_000  # $5M floor for flow_alert match
+CONVERGENCE_MIN_AGE_SEC = 300  # flow must be >=5 min old (avoid self-referential)
 CONVERGENCE_BONUS_PTS = 0.5
+CONVERGENCE_BONUS_CAP_PTS = 0.5  # MAX total bonus (Perplexity Apr 27: prior +1.0
+                                  # was a full grade upgrade — too generous)
+CONVERGENCE_DEDUPE_WINDOW_SEC = 3600  # 1hr no-double-upgrade per ticker+direction
+
+# Per-ticker flow notional floor. $5M is huge for SNDK, trivial for AAPL.
+# Mega-caps require higher bar; thin cohort names trip on smaller flow.
+CONVERGENCE_FLOW_FLOOR_BY_TICKER: dict[str, int] = {
+    # Mega-caps — $5M is daily noise, need higher
+    "SPY": 20_000_000, "QQQ": 20_000_000, "IWM": 10_000_000,
+    "AAPL": 15_000_000, "MSFT": 15_000_000, "GOOGL": 10_000_000,
+    "GOOG": 10_000_000, "AMZN": 15_000_000, "META": 15_000_000,
+    "NVDA": 15_000_000, "TSLA": 15_000_000, "AVGO": 8_000_000,
+    "AMD": 8_000_000, "QCOM": 6_000_000,
+    # Phase 6 thin/very-thin cohort — $5M is rare so meaningful at lower bar
+    "AESI": 1_000_000, "ANAB": 1_000_000, "CAPR": 1_000_000,
+    "LAR": 1_000_000, "LASR": 1_000_000, "NBR": 1_000_000,
+    "PUMP": 1_000_000, "RES": 1_000_000, "TROX": 1_000_000,
+    "PTEN": 2_000_000, "UCTT": 2_000_000,
+}
+DEFAULT_CONVERGENCE_FLOOR = 5_000_000
 
 
 def _safe_macro_regime_tag() -> str:
@@ -916,7 +936,16 @@ def _safe_macro_regime_full() -> dict[str, Any]:
 
 def _check_convergence_bonus(ticker: str, direction: str) -> tuple[float, list[str]]:
     """Return (bonus_pts, reasons) for cross-signal convergence on this
-    ticker+direction in the last 30 min. Fail-open returns (0, [])."""
+    ticker+direction in the last 30 min. Fail-open returns (0, []).
+
+    Apr 27 hardenings (Perplexity feedback):
+      - Cap at +0.5 (was +1.0) — full grade upgrade was too generous
+      - Time ordering: flow must be >=5 min old to avoid self-referential
+        "the SOE-triggering move attracted flow_alerts that promote it"
+      - Per-ticker floor: scale by ticker (mega-caps higher, thin lower)
+      - No-double-upgrade: skip bonus if same ticker+direction already had
+        an A/A+ alert in last hour (prevents grindy-move runaway A's)
+    """
     if not ticker or direction not in ("BULL", "BEAR"):
         return 0.0, []
     import sqlite3
@@ -925,40 +954,74 @@ def _check_convergence_bonus(ticker: str, direction: str) -> tuple[float, list[s
     try:
         s = get_settings()
         conn = sqlite3.connect(s.snapshot_db)
-        cutoff = int(time.time()) - CONVERGENCE_LOOKBACK_SEC
+        now_ts = int(time.time())
+        cutoff = now_ts - CONVERGENCE_LOOKBACK_SEC
+        max_ts = now_ts - CONVERGENCE_MIN_AGE_SEC  # flow must be older than this
 
-        # 1. net_flow_alerts match
+        # No-double-upgrade check — if same ticker+direction already fired
+        # A/A+ within last hour, skip the bonus (this move already got
+        # promoted; subsequent fires are most likely the same accumulation
+        # late in the move).
+        dir_match_chars = ("BULL", "▲", "LONG", "BUY")
+        if direction == "BEAR":
+            dir_match_chars = ("BEAR", "▼", "SHORT", "SELL")
+        try:
+            placeholders = ",".join("?" * len(dir_match_chars))
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM soe_signals "
+                f"WHERE ticker = ? AND ts >= ? "
+                f"AND grade IN ('A', 'A+') "
+                f"AND direction IN ({placeholders})",
+                (ticker, now_ts - CONVERGENCE_DEDUPE_WINDOW_SEC) + dir_match_chars,
+            ).fetchone()
+            if row and row[0] > 0:
+                # Already promoted same direction in last hour — skip bonus
+                conn.close()
+                return 0.0, [f"convergence skipped (prior A within "
+                             f"{CONVERGENCE_DEDUPE_WINDOW_SEC//60}min)"]
+        except sqlite3.OperationalError:
+            pass
+
+        # Per-ticker flow floor
+        flow_floor = CONVERGENCE_FLOW_FLOOR_BY_TICKER.get(
+            ticker, DEFAULT_CONVERGENCE_FLOOR
+        )
+
+        # 1. net_flow_alerts match (must be >=5min old)
         gap_match = "bullish" if direction == "BULL" else "bearish"
         try:
             row = conn.execute(
                 "SELECT COUNT(*) FROM net_flow_alerts "
-                "WHERE ticker = ? AND ts >= ? AND gap_direction = ?",
-                (ticker, cutoff, gap_match),
+                "WHERE ticker = ? AND ts >= ? AND ts <= ? "
+                "AND gap_direction = ?",
+                (ticker, cutoff, max_ts, gap_match),
             ).fetchone()
             if row and row[0] > 0:
                 bonus += CONVERGENCE_BONUS_PTS
                 reasons.append(f"net_flow_alert {gap_match} ({row[0]}x)")
         except sqlite3.OperationalError:
-            pass  # table not created yet (cold env)
+            pass
 
-        # 2. flow_alerts match — direction-aligned + size threshold
+        # 2. flow_alerts match — direction-aligned + per-ticker size + age
         sentiment_match = "BULLISH" if direction == "BULL" else "BEARISH"
         opt_type = "call" if direction == "BULL" else "put"
         try:
             row = conn.execute(
                 "SELECT COUNT(*), MAX(COALESCE(sweep_notional, notional)) "
                 "FROM flow_alerts "
-                "WHERE ticker = ? AND ts >= ? AND sentiment = ? "
-                "AND option_type = ? "
+                "WHERE ticker = ? AND ts >= ? AND ts <= ? "
+                "AND sentiment = ? AND option_type = ? "
                 "AND COALESCE(sweep_notional, notional, 0) >= ?",
-                (ticker, cutoff, sentiment_match, opt_type,
-                 CONVERGENCE_FLOW_NOTIONAL_USD),
+                (ticker, cutoff, max_ts, sentiment_match, opt_type, flow_floor),
             ).fetchone()
             if row and row[0] > 0:
-                bonus += CONVERGENCE_BONUS_PTS
+                # Don't double-bonus if net_flow already added — cap at +0.5
+                if bonus < CONVERGENCE_BONUS_CAP_PTS:
+                    bonus += CONVERGENCE_BONUS_PTS
                 reasons.append(
                     f"flow_alert {sentiment_match} {opt_type}s "
-                    f"(largest ${(row[1] or 0)/1e6:.1f}M, {row[0]}x)"
+                    f"(largest ${(row[1] or 0)/1e6:.1f}M, {row[0]}x, "
+                    f"floor ${flow_floor/1e6:.0f}M)"
                 )
         except sqlite3.OperationalError:
             pass
@@ -967,10 +1030,9 @@ def _check_convergence_bonus(ticker: str, direction: str) -> tuple[float, list[s
     except Exception:
         return 0.0, []  # fail-open
 
-    # Cap bonus at +1.0 even if both fire — don't double-promote a borderline
-    # signal more than one grade tier.
-    if bonus > 1.0:
-        bonus = 1.0
+    # Hard cap at +0.5 — single source contributes max
+    if bonus > CONVERGENCE_BONUS_CAP_PTS:
+        bonus = CONVERGENCE_BONUS_CAP_PTS
     return bonus, reasons
 
 

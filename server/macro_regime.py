@@ -72,19 +72,16 @@ ECONOMIC_CACHE = CACHE_DIR / "Finnhub_Economic_Calendar_next_7d_.txt"
 
 # ── Calendar pressure ────────────────────────────────────────────────
 
-def _hours_to_next_fomc() -> float | None:
-    """Parse the cached economic calendar and return hours to next FOMC
-    decision/press conference. None if not found in cache."""
+def _all_fomc_datetimes() -> list[datetime]:
+    """Parse cached economic calendar — return all FOMC datetimes (past+future)."""
     if not ECONOMIC_CACHE.exists():
-        return None
+        return []
     text = ECONOMIC_CACHE.read_text(encoding="utf-8")
     fomc_dts: list[datetime] = []
     for line in text.splitlines():
-        # Lines look like: "[HIGH] 2026-04-29 18:00:00  Fed Interest Rate Decision est=3.75 prev=3.75"
         if "Fed Interest Rate" not in line and "FOMC" not in line:
             continue
         parts = line.split()
-        # Find first YYYY-MM-DD HH:MM:SS pair
         for i in range(len(parts) - 1):
             try:
                 dt_str = f"{parts[i]} {parts[i+1]}"
@@ -92,14 +89,33 @@ def _hours_to_next_fomc() -> float | None:
                 break
             except ValueError:
                 continue
+    return fomc_dts
+
+
+def _hours_to_next_fomc() -> float | None:
+    """Hours to next FOMC decision/press conference. None if not in cache."""
+    fomc_dts = _all_fomc_datetimes()
     if not fomc_dts:
         return None
     now = datetime.now()
     future = [d for d in fomc_dts if d > now]
     if not future:
         return None
-    delta = min(future) - now
-    return delta.total_seconds() / 3600
+    return (min(future) - now).total_seconds() / 3600
+
+
+def _hours_since_last_fomc() -> float | None:
+    """Hours since most recent past FOMC. None if no past event in cache.
+    Used for the post-event reset hook (downgrade regime for 2h after FOMC
+    so we don't get stuck in HARD on stale calendar inputs)."""
+    fomc_dts = _all_fomc_datetimes()
+    if not fomc_dts:
+        return None
+    now = datetime.now()
+    past = [d for d in fomc_dts if d <= now]
+    if not past:
+        return None
+    return (now - max(past)).total_seconds() / 3600
 
 
 def _megacap_earnings_within(hours: float) -> tuple[float, list[str]]:
@@ -149,12 +165,20 @@ def _megacap_earnings_within(hours: float) -> tuple[float, list[str]]:
 def compute_calendar_pressure() -> dict[str, Any]:
     """Returns calendar pressure score and component detail."""
     hours_fomc = _hours_to_next_fomc()
+    hours_since_fomc = _hours_since_last_fomc()
     weighted_72h, names_72h = _megacap_earnings_within(72)
     weighted_48h, _ = _megacap_earnings_within(48)
     weighted_24h, _ = _megacap_earnings_within(24)
 
+    # Post-event reset window: 2h after FOMC, downgrade one tier so we
+    # don't stay stuck in HARD when the catalyst has already absorbed.
+    fomc_in_post_event_window = (
+        hours_since_fomc is not None and 0 < hours_since_fomc <= 2
+    )
+
     out = {
         "hours_to_fomc": hours_fomc,
+        "hours_since_last_fomc": hours_since_fomc,
         "weighted_megacap_72h": weighted_72h,
         "weighted_megacap_48h": weighted_48h,
         "weighted_megacap_24h": weighted_24h,
@@ -162,6 +186,7 @@ def compute_calendar_pressure() -> dict[str, Any]:
         "fomc_within_72h": hours_fomc is not None and hours_fomc <= 72,
         "fomc_within_48h": hours_fomc is not None and hours_fomc <= 48,
         "fomc_within_24h": hours_fomc is not None and hours_fomc <= 24,
+        "fomc_in_post_event_window": fomc_in_post_event_window,
     }
     return out
 
@@ -278,21 +303,31 @@ def compute_macro_regime() -> dict[str, Any]:
             f"weighted megacap earnings {cal['weighted_megacap_72h']:.1f}"
         )
 
-    # Breadth modifier — soften by one tier if breadth IS healthy,
-    # harden by one tier if breadth is BOTH narrow AND concentrated
+    # Breadth modifier — Apr 27 (Perplexity refinement):
+    #   HARD + healthy breadth -> SOFT (NOT NONE — true HARD windows
+    #     should never fully relax even on midday breadth improvement)
+    #   SOFT + healthy breadth -> NONE
+    #   SOFT + narrow+concentrated -> HARD
     breadth_modifier = ""
-    if tag in ("SOFT", "HARD") and breadth.get("breadth_ok"):
-        # Healthy breadth despite calendar — downgrade
-        if tag == "HARD":
-            tag = "SOFT"
-            breadth_modifier = " [downgraded: breadth healthy]"
-        elif tag == "SOFT":
-            tag = "NONE"
-            breadth_modifier = " [downgraded: breadth healthy]"
+    if tag == "HARD" and breadth.get("breadth_ok"):
+        tag = "SOFT"  # clip to SOFT, never NONE
+        breadth_modifier = " [clipped HARD -> SOFT: breadth healthy]"
+    elif tag == "SOFT" and breadth.get("breadth_ok"):
+        tag = "NONE"
+        breadth_modifier = " [downgraded SOFT -> NONE: breadth healthy]"
     elif tag == "SOFT" and breadth.get("is_narrow_leadership") and breadth.get("is_concentrated_in_mag7"):
-        # Both signals confirm narrow tape — upgrade
         tag = "HARD"
-        breadth_modifier = " [upgraded: narrow + concentrated]"
+        breadth_modifier = " [upgraded SOFT -> HARD: narrow + concentrated]"
+
+    # Post-event reset: 2h after FOMC, downgrade one tier (avoids stale
+    # HARD when the catalyst has already been absorbed).
+    if cal.get("fomc_in_post_event_window") and tag in ("A_ONLY", "HARD", "SOFT"):
+        prev_tag = tag
+        tag = {"A_ONLY": "HARD", "HARD": "SOFT", "SOFT": "NONE"}.get(tag, tag)
+        reasons.append(
+            f"post-event reset {prev_tag} -> {tag} "
+            f"(FOMC was {cal['hours_since_last_fomc']:.1f}h ago)"
+        )
 
     if breadth_modifier:
         reasons.append(breadth_modifier.strip(" []"))

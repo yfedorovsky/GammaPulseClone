@@ -95,14 +95,13 @@ def format_zero_dte_alert(alert: Any) -> str:
     pricing_lines.append(f"Time stop: {alert.time_stop_minutes}min")
     pricing = "\n".join(pricing_lines)
 
-    # Management reminder — added after Apr 27 audit of 5 0DTE alerts
-    # showed avg MFE +90% in ~42min but avg end-of-window -38% (128pp
-    # giveback). 100% of alerts gave a +50% scalp at some point; 0/5
-    # reached target_mid (3x). Buy-and-hold to time-stop is structurally
-    # losing; active management is the entire game.
+    # Management reminder — Apr 27 audit on small sample (n=5) suggested
+    # buy-and-hold to time-stop bleeds (avg end-of-90min was -38% despite
+    # avg MFE +90%). Treat the timing claim as anecdotal until larger
+    # sample confirms. Behavioral nudge to scale > rule of law.
     manage = (
-        "⚠ MANAGE: scalp at +50%, trail rest. "
-        "MFE usually in 20-70min — don't hold to time-stop"
+        "⚠ MANAGE: small sample suggests scaling at +50% beats "
+        "hold-to-time-stop. Trail rest."
     )
 
     # Confluence breakdown
