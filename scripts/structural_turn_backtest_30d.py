@@ -72,7 +72,7 @@ def load_snapshots_for_day(ticker: str, day: datetime) -> list[dict]:
     try:
         cur = conn.execute(
             """SELECT ts, spot, king, floor, ceiling, regime, signal,
-                      pos_gex, neg_gex, net_delta
+                      pos_gex, neg_gex, net_delta, zgl
                FROM snapshots
                WHERE ticker = ? AND ts BETWEEN ? AND ?
                ORDER BY ts""",
@@ -182,6 +182,63 @@ def load_minute_bars(ticker: str, day: datetime, source: str = "tradier") -> lis
 
 
 # ── ThetaData option-quote pull ────────────────────────────────────
+
+
+# Cache IVs per (ticker, ts, strikes-tuple, side) — minute bars repeat
+_iv_cache: dict[tuple, list[float | None]] = {}
+
+
+def fetch_iv_at(ticker: str, ts: int, strikes: list[int], right: str,
+                expiry: str | None = None) -> list[float | None]:
+    """For each strike, pull the implied vol at the given timestamp from
+    ThetaData option_history_greeks_implied_volatility endpoint.
+
+    Uses 0DTE expiry (same date as ts) by default — that's the relevant
+    expiry for our 0DTE strategy.
+
+    Coarse but accurate: pull bar at the minute matching ts.
+    """
+    if not strikes:
+        return []
+    sym = "SPXW" if ticker == "SPX" else ticker
+    day_dt = datetime.fromtimestamp(ts).date()
+    day_str = day_dt.strftime("%Y-%m-%d")
+    exp = expiry or day_str
+    target_hhmm = datetime.fromtimestamp(ts).strftime("%H:%M")
+    cache_key = (sym, exp, tuple(strikes), right, target_hhmm)
+    if cache_key in _iv_cache:
+        return _iv_cache[cache_key]
+    out: list[float | None] = []
+    for k in strikes:
+        params = {
+            "symbol": sym, "expiration": exp, "strike": f"{float(k):.3f}",
+            "right": right.upper(), "start_date": day_str, "end_date": day_str,
+            "interval": "1m",
+        }
+        try:
+            r = requests.get(
+                f"{THETA}/v3/option/history/greeks/implied_volatility",
+                params=params, timeout=10,
+            )
+            if r.status_code != 200:
+                out.append(None)
+                continue
+            df_iv = pd.read_csv(io.StringIO(r.text))
+            if df_iv.empty:
+                out.append(None)
+                continue
+            df_iv["t"] = pd.to_datetime(df_iv["timestamp"])
+            df_iv["hhmm"] = df_iv["t"].dt.strftime("%H:%M")
+            row = df_iv[df_iv["hhmm"] >= target_hhmm].head(1)
+            if row.empty:
+                out.append(None)
+                continue
+            iv_val = row.iloc[0].get("implied_vol")
+            out.append(float(iv_val) if iv_val and iv_val > 0 else None)
+        except Exception:
+            out.append(None)
+    _iv_cache[cache_key] = out
+    return out
 
 
 def fetch_option_quotes(symbol: str, expiration: str, strike: float,
@@ -340,6 +397,16 @@ def find_qualified_fires_for_day(
                 for k in ("ret_15m", "ret_30m", "ret_60m", "ret_eod"):
                     if outcome.get(k) is not None:
                         outcome[k] = -outcome[k]
+            # Post-qualification: compute IV ratio (only for qualified fires
+            # to avoid 50x backtest slowdown on per-minute IV pulls)
+            try:
+                from server.structural_turn import _compute_pc_iv_ratio
+                pc_ratio, pc_z = _compute_pc_iv_ratio(
+                    ticker, ts, ev.spot, fetch_iv_at,
+                )
+            except Exception:
+                pc_ratio, pc_z = None, None
+
             row = {
                 "ticker": ticker,
                 "day": day.strftime("%Y-%m-%d"),
@@ -352,6 +419,12 @@ def find_qualified_fires_for_day(
                 "king": ev.king,
                 "regime": ev.regime,
                 "ratio": ev.ratio,
+                "zgl": ev.zgl,
+                "spot_minus_zgl": ev.spot_minus_zgl,
+                "avwap_prior_low": ev.avwap_prior_low,
+                "spot_minus_avwap": ev.spot_minus_avwap,
+                "pc_iv_ratio": pc_ratio,
+                "pc_iv_ratio_z": pc_z,
                 **outcome,
             }
             if pull_options:
