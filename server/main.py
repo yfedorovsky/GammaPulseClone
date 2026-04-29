@@ -59,6 +59,8 @@ _net_flow_alert_task: asyncio.Task | None = None
 _net_flow_fast_task: asyncio.Task | None = None
 _zero_dte_task: asyncio.Task | None = None
 _king_mig_task: asyncio.Task | None = None
+_floor_mig_task: asyncio.Task | None = None
+_structural_turn_task: asyncio.Task | None = None
 
 
 @asynccontextmanager
@@ -140,6 +142,14 @@ async def lifespan(app: FastAPI):
     global _king_mig_task
     from .king_migration import run_king_migration_live_loop
     _king_mig_task = asyncio.create_task(run_king_migration_live_loop(_stop))
+    # Floor migration + Structural Turn detectors (Apr 28 — shadow mode).
+    # Catches the QQQ 13:30 floor-reclaim pattern + 5-gate structural-turn
+    # synthesis that today's audit identified as the trade of the day.
+    global _floor_mig_task, _structural_turn_task
+    from .floor_migration import run_floor_migration_live_loop
+    _floor_mig_task = asyncio.create_task(run_floor_migration_live_loop(_stop))
+    from .structural_turn import run_structural_turn_live_loop
+    _structural_turn_task = asyncio.create_task(run_structural_turn_live_loop(_stop))
     # GLW earnings primer (Apr 27 - Apr 29 window). Hourly scan during
     # market hours of GLW/COHR/LITE/RMBS for SOE/NET FLOW/large flow_alerts.
     # Self-disables after Wed 4/29 close. No-op outside the active dates.
@@ -169,7 +179,7 @@ async def lifespan(app: FastAPI):
         _stop.set()
         await streamer.stop()
         await db.stop()  # Drain write queue before shutdown
-        all_tasks = [_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task, _priority_task, _net_flow_task, _net_flow_alert_task, _net_flow_fast_task, _zero_dte_task, _king_mig_task]
+        all_tasks = [_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task, _priority_task, _net_flow_task, _net_flow_alert_task, _net_flow_fast_task, _zero_dte_task, _king_mig_task, _floor_mig_task, _structural_turn_task]
         for task in all_tasks:
             if task:
                 try:

@@ -18,6 +18,8 @@ flow_alerts.db
 king_breakouts.db
 king_migrations.db
 zero_dte_alerts.db
+floor_migrations.db
+structural_turns.db
 *_dump.json
 live_*.json
 setup_cooldown.json
