@@ -27,6 +27,7 @@ Example output:
 """
 from __future__ import annotations
 
+import datetime as dt
 from typing import Any
 
 
@@ -51,6 +52,45 @@ def _direction_emoji(direction: str) -> str:
     return "🟢" if direction == "bullish" else "🔴" if direction == "bearish" else "⚪"
 
 
+def _check_recent_structural_turn(
+    ticker: str, direction: str, ts: float,
+    lookback_sec: int = 90 * 60,
+    db_path: str = "./structural_turns.db",
+) -> dict | None:
+    """Cross-confirmation rule (Apr 29): if a Structural Turn already fired
+    same-direction same-ticker within 90min before this 0DTE Engine alert,
+    upgrade the banner from 'WATCHING' to 'CONFIRMED — execute now'.
+
+    Workflow:
+      0DTE Engine alone → 👁 WATCHING (wait for ST within 90min)
+      0DTE Engine + ST already fired → ✅ CONFIRMED (act now)
+      ST after 0DTE Engine → ST alert prepends 🔗 CONFIRMS banner (other side)
+    """
+    import sqlite3
+    cutoff = ts - lookback_sec
+    target_dir = direction.upper()  # 0DTE uses lowercase, ST uses uppercase
+    target_dir_full = "BULLISH" if target_dir == "BULLISH" or direction.lower() == "bullish" else "BEARISH"
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            """SELECT ts, tier, spot, qualified
+               FROM structural_turns
+               WHERE ticker = ? AND direction = ?
+                 AND ts BETWEEN ? AND ?
+                 AND qualified = 1
+               ORDER BY ts DESC LIMIT 1""",
+            (ticker, target_dir_full, cutoff, ts),
+        )
+        row = cur.fetchone()
+        conn.close()
+        if row is None:
+            return None
+        return dict(row)
+    except sqlite3.Error:
+        return None
+
+
 def format_zero_dte_alert(alert: Any) -> str:
     """Format a ZeroDTEAlert into a Telegram-ready string."""
     # Strike display
@@ -66,8 +106,33 @@ def format_zero_dte_alert(alert: Any) -> str:
     action = "BUY" if alert.direction == "bullish" else "BUY"  # always "BUY" for 0DTE long-premium
     # (Future: support put selling / credit spreads with different action verbs.)
 
+    # Cross-confirmation rule (Apr 29 workflow):
+    # Check if Structural Turn already confirmed this direction within 90min.
+    # If yes → ✅ CONFIRMED banner (execute now).
+    # If no → 👁 WATCHING banner (wait for ST or skip if ST never fires).
+    fired_at = getattr(alert, "fired_at", None) or 0
+    st_confirm = _check_recent_structural_turn(
+        alert.ticker, alert.direction, fired_at,
+    ) if fired_at else None
+
+    if st_confirm:
+        st_t = dt.datetime.fromtimestamp(int(st_confirm["ts"])).strftime("%H:%M")
+        st_age_min = max(0, int((fired_at - st_confirm["ts"]) / 60))
+        banner = (
+            f"✅ CONFIRMED — Structural Turn TIER {st_confirm['tier']} fired at "
+            f"{st_t} ({st_age_min}min ago)\n"
+            f"   Both signals aligned — execute now per the play.\n\n"
+        )
+    else:
+        banner = (
+            f"👁 WATCHING — wait for Structural Turn confirmation (90min window)\n"
+            f"   Take if ST fires same direction; SKIP if ST never confirms.\n"
+            f"   On TREND days (no LOD retest), ST may not fire — discretionary call.\n\n"
+        )
+
     # Header
     header = (
+        f"{banner}"
         f"{_grade_emoji(alert.grade)} 0DTE ALERT · {alert.ticker} · {alert.grade}\n"
         f"{_direction_emoji(alert.direction)} {action} {strike_str} {right} {exp}\n"
     )
