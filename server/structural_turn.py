@@ -74,6 +74,19 @@ CVD_DIVERGENCE_TOL_PCT = 0.001           # 0.1% price tolerance to declare "same
 # NCP/NPP correlation window
 NFA_WINDOW_SEC = 30 * 60
 
+# Trend filter (preflight, Apr 30 2026): on a strong UP day, BEARISH structural
+# turn fires almost always lose (54/62 fires in the 4/13-4/20 backtest were
+# bearish, win rate 17%, avg EOD -47.6%). Most were fighting a sustained up
+# move with minor pullbacks that satisfied gate 5 NCP corroboration via
+# transient FLOW_LEADS_DOWN bursts. The fix: block counter-trend fires after
+# the open hour. Pre-10:30 fires are allowed both directions because genuine
+# reversals usually happen at the open, not midday.
+TREND_FILTER_THRESHOLD_PCT = 0.0015  # 0.15% from session open (Apr 30 v2 — was 0.3%
+                                     # but slow grinds up at +0.20% leaked through)
+TREND_FILTER_MIN_AGE_SEC = 60 * 60   # only enforce after 60 minutes of session
+TREND_FILTER_MOMENTUM_LOOKBACK_SEC = 30 * 60   # also check 30-min momentum
+TREND_FILTER_MOMENTUM_PCT = 0.002    # 0.2% over 30 min = "in motion" — block opposite
+
 # Gate 6: GEX magnitude floor — min(|pos_gex|, |neg_gex|) must clear this
 # to prove the floor/king level is "real" and not toy OI. Tuned based on
 # SPY/QQQ baseline (typical levels are $50-200M).
@@ -175,6 +188,7 @@ class StructuralTurnEvent:
     gate_magnitude: bool = False
     gate_regime_match: bool = False
     gate_cvd_divergence: bool = False  # Gate 8 — Tier 1 absorption confirmation
+    trend_filter_passed: bool = True   # Apr 30 preflight — block counter-trend fires
 
     reasons: list[str] = field(default_factory=list)
     evidence: dict[str, Any] = field(default_factory=dict)
@@ -199,6 +213,8 @@ class StructuralTurnEvent:
            A:  core 5 + magnitude + regime (7/8, CVD optional)
            B:  core 5 + magnitude (regime fuzzy, CVD optional uplift info)
            —:  core 5 + magnitude required minimum"""
+        if not self.trend_filter_passed:
+            return "—"
         if not (self.core_5_passed and self.gate_magnitude):
             return "—"
         if self.gate_regime_match:
@@ -531,6 +547,93 @@ def _gate_agg_flow(
     return False, f"agg flow ${notional/1e6:.1f}M < ${AGG_FLOW_THRESHOLD/1e6:.0f}M and no ISO rate spike", \
            {"notional": notional or 0, "count": count or 0,
             "recent_n": recent_n, "baseline_n": baseline_n}
+
+
+def _gate_trend_filter(
+    direction: str, ts: int, spot: float, minute_bars: list[dict],
+) -> tuple[bool, str, dict]:
+    """Preflight: block counter-trend fires after the open hour.
+
+    Logic:
+      - Find session open price (first bar of session).
+      - Compute (spot - open) / open as the day's directional drift.
+      - If session age < TREND_FILTER_MIN_AGE_SEC (60min): pass — open-hour
+        reversals are real and we don't want to suppress them.
+      - Past 10:30, fail if direction fights the drift by >0.3%:
+          BEARISH but spot > open + 0.3%  → blocked (up day)
+          BULLISH but spot < open - 0.3%  → blocked (down day)
+      - Drift within ±0.3%: pass (chop, allow either direction).
+
+    Returns (ok, msg, evidence_dict) like other gate helpers.
+    """
+    if not minute_bars or not spot:
+        return True, "trend filter skipped (no bars or no spot)", {}
+    session = [b for b in minute_bars if b["ts"] <= ts]
+    if not session:
+        return True, "trend filter skipped (no session bars)", {}
+    first = session[0]
+    age = ts - first["ts"]
+    open_price = first.get("open") or first.get("close")
+    if not open_price:
+        return True, "trend filter skipped (no open price)", {}
+    drift_pct = (spot - open_price) / open_price
+    info = {
+        "open": open_price, "spot": spot,
+        "drift_pct": drift_pct, "age_sec": age,
+    }
+    if age < TREND_FILTER_MIN_AGE_SEC:
+        return True, (
+            f"trend filter passive (session age {age//60}min < "
+            f"{TREND_FILTER_MIN_AGE_SEC//60}min)"
+        ), info
+    # Compute 30-min momentum for use below.
+    momentum_cutoff = ts - TREND_FILTER_MOMENTUM_LOOKBACK_SEC
+    prior = [b for b in session if b["ts"] <= momentum_cutoff]
+    mom_pct: float | None = None
+    if prior:
+        ref = prior[-1].get("close") or prior[-1].get("open")
+        if ref and ref > 0:
+            mom_pct = (spot - ref) / ref
+            info["momentum_30m_pct"] = mom_pct
+
+    # v3 (Apr 30): require TAPE ALIGNMENT, not just absence of counter-trend.
+    # The v2 filter at +/-0.15% drift threshold cut counter-trend fires but
+    # left in "flat day" fires (drift +/-0.05%) which still bled to theta on
+    # 0DTE options. New rule: past the open hour, require BOTH:
+    #   - spot drift is meaningfully on the right side of open
+    #   - 30-min momentum is on the right side (or unavailable)
+    # Otherwise the 0DTE option is bleeding regardless of the structural call.
+    if direction == "BEARISH":
+        if drift_pct >= -TREND_FILTER_THRESHOLD_PCT:
+            return False, (
+                f"trend filter BLOCK: BEARISH not aligned "
+                f"(spot {drift_pct*100:+.2f}% from open, "
+                f"need <= {-TREND_FILTER_THRESHOLD_PCT*100:.2f}%)"
+            ), info
+        if mom_pct is not None and mom_pct >= 0:
+            return False, (
+                f"trend filter BLOCK: BEARISH against {mom_pct*100:+.2f}% "
+                f"30-min momentum"
+            ), info
+    if direction == "BULLISH":
+        if drift_pct <= TREND_FILTER_THRESHOLD_PCT:
+            return False, (
+                f"trend filter BLOCK: BULLISH not aligned "
+                f"(spot {drift_pct*100:+.2f}% from open, "
+                f"need >= {TREND_FILTER_THRESHOLD_PCT*100:.2f}%)"
+            ), info
+        if mom_pct is not None and mom_pct <= 0:
+            return False, (
+                f"trend filter BLOCK: BULLISH against {mom_pct*100:+.2f}% "
+                f"30-min momentum"
+            ), info
+
+    return True, (
+        f"trend filter ok ({direction.lower()} aligned: "
+        f"{drift_pct*100:+.2f}% from open"
+        + (f", mom {mom_pct*100:+.2f}%" if mom_pct is not None else "")
+        + ")"
+    ), info
 
 
 def _gate_magnitude(
@@ -873,6 +976,14 @@ def evaluate_turn(
         pos_gex=pos_gex, neg_gex=neg_gex, ratio=ratio,
         zgl=zgl, spot_minus_zgl=spot_minus_zgl,
     )
+
+    # Preflight — trend filter (Apr 30 2026). Block counter-trend fires
+    # past the open hour. If blocked, we still run the other gates so the
+    # event is auditable, but tier returns "—" (qualified=False).
+    tf_ok, tf_msg, tf_info = _gate_trend_filter(direction, ts, spot, minute_bars)
+    ev.trend_filter_passed = tf_ok
+    ev.reasons.append(("✅ " if tf_ok else "🚫 ") + tf_msg)
+    ev.evidence["trend_filter"] = {"ok": tf_ok, "msg": tf_msg, **tf_info}
 
     # Gate 1 — proximity to support (BULLISH) or resistance (BEARISH)
     ok, msg = _gate_proximity(direction, spot, floor, king, ceiling)

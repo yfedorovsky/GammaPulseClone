@@ -26,3 +26,8 @@ setup_cooldown.json
 aaoi*.json
 nvda.json
 oklo.json
+
+# Apr 30 — script-local caches and per-run artifacts
+scripts/.*.db
+.gex_backfill_checkpoint.json
+gex_backfill.log

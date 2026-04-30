@@ -57,6 +57,49 @@ rule have helped?" exposed this gap.
 
 ---
 
+## Phase 2 of Historical Backfill — Flow Reconstruction (Apr 29)
+
+**Why**: Phase 1 of the historical backfill (`scripts/historical_gex_backfill.py`)
+reconstructs daily GEX snapshots from ThetaData EOD greeks/OI. Verified working
+across 60+ days with the yfinance 2m/5m fallback for minute bars.
+
+**Limitation**: Without historical `flow_alerts` and `net_flow_alerts` data,
+Gates 4 and 5 of the Structural Turn detector fail on backfilled days. This
+caps fires at 5/7 (need 6/7 minimum) — so backfilled days never qualify even
+if the structural setup was correct.
+
+**Result**: Only 5 fires across 90 days backtested, all on the 2 most recent
+days where live flow data exists. Insufficient for true validation.
+
+**What to build**:
+
+```python
+scripts/historical_flow_backfill.py
+
+For each (ticker, day) in tickers × past N days:
+  1. Pull option_history_trade for the front-week + monthly expiry:
+     GET /v3/option/history/trade?symbol=...&expiration=...&start_date=...&end_date=...
+     Filter to condition=95 (ISO sweeps)
+  2. For each sweep:
+     - Determine sentiment (bullish/bearish based on call/put + price-vs-mid)
+     - Compute notional (size × price × multiplier)
+     - Insert into flow_alerts with is_sweep=1, conviction='SWEEP'
+  3. Aggregate per-minute net call premium minus net put premium:
+     - Compute NCP/NPP rate-of-change over rolling 2-min and 10-min
+     - Insert FLOW_LEADS_UP/DOWN events into net_flow_alerts when ROC crosses thresholds
+```
+
+**Effort**: ~1-2 hours code + several hours API pulls (rate-limited).
+
+**Expected impact**: Backfilled days will have flow_alerts and NCP populated,
+so all 7 gates can evaluate. Should produce 30-100 fires across 90 days.
+Real statistical validation of hit rate and per-tier behavior.
+
+**Source**: Apr 29 morning audit — Phase 1 ran clean but produced no new
+fires due to flow gates failing.
+
+---
+
 ## Old / lower-priority ideas
 
 (Add as they come up. Date-stamp them so we know what's stale.)

@@ -34,7 +34,7 @@ import yfinance as yf
 from dotenv import load_dotenv
 
 try:
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", line_buffering=True)
 except Exception:
     pass
 
@@ -83,16 +83,22 @@ def load_snapshots_for_day(ticker: str, day: datetime) -> list[dict]:
         conn.close()
 
 
-def load_minute_bars_yf(ticker: str, day: datetime) -> list[dict]:
-    """Pull 1-min bars for a specific day. yfinance only stores ~7-8 days."""
+def load_minute_bars_yf(ticker: str, day: datetime,
+                         interval: str = "1m") -> list[dict]:
+    """Pull bars for one day at given interval.
+
+    yfinance interval coverage:
+      1m  → last 30 days
+      2m  → last 60 days
+      5m  → last 60 days
+    """
     start = day.strftime("%Y-%m-%d")
     end = (day + timedelta(days=1)).strftime("%Y-%m-%d")
     try:
         df = yf.Ticker(ticker).history(
-            start=start, end=end, interval="1m", prepost=False,
+            start=start, end=end, interval=interval, prepost=False,
         )
-    except Exception as e:
-        print(f"  yfinance error {ticker} {start}: {e}")
+    except Exception:
         return []
     if df.empty:
         return []
@@ -106,6 +112,15 @@ def load_minute_bars_yf(ticker: str, day: datetime) -> list[dict]:
         }
         for t, r in df.iterrows()
     ]
+
+
+def load_minute_bars_yf_with_fallback(ticker: str, day: datetime) -> list[dict]:
+    """Try 1m → 2m → 5m intervals. 1m covers 30d, 2m/5m cover 60d."""
+    for iv in ("1m", "2m", "5m"):
+        bars = load_minute_bars_yf(ticker, day, interval=iv)
+        if bars:
+            return bars
+    return []
 
 
 def load_minute_bars_tradier(ticker: str, day: datetime) -> list[dict]:
@@ -155,13 +170,29 @@ def load_minute_bars_spx(day: datetime) -> list[dict]:
     """SPX is an index — Tradier returns OHLC but volume=0. Merge SPY's
     volume so the absorption gate has a real volume signal. SPY is the
     standard ETF proxy for SPX flow, so SPY's volume = institutional
-    SPX-complex activity."""
+    SPX-complex activity.
+
+    Fallback for older days (>28d): use SPY × 10 synthetic SPX from
+    yfinance (correlation 0.99+; volume column = SPY's actual volume)."""
     spx_bars = load_minute_bars_tradier("SPX", day)
     if not spx_bars:
-        return []
+        # Fallback: synthesize SPX from SPY × 10 using yfinance
+        spy_bars = load_minute_bars_yf_with_fallback("SPY", day)
+        if not spy_bars:
+            return []
+        synth = []
+        for b in spy_bars:
+            synth.append({
+                "ts": b["ts"],
+                "open": b["open"] * 10,
+                "high": b["high"] * 10,
+                "low": b["low"] * 10,
+                "close": b["close"] * 10,
+                "volume": b["volume"],  # SPY volume as proxy
+            })
+        return synth
     spy_bars = load_minute_bars_tradier("SPY", day)
     if not spy_bars:
-        # Fall back to SPX with zero volume — absorption gate will fail
         return spx_bars
     spy_vol_by_ts = {b["ts"]: b["volume"] for b in spy_bars}
     for b in spx_bars:
@@ -170,15 +201,17 @@ def load_minute_bars_spx(day: datetime) -> list[dict]:
 
 
 def load_minute_bars(ticker: str, day: datetime, source: str = "tradier") -> list[dict]:
-    """Dispatch — tradier preferred, yfinance fallback. SPX has special handling."""
+    """Dispatch chain: Tradier (28d) → yfinance 1m (30d) → 2m (60d) → 5m (60d).
+    SPX has special handling. Returned bars may be coarser than 1-min for older
+    days; the detector treats them as a list of OHLCV dicts regardless."""
     if ticker == "SPX":
         return load_minute_bars_spx(day)
     if source == "tradier":
         bars = load_minute_bars_tradier(ticker, day)
         if bars:
             return bars
-        return load_minute_bars_yf(ticker, day)
-    return load_minute_bars_yf(ticker, day)
+        return load_minute_bars_yf_with_fallback(ticker, day)
+    return load_minute_bars_yf_with_fallback(ticker, day)
 
 
 # ── ThetaData option-quote pull ────────────────────────────────────
@@ -603,6 +636,9 @@ def main() -> int:
     ap.add_argument("--days", type=int, default=30)
     ap.add_argument("--bars-source", default="tradier",
                     choices=["tradier", "yfinance"])
+    ap.add_argument("--skip-floor-backfill", action="store_true",
+                    help="Skip [1/3] floor_migrations backfill — useful when "
+                    "it was already populated in a prior run.")
     args = ap.parse_args()
 
     tickers = [t.strip().upper() for t in args.tickers.split(",")]
@@ -610,9 +646,12 @@ def main() -> int:
     print(f"Backtest window: last {args.days} days")
 
     # Step 1: ensure floor_migrations is current
-    print("\n[1/3] Backfilling floor_migrations...")
-    summary = floor_backfill(snapshot_db_path=SNAPSHOTS_DB, since_days=args.days + 7)
-    print(f"  {summary['events_total']} events ({summary['reclaims']} reclaims)")
+    if args.skip_floor_backfill:
+        print("\n[1/3] Skipping floor_migrations backfill (--skip-floor-backfill)")
+    else:
+        print("\n[1/3] Backfilling floor_migrations...", flush=True)
+        summary = floor_backfill(snapshot_db_path=SNAPSHOTS_DB, since_days=args.days + 7)
+        print(f"  {summary['events_total']} events ({summary['reclaims']} reclaims)")
 
     # Step 2: walk every trading day
     end_date = datetime(2026, 4, 28)  # use end of today (audit base)
@@ -620,18 +659,31 @@ def main() -> int:
     print(f"\n[2/3] Scanning {len(days)} trading days...")
 
     all_fires = []
+    OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_csv = OUT_CSV.parent / (OUT_CSV.stem + "_checkpoint.csv")
     for d in days:
         for t in tickers:
-            snaps = load_snapshots_for_day(t, d)
-            if not snaps:
+            try:
+                snaps = load_snapshots_for_day(t, d)
+                if not snaps:
+                    continue
+                bars = load_minute_bars(t, d, source=args.bars_source)
+                if not bars:
+                    continue
+                fires = find_qualified_fires_for_day(t, d, snaps, bars)
+                if fires:
+                    print(f"  {d:%Y-%m-%d} {t}: {len(fires)} fires (bars={len(bars)})",
+                          flush=True)
+                all_fires.extend(fires)
+            except Exception as e:
+                print(f"  ! {d:%Y-%m-%d} {t}: SKIPPED — {type(e).__name__}: {e}",
+                      flush=True)
+                import traceback
+                traceback.print_exc()
                 continue
-            bars = load_minute_bars(t, d, source=args.bars_source)
-            if not bars:
-                continue
-            fires = find_qualified_fires_for_day(t, d, snaps, bars)
-            if fires:
-                print(f"  {d:%Y-%m-%d} {t}: {len(fires)} fires (bars={len(bars)})")
-            all_fires.extend(fires)
+        # Per-day checkpoint so a later crash doesn't lose what we have.
+        if all_fires:
+            pd.DataFrame(all_fires).to_csv(checkpoint_csv, index=False)
 
     print(f"\n[3/3] Total fires: {len(all_fires)}")
     df = pd.DataFrame(all_fires)
