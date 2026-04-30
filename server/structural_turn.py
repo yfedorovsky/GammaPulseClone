@@ -1020,35 +1020,46 @@ async def _fetch_recent_snapshots(ticker: str, lookback_sec: int = 7200) -> list
     return await asyncio.to_thread(_pull)
 
 
+# Apr 29 evening: index-family cross-confirmation. SPY/QQQ/IWM/SPX/SPXW
+# all move on the same broad-market signal — a ST fire on SPY confirms
+# 0DTE Engine alerts on QQQ or SPX (and vice versa). Extend the cross-
+# check to the whole family.
+INDEX_FAMILY = {"SPY", "QQQ", "IWM", "SPX", "SPXW", "NDX", "RUT"}
+
+
 def _check_recent_0dte_confirmation(
     ticker: str, direction: str, ts: int,
     lookback_sec: int = 90 * 60,
     db_path: str = "./zero_dte_alerts.db",
 ) -> dict | None:
     """Cross-confirmation rule (Apr 29): if a 0DTE Engine alert fired same-
-    direction same-ticker within 90 min before this Structural Turn, the ST
-    is the CONFIRMATION the trader was waiting for. Returns the matching
-    alert's metadata, else None.
+    direction within 90 min on this ticker OR any index-family member,
+    return the matching alert's metadata.
 
-    The proposed workflow:
-      - 0DTE Engine fires B+ alone → watchlist, no entry
-      - 0DTE Engine + Structural Turn (within 90min) → take it
-      - Structural Turn alone → take it (independent signal)
+    Index family: SPY/QQQ/IWM/SPX/SPXW/NDX/RUT — these all reflect the
+    same broad-market direction. ST on SPY confirms 0DTE on QQQ same
+    direction (and vice versa).
     """
     cutoff = ts - lookback_sec
-    # 0DTE alerts use 'bullish'/'bearish' (lowercase)
     target_dir = direction.lower()
+    # Build family ticker list for cross-confirm
+    if ticker in INDEX_FAMILY:
+        family = sorted(INDEX_FAMILY)
+    else:
+        family = [ticker]
+    placeholders = ",".join("?" * len(family))
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         cur = conn.execute(
-            """SELECT alert_id, fired_at, grade, total_points, max_points,
-                      strike, right, expiration, est_entry_price
-               FROM zero_dte_alerts
-               WHERE ticker = ? AND direction = ?
-                 AND fired_at BETWEEN ? AND ?
-               ORDER BY fired_at DESC LIMIT 1""",
-            (ticker, target_dir, cutoff, ts),
+            f"""SELECT alert_id, ticker AS conf_ticker, fired_at, grade,
+                       total_points, max_points,
+                       strike, right, expiration, est_entry_price
+                FROM zero_dte_alerts
+                WHERE ticker IN ({placeholders}) AND direction = ?
+                  AND fired_at BETWEEN ? AND ?
+                ORDER BY fired_at DESC LIMIT 1""",
+            (*family, target_dir, cutoff, ts),
         )
         row = cur.fetchone()
         conn.close()
@@ -1093,9 +1104,13 @@ async def _send_structural_turn_telegram(ev: StructuralTurnEvent) -> None:
         # CONFIRMS prior 0DTE Engine alert — this is the entry trigger
         confirm_t = dt.datetime.fromtimestamp(int(confirm["fired_at"])).strftime("%H:%M")
         confirm_age_min = int((ev.ts - confirm["fired_at"]) / 60)
-        lines.append(f"🔗 CONFIRMS prior 0DTE Engine {confirm['grade']} alert "
-                     f"({confirm_t}, {confirm_age_min}min ago)")
-        lines.append(f"   0DTE: {confirm['strike']:.0f}{confirm['right']} "
+        # If 0DTE was on a different family member (e.g. ST SPY confirms 0DTE QQQ),
+        # surface that explicitly so the trader knows which contract to act on.
+        conf_tkr = confirm.get("conf_ticker", ev.ticker)
+        family_tag = f" [{conf_tkr}]" if conf_tkr != ev.ticker else ""
+        lines.append(f"🔗 CONFIRMS prior 0DTE Engine {confirm['grade']} alert"
+                     f"{family_tag} ({confirm_t}, {confirm_age_min}min ago)")
+        lines.append(f"   0DTE: {conf_tkr} {confirm['strike']:.0f}{confirm['right']} "
                      f"@ ${confirm['est_entry_price']:.2f} | now ENTER on this ST signal")
         lines.append("")
 

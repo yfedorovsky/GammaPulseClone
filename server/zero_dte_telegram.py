@@ -52,35 +52,47 @@ def _direction_emoji(direction: str) -> str:
     return "🟢" if direction == "bullish" else "🔴" if direction == "bearish" else "⚪"
 
 
+# Apr 29 evening: index-family cross-confirmation. ST on SPY confirms
+# 0DTE Engine on QQQ/SPX (and vice versa) since they all track broad
+# market direction. Empirical day: 14:09 ST SPY ⚡A fired 1min before
+# 14:10 0DTE Engine QQQ B+ — should have shown CONFIRMED, not WATCHING.
+INDEX_FAMILY = {"SPY", "QQQ", "IWM", "SPX", "SPXW", "NDX", "RUT"}
+
+
 def _check_recent_structural_turn(
     ticker: str, direction: str, ts: float,
     lookback_sec: int = 90 * 60,
     db_path: str = "./structural_turns.db",
 ) -> dict | None:
     """Cross-confirmation rule (Apr 29): if a Structural Turn already fired
-    same-direction same-ticker within 90min before this 0DTE Engine alert,
-    upgrade the banner from 'WATCHING' to 'CONFIRMED — execute now'.
+    same-direction within 90min on this ticker OR any index-family member,
+    upgrade the 0DTE banner from 'WATCHING' to 'CONFIRMED — execute now'.
 
     Workflow:
       0DTE Engine alone → 👁 WATCHING (wait for ST within 90min)
-      0DTE Engine + ST already fired → ✅ CONFIRMED (act now)
+      0DTE Engine + ST already fired (same family) → ✅ CONFIRMED (act now)
       ST after 0DTE Engine → ST alert prepends 🔗 CONFIRMS banner (other side)
     """
     import sqlite3
     cutoff = ts - lookback_sec
-    target_dir = direction.upper()  # 0DTE uses lowercase, ST uses uppercase
+    target_dir = direction.upper()
     target_dir_full = "BULLISH" if target_dir == "BULLISH" or direction.lower() == "bullish" else "BEARISH"
+    if ticker in INDEX_FAMILY:
+        family = sorted(INDEX_FAMILY)
+    else:
+        family = [ticker]
+    placeholders = ",".join("?" * len(family))
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         cur = conn.execute(
-            """SELECT ts, tier, spot, qualified
-               FROM structural_turns
-               WHERE ticker = ? AND direction = ?
-                 AND ts BETWEEN ? AND ?
-                 AND qualified = 1
-               ORDER BY ts DESC LIMIT 1""",
-            (ticker, target_dir_full, cutoff, ts),
+            f"""SELECT ts, ticker AS st_ticker, tier, spot, qualified
+                FROM structural_turns
+                WHERE ticker IN ({placeholders}) AND direction = ?
+                  AND ts BETWEEN ? AND ?
+                  AND qualified = 1
+                ORDER BY ts DESC LIMIT 1""",
+            (*family, target_dir_full, cutoff, ts),
         )
         row = cur.fetchone()
         conn.close()
@@ -118,8 +130,11 @@ def format_zero_dte_alert(alert: Any) -> str:
     if st_confirm:
         st_t = dt.datetime.fromtimestamp(int(st_confirm["ts"])).strftime("%H:%M")
         st_age_min = max(0, int((fired_at - st_confirm["ts"]) / 60))
+        # Surface the source ticker if cross-family (e.g. ST SPY confirms 0DTE QQQ)
+        st_tkr = st_confirm.get("st_ticker", alert.ticker)
+        family_tag = f" [{st_tkr}]" if st_tkr != alert.ticker else ""
         banner = (
-            f"✅ CONFIRMED — Structural Turn TIER {st_confirm['tier']} fired at "
+            f"✅ CONFIRMED — Structural Turn TIER {st_confirm['tier']}{family_tag} fired at "
             f"{st_t} ({st_age_min}min ago)\n"
             f"   Both signals aligned — execute now per the play.\n\n"
         )
@@ -221,14 +236,31 @@ def format_zero_dte_alert(alert: Any) -> str:
 
 async def send_zero_dte_alert(alert: Any) -> None:
     """Send a 0DTE alert to Telegram. Errors logged but swallowed —
-    alerting failures should never break the eval loop."""
+    alerting failures should never break the eval loop.
+
+    Apr 29: hardened error logging after the SPX 14:58 alert went missing
+    (DB had it, Telegram didn't). Now wraps format + send with try/except
+    and logs alert_id so we can correlate which fires died in transit."""
+    alert_id = getattr(alert, "alert_id", "?")
+    ticker = getattr(alert, "ticker", "?")
     try:
         from .telegram import send
     except ImportError:
-        print("[ZERO_DTE] telegram module not available")
+        print(f"[ZERO_DTE] {alert_id} ({ticker}) telegram module not available")
         return
-    text = format_zero_dte_alert(alert)
     try:
-        await send(text, ticker=alert.ticker, force=True)
+        text = format_zero_dte_alert(alert)
     except Exception as e:
-        print(f"[ZERO_DTE] telegram send failed: {e}")
+        print(f"[ZERO_DTE] {alert_id} ({ticker}) format failed: {e!r}")
+        import traceback
+        traceback.print_exc()
+        return
+    try:
+        result = await send(text, ticker=alert.ticker, force=True)
+        if not result:
+            print(f"[ZERO_DTE] {alert_id} ({ticker}) send returned False "
+                  f"(token/chat? rate limit?)")
+    except Exception as e:
+        print(f"[ZERO_DTE] {alert_id} ({ticker}) telegram send failed: {e!r}")
+        import traceback
+        traceback.print_exc()
