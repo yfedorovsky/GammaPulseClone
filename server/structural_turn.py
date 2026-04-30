@@ -1137,7 +1137,13 @@ async def _send_structural_turn_telegram(ev: StructuralTurnEvent) -> None:
     lines.append("Shadow mode — no auto-trade. Logging to structural_turns.db.")
     text = "\n".join(lines)
     try:
-        await send(text, ticker=ev.ticker)
+        # force=True bypasses telegram.py's global rate limit + 1h per-ticker
+        # cooldown. ST has its own 30-min LIVE_FIRE_COOLDOWN_SEC at the loop
+        # level — the global cooldown was silently swallowing alerts (Apr 29
+        # bug: 22 DB fires, 0 telegrams reached the user).
+        result = await send(text, ticker=ev.ticker, force=True)
+        if not result:
+            print(f"[ST] telegram returned False for {ev.ticker} (token/chat?)")
     except Exception as e:
         print(f"[ST] telegram failed: {e}")
 

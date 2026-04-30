@@ -452,7 +452,11 @@ async def _send_floor_migration_telegram(ev: FloorMigrationEvent) -> None:
         f"Shadow mode — no action; data going to floor_migrations.db"
     )
     try:
-        await send(text, ticker=ev.ticker)
+        # force=True bypasses telegram.py's 1h per-ticker cooldown — same fix
+        # as ST (Apr 29). Floor migrations have their own 30min LIVE_FIRE_COOLDOWN_SEC.
+        result = await send(text, ticker=ev.ticker, force=True)
+        if not result:
+            print(f"[FLOOR_MIG] telegram returned False for {ev.ticker} (token/chat?)")
     except Exception as e:
         print(f"[FLOOR_MIG] telegram failed: {e}")
 
