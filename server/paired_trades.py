@@ -68,12 +68,46 @@ STOP_PCT = -30.0
 SESSION_END_HHMM = "15:59"
 SESSION_OPEN_HHMM = "09:30"
 
+# Random-minute-ATM control (Perplexity Apr 30 follow-up #2):
+# For each gated fire, also simulate K random-minute same-direction
+# ATM-at-that-minute entries on the same day. Mean P&L is the primary
+# control because it isolates timing alpha (holds direction + strike-rule
+# + exit constant; varies entry minute only).
+RANDOM_MINUTE_K = 5                  # samples per fire
+RANDOM_MINUTE_RANGE_HHMM = ("09:30", "15:30")  # never sample past 15:30
+
+
+def _hhmm_to_min(hhmm: str) -> int:
+    h, m = map(int, hhmm.split(":"))
+    return h * 60 + m
+
+
+def _min_to_hhmm(minute: int) -> str:
+    return f"{minute // 60:02d}:{minute % 60:02d}"
+
+
+def _sample_non_fire_minutes(
+    day: str, exclude_hhmm: set[str], k: int, seed: int,
+) -> list[str]:
+    """Sample k minutes uniformly from RANDOM_MINUTE_RANGE_HHMM excluding
+    any minute in `exclude_hhmm`. Deterministic via fire-derived seed.
+    """
+    import random
+    rng = random.Random(seed)
+    lo = _hhmm_to_min(RANDOM_MINUTE_RANGE_HHMM[0])
+    hi = _hhmm_to_min(RANDOM_MINUTE_RANGE_HHMM[1])
+    universe = [m for m in range(lo, hi)
+                if _min_to_hhmm(m) not in exclude_hhmm]
+    if len(universe) < k:
+        return [_min_to_hhmm(m) for m in universe]
+    return [_min_to_hhmm(m) for m in rng.sample(universe, k)]
+
 
 PAIRED_TRADES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS paired_trades (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   fire_id TEXT NOT NULL,
-  source TEXT NOT NULL CHECK (source IN ('gated', 'naive_open_atm')),
+  source TEXT NOT NULL CHECK (source IN ('gated', 'random_minute_atm', 'naive_open_atm')),
   ticker TEXT NOT NULL,
   day TEXT NOT NULL,
   direction TEXT NOT NULL,
@@ -303,11 +337,80 @@ def _simulate_trade(
 # ── Per-fire orchestration ──────────────────────────────────────
 
 
-def compute_paired_trades_for_fire(fire: dict) -> list[dict]:
-    """Given one qualified fire row, compute and return [gated_row, naive_row].
+def _compute_random_minute_atm_baseline(
+    ticker: str, day: str, direction: str, expiration: str,
+    fire_id: str, exclude_hhmm: set[str],
+) -> dict:
+    """For one gated fire, sample K random non-fire minutes, simulate each
+    as a same-direction ATM-at-that-minute entry with -30%/EOD exit, and
+    return ONE row holding the mean P&L of the K samples.
 
-    Either or both may be None-result (insufficient data); we still persist
-    the row with NULLs so the experiment has a complete audit trail.
+    Per-sample audit info captured in `entry_hhmm` as a comma-joined list
+    of minutes; per-sample P&Ls aren't persisted individually (the paired
+    bootstrap pairs by fire_id and the mean is the relevant statistic).
+    """
+    sym = _option_root(ticker)
+    right = _right_for_direction(direction)
+    seed = abs(hash(fire_id)) & 0xFFFFFFFF
+    sampled = _sample_non_fire_minutes(
+        day, exclude_hhmm, RANDOM_MINUTE_K, seed,
+    )
+    pnls: list[float] = []
+    sampled_used: list[str] = []
+    for hhmm in sampled:
+        spot = _get_spot_at(ticker, day, hhmm)
+        if spot is None:
+            continue
+        strike = _strike_round(ticker, spot)
+        bars = _fetch_quote_bars(sym, expiration, strike, right, day)
+        if bars.empty:
+            continue
+        result = _simulate_trade(bars, hhmm)
+        if result.pnl_pct is None:
+            continue
+        pnls.append(result.pnl_pct)
+        sampled_used.append(hhmm)
+
+    if not pnls:
+        return {
+            "fire_id": fire_id, "source": "random_minute_atm",
+            "ticker": ticker, "day": day, "direction": direction,
+            "entry_ts": None, "entry_hhmm": "",
+            "entry_spot": None, "entry_strike": None,
+            "entry_right": right, "entry_expiration": expiration,
+            "entry_ask": None, "entry_bid": None,
+            "exit_ts": None, "exit_hhmm": None,
+            "exit_reason": "no_samples", "exit_bid": None, "pnl_pct": None,
+        }
+
+    mean_pnl = sum(pnls) / len(pnls)
+    return {
+        "fire_id": fire_id, "source": "random_minute_atm",
+        "ticker": ticker, "day": day, "direction": direction,
+        "entry_ts": None,
+        "entry_hhmm": ",".join(sampled_used),  # audit: which minutes used
+        "entry_spot": None, "entry_strike": None,  # multiple strikes — N/A
+        "entry_right": right, "entry_expiration": expiration,
+        "entry_ask": None, "entry_bid": None,
+        "exit_ts": None, "exit_hhmm": None,
+        "exit_reason": f"mean_of_{len(pnls)}_samples",
+        "exit_bid": None, "pnl_pct": mean_pnl,
+    }
+
+
+def compute_paired_trades_for_fire(
+    fire: dict, all_fire_minutes_today: set[str] | None = None,
+) -> list[dict]:
+    """Given one qualified fire row, compute and return three rows: gated,
+    random_minute_atm (primary control), naive_open_atm (secondary control).
+
+    `all_fire_minutes_today` is the set of HH:MM strings for every fire
+    that occurred on this day across all tickers; used to exclude those
+    minutes from the random-minute baseline sampling. If None, only the
+    current fire's minute is excluded.
+
+    Any row may be None-result (insufficient data); we still persist with
+    NULLs so the experiment has a complete audit trail.
     """
     ticker = fire["ticker"]
     day = fire["day"]            # YYYY-MM-DD
@@ -345,6 +448,15 @@ def compute_paired_trades_for_fire(fire: dict) -> list[dict]:
     fire_id = f"{day}_{ticker}_{fire_hhmm}_{direction}"
     now = int(time.time())
 
+    # Random-minute-ATM baseline (PRIMARY control per Perplexity Apr 30 #2):
+    # exclude all fire minutes for the day so we don't accidentally sample
+    # one as a "non-fire" minute.
+    exclude = set(all_fire_minutes_today) if all_fire_minutes_today else {fire_hhmm}
+    exclude.add(fire_hhmm)
+    rmin_row = _compute_random_minute_atm_baseline(
+        ticker, day, direction, expiration, fire_id, exclude,
+    )
+
     rows = []
 
     rows.append({
@@ -362,6 +474,13 @@ def compute_paired_trades_for_fire(fire: dict) -> list[dict]:
         "vix1d_prior_close": v1, "vix9d_prior_close": v9,
         "computed_at": now,
     })
+
+    # Append random_minute_atm row with the common context fields filled in
+    rmin_row["regime_at_fire"] = regime
+    rmin_row["vix1d_prior_close"] = v1
+    rmin_row["vix9d_prior_close"] = v9
+    rmin_row["computed_at"] = now
+    rows.append(rmin_row)
 
     if naive is not None:
         rows.append({
@@ -507,18 +626,26 @@ def run_eod(date_str: str, csv_path: str | None = None) -> int:
           flush=True)
     if not fires:
         return 0
+    # Pre-compute the set of all fire HH:MM on this day so the random-minute
+    # baseline can exclude them.
+    all_fire_minutes = {f["fire_hhmm"] for f in fires}
     total = 0
     for f in fires:
         try:
-            rows = compute_paired_trades_for_fire(f)
+            rows = compute_paired_trades_for_fire(
+                f, all_fire_minutes_today=all_fire_minutes,
+            )
             n = persist_paired_rows(rows)
             total += n
             gated = next((r for r in rows if r["source"] == "gated"), None)
+            rmin = next((r for r in rows if r["source"] == "random_minute_atm"), None)
             naive = next((r for r in rows if r["source"] == "naive_open_atm"), None)
             g_pnl = (gated or {}).get("pnl_pct")
+            r_pnl = (rmin or {}).get("pnl_pct")
             n_pnl = (naive or {}).get("pnl_pct")
             print(f"  {f['fire_hhmm']} {f['ticker']} {f['direction']} "
-                  f"tier={f['tier']}  gated={g_pnl}  naive={n_pnl}", flush=True)
+                  f"tier={f['tier']}  gated={g_pnl}  rmin={r_pnl}  naive={n_pnl}",
+                  flush=True)
         except Exception as e:
             print(f"  ! fire {f['ticker']}@{f['fire_hhmm']}: {type(e).__name__}: {e}",
                   flush=True)

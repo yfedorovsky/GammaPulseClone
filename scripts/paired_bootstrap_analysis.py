@@ -1,14 +1,18 @@
 """Paired bootstrap analysis for the falsification experiment.
 
 Reads paired_trades.db (built by server/paired_trades.py) and computes:
-  - Per-source summary stats (gated vs naive_open_atm)
-  - Paired difference (gated_pnl - naive_pnl) per fire
-  - Cluster-bootstrap by day (Perplexity recommendation)
-  - 95% CI on the mean paired difference
+  - Per-source summary stats (gated vs random_minute_atm vs naive_open_atm)
+  - PRIMARY paired difference: gated - random_minute_atm
+      (isolates timing alpha — same direction, ATM-at-entry strike rule,
+       same exit logic; varies entry minute only)
+  - SECONDARY paired difference: gated - naive_open_atm
+      (the whole-package test: did the strategy beat a fixed-time morning bet?)
+  - Cluster-bootstrap by day for both
+  - 95% CI on each mean paired difference
 
-The cluster-bootstrap by day handles the within-day correlation Perplexity
-flagged: fires that share a day share the macro setup and are not
-independent draws.
+Stopping rule per Perplexity Apr 30 #2: at least 30 paired observations
+across at least 5 distinct day clusters before declaring a verdict; small
+cluster counts make bootstrap intervals look more stable than they are.
 
 Run:
   python scripts/paired_bootstrap_analysis.py [--bootstrap 10000]
@@ -50,11 +54,12 @@ def pivot_paired(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def cluster_bootstrap_diff(
-    pivot: pd.DataFrame, B: int = 10000, seed: int = 42,
+    pivot: pd.DataFrame, control_col: str,
+    B: int = 10000, seed: int = 42,
 ) -> dict:
-    """Cluster-bootstrap by day on (gated - naive). Returns CI + stats."""
-    df = pivot.dropna(subset=["gated", "naive_open_atm"]).copy()
-    df["diff"] = df["gated"] - df["naive_open_atm"]
+    """Cluster-bootstrap by day on (gated - control_col). Returns CI + stats."""
+    df = pivot.dropna(subset=["gated", control_col]).copy()
+    df["diff"] = df["gated"] - df[control_col]
     if df.empty:
         return {}
     days = df["day"].unique()
@@ -76,6 +81,7 @@ def cluster_bootstrap_diff(
             means[i] = sample.mean()
     ci_low, ci_high = np.percentile(means, [2.5, 97.5])
     return {
+        "control": control_col,
         "n_fires": len(df),
         "n_days": len(days),
         "mean_diff": float(df["diff"].mean()),
@@ -105,7 +111,7 @@ def main() -> int:
 
     # Per-source summary
     print("\n=== Per-source summary ===")
-    for source in ["gated", "naive_open_atm"]:
+    for source in ["gated", "random_minute_atm", "naive_open_atm"]:
         sub = df[df["source"] == source]["pnl_pct"].dropna()
         if len(sub) == 0:
             continue
@@ -114,50 +120,70 @@ def main() -> int:
               f"avg={sub.mean():>+7.1f}%  median={sub.median():>+7.1f}%  "
               f"min={sub.min():>+7.1f}%  max={sub.max():>+7.1f}%")
 
-    # Paired difference
-    valid = pivot.dropna(subset=["gated", "naive_open_atm"]).copy()
-    valid["diff"] = valid["gated"] - valid["naive_open_atm"]
-    print(f"\n=== Paired difference (gated - naive_open_atm), n={len(valid)} ===")
-    print(f"  mean diff:    {valid['diff'].mean():+.1f}pp")
-    print(f"  median diff:  {valid['diff'].median():+.1f}pp")
-    print(f"  fires where gated > naive: {(valid['diff'] > 0).sum()}/{len(valid)}")
-    print(f"  fires where gated < naive: {(valid['diff'] < 0).sum()}/{len(valid)}")
+    # PRIMARY: gated - random_minute_atm (timing alpha)
+    print(f"\n=== PRIMARY: gated - random_minute_atm (timing alpha), "
+          f"cluster-bootstrap by day, B={args.bootstrap} ===")
+    boot_p = cluster_bootstrap_diff(pivot, "random_minute_atm",
+                                    B=args.bootstrap)
+    if boot_p:
+        print(f"  n fires:        {boot_p['n_fires']}")
+        print(f"  n day clusters: {boot_p['n_days']}")
+        print(f"  mean diff:      {boot_p['mean_diff']:+.1f}pp")
+        print(f"  median diff:    {boot_p['median_diff']:+.1f}pp")
+        print(f"  95% CI:         [{boot_p['ci_low']:+.1f}pp, {boot_p['ci_high']:+.1f}pp]")
+        print(f"  fires gated > random: {boot_p['wins']}/{boot_p['n_fires']}")
+        if boot_p["n_days"] < 5:
+            print(f"  ⚠ only {boot_p['n_days']} day clusters — minimum 5 for "
+                  "verdict per Perplexity Apr 30 #2")
+        elif boot_p["ci_low"] > 0:
+            print("  ✅ VERDICT (primary): gated has statistically significant "
+                  "TIMING alpha over random-minute ATM (95% CI excludes 0)")
+        elif boot_p["ci_high"] < 0:
+            print("  ❌ VERDICT (primary): gated underperforms random-minute ATM")
+        else:
+            print("  ⚪ VERDICT (primary): cannot reject null — CI includes 0")
 
-    # Bootstrap
-    print(f"\n=== Cluster-bootstrap by day, B={args.bootstrap} ===")
-    boot = cluster_bootstrap_diff(pivot, B=args.bootstrap)
-    print(f"  n fires:      {boot['n_fires']}")
-    print(f"  n day clusters: {boot['n_days']}")
-    print(f"  mean diff:    {boot['mean_diff']:+.1f}pp")
-    print(f"  95% CI:       [{boot['ci_low']:+.1f}pp, {boot['ci_high']:+.1f}pp]")
-    if boot["ci_low"] > 0:
-        print("  VERDICT: gated has statistically significant alpha over naive "
-              "(95% CI excludes 0 on positive side)")
-    elif boot["ci_high"] < 0:
-        print("  VERDICT: gated underperforms naive (95% CI excludes 0 on negative side)")
-    else:
-        print("  VERDICT: cannot reject null — CI includes 0")
+    # SECONDARY: gated - naive_open_atm (whole-package alpha)
+    print(f"\n=== SECONDARY: gated - naive_open_atm (whole-package alpha), "
+          f"cluster-bootstrap by day, B={args.bootstrap} ===")
+    boot_s = cluster_bootstrap_diff(pivot, "naive_open_atm",
+                                    B=args.bootstrap)
+    if boot_s:
+        print(f"  n fires:        {boot_s['n_fires']}")
+        print(f"  n day clusters: {boot_s['n_days']}")
+        print(f"  mean diff:      {boot_s['mean_diff']:+.1f}pp")
+        print(f"  median diff:    {boot_s['median_diff']:+.1f}pp")
+        print(f"  95% CI:         [{boot_s['ci_low']:+.1f}pp, {boot_s['ci_high']:+.1f}pp]")
+        print(f"  fires gated > naive_open_atm: {boot_s['wins']}/{boot_s['n_fires']}")
 
     # Per-day breakdown
-    print("\n=== Per-day breakdown ===")
+    print("\n=== Per-day breakdown (gated vs random_minute_atm) ===")
+    valid = pivot.dropna(subset=["gated", "random_minute_atm"]).copy()
+    valid["diff_primary"] = valid["gated"] - valid["random_minute_atm"]
+    if "naive_open_atm" in valid.columns:
+        valid["diff_secondary"] = valid["gated"] - valid["naive_open_atm"]
     for day, sub in valid.groupby("day"):
         gated = sub["gated"].mean()
-        naive = sub["naive_open_atm"].mean()
-        d = sub["diff"].mean()
-        print(f"  {day}  n={len(sub):>2}  gated_avg={gated:>+6.1f}%  "
-              f"naive_avg={naive:>+6.1f}%  diff={d:>+6.1f}pp")
+        rmin = sub["random_minute_atm"].mean()
+        d_p = sub["diff_primary"].mean()
+        d_s_str = ""
+        if "diff_secondary" in sub.columns and not sub["diff_secondary"].isna().all():
+            d_s = sub["diff_secondary"].mean()
+            d_s_str = f"  vs_naive={d_s:>+7.1f}pp"
+        print(f"  {day}  n={len(sub):>2}  gated={gated:>+7.1f}%  "
+              f"rmin={rmin:>+7.1f}%  vs_rmin={d_p:>+7.1f}pp{d_s_str}")
 
     # Per-direction breakdown
-    print("\n=== Per-direction breakdown ===")
+    print("\n=== Per-direction breakdown (primary control) ===")
     for direction, sub in valid.groupby("direction"):
         gated = sub["gated"].mean()
-        naive = sub["naive_open_atm"].mean()
-        d = sub["diff"].mean()
+        rmin = sub["random_minute_atm"].mean()
+        d = sub["diff_primary"].mean()
         wr_g = (sub["gated"] > 0).mean() * 100
-        wr_n = (sub["naive_open_atm"] > 0).mean() * 100
+        wr_r = (sub["random_minute_atm"] > 0).mean() * 100
         print(f"  {direction:8s}  n={len(sub):>2}  "
               f"gated WR={wr_g:>5.1f}% avg={gated:>+6.1f}%  "
-              f"naive WR={wr_n:>5.1f}% avg={naive:>+6.1f}%  "
+              f"rmin WR={wr_r:>5.1f}% avg={rmin:>+6.1f}%  "
               f"diff={d:>+6.1f}pp")
 
     return 0
