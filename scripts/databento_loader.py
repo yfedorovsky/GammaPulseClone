@@ -57,17 +57,21 @@ def _read_dbn_to_df(path: Path) -> pd.DataFrame:
     df = store.to_df()
     if df.empty:
         return df
-    # Normalize timestamp columns to UTC-naive int64 nanoseconds for
-    # space efficiency. ts_event is the matching-engine timestamp;
-    # ts_recv is Databento's capture-server timestamp.
+    # DBNStore.to_df() returns ts_recv as the index by default — promote
+    # it to a regular column so downstream code can treat it uniformly.
+    if df.index.name == "ts_recv":
+        df = df.reset_index()
+    # Normalize timestamp columns to int64 nanoseconds for space-efficient
+    # comparisons. ts_event = matching-engine timestamp; ts_recv = capture
+    # server timestamp.
     if "ts_event" in df.columns:
         df["ts_event_ns"] = pd.to_datetime(df["ts_event"], utc=True) \
             .astype("int64")
     if "ts_recv" in df.columns:
         df["ts_recv_ns"] = pd.to_datetime(df["ts_recv"], utc=True) \
             .astype("int64")
-    # Standardize symbol column name (the field is sometimes 'symbol',
-    # sometimes 'raw_symbol', depending on schema/version).
+    # Standardize symbol column name (sometimes 'symbol', sometimes
+    # 'raw_symbol' depending on schema/version).
     if "symbol" not in df.columns and "raw_symbol" in df.columns:
         df["symbol"] = df["raw_symbol"]
     return df
