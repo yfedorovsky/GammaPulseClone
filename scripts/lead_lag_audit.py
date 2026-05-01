@@ -30,6 +30,7 @@ Run:
 """
 from __future__ import annotations
 
+import gc
 import sys
 from pathlib import Path
 
@@ -63,6 +64,7 @@ def build_minute_ofi(ticker: str, day: str) -> pd.Series | None:
         .dt.tz_convert("America/New_York")
     quotes = quotes.assign(_minute=ts_et.dt.strftime("%H:%M"))
     minute_ofi = quotes.groupby("_minute")["ofi_event"].sum()
+    del df, quotes, ts_et  # free the multi-million-row source
     return minute_ofi
 
 
@@ -79,14 +81,17 @@ def main() -> int:
     print(f"Common cached days for SPY+QQQ: {len(common_days)}\n", flush=True)
 
     per_day_corrs = []
-    for day in common_days:
+    for i, day in enumerate(common_days):
         spy = build_minute_ofi("SPY", day)
         qqq = build_minute_ofi("QQQ", day)
         if spy is None or qqq is None:
             continue
         # Align indexes
         merged = pd.DataFrame({"spy": spy, "qqq": qqq}).dropna()
+        # Free the per-day Series so they don't accumulate
+        del spy, qqq
         if len(merged) < 50:
+            del merged
             continue
         # Compute correlations at each lag
         row = {"day": day, "n_minutes": len(merged)}
@@ -107,6 +112,10 @@ def main() -> int:
               f"corr@lag-1={cm1:>+.3f}  corr@lag0={c0:>+.3f}  "
               f"corr@lag+1={c1:>+.3f}",
               flush=True)
+        # Release per-day frames; gc periodically
+        del merged
+        if (i + 1) % 25 == 0:
+            gc.collect()
 
     if not per_day_corrs:
         print("No usable days.")

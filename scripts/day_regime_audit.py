@@ -36,6 +36,7 @@ Run:
 """
 from __future__ import annotations
 
+import gc
 import io
 import sys
 from pathlib import Path
@@ -127,7 +128,7 @@ def compute_day_features(ticker: str, day: str) -> dict:
     p90 = float(minute_max_spread.quantile(0.90)) if not minute_max_spread.empty else 0
     spike_count = int((minute_max_spread > p90 * 1.5).sum())
 
-    return {
+    out = {
         "status": "ok",
         "cum_ofi": cum_ofi,
         "abs_ofi": abs(cum_ofi),
@@ -139,6 +140,9 @@ def compute_day_features(ticker: str, day: str) -> dict:
         "mean_mp_dev_abs": float(mp_dev.mean()) if len(mp_dev) else np.nan,
         "spread_spike_minutes": spike_count,
     }
+    # Free the multi-million-row source frames before returning
+    del df, quotes, trades, ofi_events, spread, mp_dev, quotes_min
+    return out
 
 
 def main() -> int:
@@ -161,7 +165,7 @@ def main() -> int:
     vix["spread_vix1d_minus_vix9d"] = vix["VIX1D"] - vix["VIX9D"]
 
     rows = []
-    for day in days:
+    for i, day in enumerate(days):
         prior = prior_trading_day(day, vix)
         v1 = vix.loc[vix["date"] == prior, "VIX1D"].values[0] if prior else np.nan
         v9 = vix.loc[vix["date"] == prior, "VIX9D"].values[0] if prior else np.nan
@@ -181,6 +185,10 @@ def main() -> int:
                           f"vol={feats['total_volume']:>14,.0f} "
                           f"spread_mean={feats['mean_spread']:.4f}",
                           flush=True)
+        # Aggressive GC every 25 days to prevent the multi-million-row
+        # source DataFrames from accumulating across iterations.
+        if (i + 1) % 25 == 0:
+            gc.collect()
 
     if not rows:
         print("No rows produced.")

@@ -43,6 +43,7 @@ Run:
 """
 from __future__ import annotations
 
+import gc
 import sys
 from pathlib import Path
 
@@ -159,6 +160,10 @@ def build_minute_features(ticker: str, day: str) -> pd.DataFrame | None:
     out["tod_bucket"] = out["hhmm"].apply(assign_tod)
     out["ticker"] = ticker
     out["day"] = day
+    # Free the multi-million-row source DataFrames before returning;
+    # otherwise pandas/arrow's lazy allocation can keep them resident
+    # across loop iterations and accumulate into OOM territory.
+    del df, quotes, trades, q_agg, t_agg
     return out
 
 
@@ -207,7 +212,14 @@ def main() -> int:
             if mf is not None and not mf.empty:
                 all_minutes.append(mf)
                 n_processed += 1
+            # Aggressive GC every 25 days — prevents accumulating per-day
+            # DataFrame baggage that the OFI v1 + day_regime scripts hit OOM on
+            if n_processed % 25 == 0 and n_processed > 0:
+                gc.collect()
+                print(f"  {ticker}: {n_processed}/{len(ticker_days)} days, "
+                      f"pooled {len(all_minutes)} chunks", flush=True)
         print(f"  {ticker}: {n_processed} days processed", flush=True)
+        gc.collect()
 
     if not all_minutes:
         print("No minute features built.")
