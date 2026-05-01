@@ -6,6 +6,17 @@ so we have a record.
 
 ---
 
+## Research datasets on local disk (not in git)
+
+- **Databento US Equities Mini, MBP-1, SPY+QQQ, 2025-10-30 → 2026-04-30**
+  (~106 GB, in `data/databento_equs_mini/`). Acquired Apr 30 2026 via
+  Databento's $125 new-account credit. Multi-venue aggregated NBBO at
+  tick-level — research-grade dataset, replacement value $1k–$5k.
+  Full description + how to use: [DATABENTO_DATASET.md](research/DATABENTO_DATASET.md).
+  **Back up off-machine.**
+
+---
+
 ## Tape Regime Classifier
 
 **Why**: The Apr 29 workflow rule (0DTE Engine alert → wait for Structural
