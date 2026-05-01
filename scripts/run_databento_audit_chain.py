@@ -35,6 +35,9 @@ SCRIPTS = [
     ("ofi",            "ofi_predictive_power.py"),
     ("day_regime",     "day_regime_audit.py"),
     ("background",     "background_distributions.py"),
+    ("trade_size",     "trade_size_cohort_audit.py"),
+    ("spread",         "spread_regime_audit.py"),
+    ("lead_lag",       "lead_lag_audit.py"),
 ]
 
 
@@ -123,6 +126,9 @@ def main() -> int:
     print("  ofi_predictive_power.md")
     print("  day_regime_audit.md")
     print("  background_distributions.md")
+    print("  trade_size_cohort_audit.md")
+    print("  spread_regime_audit.md")
+    print("  lead_lag_audit.md")
     return 0 if n_ok == n_total else 1
 
 
