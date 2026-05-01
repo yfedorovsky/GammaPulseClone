@@ -31,3 +31,4 @@ oklo.json
 scripts/.*.db
 .gex_backfill_checkpoint.json
 gex_backfill.log
+paired_trades.db

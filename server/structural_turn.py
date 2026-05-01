@@ -189,6 +189,7 @@ class StructuralTurnEvent:
     gate_regime_match: bool = False
     gate_cvd_divergence: bool = False  # Gate 8 — Tier 1 absorption confirmation
     trend_filter_passed: bool = True   # Apr 30 preflight — block counter-trend fires
+    regime_filter_passed: bool = True  # Apr 30 (Perplexity Fix #1) — block BEARISH on POS
 
     reasons: list[str] = field(default_factory=list)
     evidence: dict[str, Any] = field(default_factory=dict)
@@ -214,6 +215,8 @@ class StructuralTurnEvent:
            B:  core 5 + magnitude (regime fuzzy, CVD optional uplift info)
            —:  core 5 + magnitude required minimum"""
         if not self.trend_filter_passed:
+            return "—"
+        if not self.regime_filter_passed:
             return "—"
         if not (self.core_5_passed and self.gate_magnitude):
             return "—"
@@ -547,6 +550,41 @@ def _gate_agg_flow(
     return False, f"agg flow ${notional/1e6:.1f}M < ${AGG_FLOW_THRESHOLD/1e6:.0f}M and no ISO rate spike", \
            {"notional": notional or 0, "count": count or 0,
             "recent_n": recent_n, "baseline_n": baseline_n}
+
+
+def _gate_pos_regime_bearish_block(
+    direction: str, regime: str | None,
+) -> tuple[bool, str, dict]:
+    """Apr 30 preflight (Perplexity Fix #1): block BEARISH fires when dealer
+    gamma is positive. In long-gamma regimes, dealers buy dips and sell
+    rallies, mechanically suppressing directional moves and strengthening
+    intraday reversals — putting bearish 0DTE puts directly against the
+    most reliable mechanical flow in equity markets.
+
+    Theoretical basis: Gârleanu/Pedersen/Poteshman (2009) demand-based
+    option pricing — directional demand pressure does not move prices
+    proportionally in long-gamma dealer environments because dealer
+    hedging flows offset it. Confirmed empirically in our 4/13–4/24
+    backtest: 13/15 bearish fires were on POS days, 20% WR, avg -47%.
+
+    Falsification context: this gate stays in place during the 4–6 week
+    paper-trade experiment. If the bootstrap shows residual bearish
+    fires (NEG-regime only) still have negative expectancy, the entire
+    bearish side gets disabled in the next iteration.
+    """
+    if direction != "BEARISH":
+        return True, "not bearish — POS-regime gate not applicable", {
+            "direction": direction, "regime": regime,
+        }
+    if regime != "POS":
+        return True, f"regime {regime} — bearish allowed", {
+            "direction": direction, "regime": regime,
+        }
+    return False, (
+        "POS-regime BEARISH BLOCK: long-gamma dealer hedging suppresses "
+        "directional moves; bearish 0DTE puts have negative expected "
+        "value in this regime"
+    ), {"direction": direction, "regime": regime}
 
 
 def _gate_trend_filter(
@@ -984,6 +1022,13 @@ def evaluate_turn(
     ev.trend_filter_passed = tf_ok
     ev.reasons.append(("✅ " if tf_ok else "🚫 ") + tf_msg)
     ev.evidence["trend_filter"] = {"ok": tf_ok, "msg": tf_msg, **tf_info}
+
+    # Preflight — POS-regime BEARISH block (Apr 30 Perplexity Fix #1).
+    # Long-gamma dealer hedging suppresses bearish 0DTE expected value.
+    rg_ok, rg_msg, rg_info = _gate_pos_regime_bearish_block(direction, regime)
+    ev.regime_filter_passed = rg_ok
+    ev.reasons.append(("✅ " if rg_ok else "🚫 ") + rg_msg)
+    ev.evidence["regime_filter"] = {"ok": rg_ok, "msg": rg_msg, **rg_info}
 
     # Gate 1 — proximity to support (BULLISH) or resistance (BEARISH)
     ok, msg = _gate_proximity(direction, spot, floor, king, ceiling)
