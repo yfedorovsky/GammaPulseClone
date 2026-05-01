@@ -38,6 +38,7 @@ SCRIPTS = [
     ("trade_size",     "trade_size_cohort_audit.py"),
     ("spread",         "spread_regime_audit.py"),
     ("lead_lag",       "lead_lag_audit.py"),
+    ("synthesis",      "synthesize_audit_results.py"),
 ]
 
 
@@ -129,6 +130,7 @@ def main() -> int:
     print("  trade_size_cohort_audit.md")
     print("  spread_regime_audit.md")
     print("  lead_lag_audit.md")
+    print("  AUDIT_SYNTHESIS.md   <-- start here in the morning")
     return 0 if n_ok == n_total else 1
 
 
