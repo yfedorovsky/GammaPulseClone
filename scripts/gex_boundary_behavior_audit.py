@@ -166,23 +166,46 @@ def find_approaches(snap: dict) -> list[tuple[str, float, str]]:
 
 def random_control_levels(
     ticker: str, snap: dict, exclude_levels: list[float], rng: _random.Random,
+    real_level: float | None = None,
 ) -> tuple[float, str] | None:
-    """Build a random ATM-rounded strike level within ±RANDOM_CONTROL_RANGE
-    of spot, excluding the actual GEX strikes. SPY/QQQ/IWM use $1 strikes.
-    Returns (level, side) or None if exclusion exhausted the universe.
+    """v2 (May 2 2026 amendment) — distance-matched random control.
+
+    Per the spec amendment in BOUNDARY_BEHAVIOR_AUDIT_SPEC.md, the
+    random control is sampled at the SAME |spot − real_level| distance
+    as the GEX level being controlled, with a random sign-flip for
+    direction. Then rounded to the nearest valid strike ($1 for
+    SPY/QQQ/IWM). Excludes any strike within $0.50 of an actual GEX
+    level on this snapshot.
+
+    Returns (level, side) or None if no valid distance-matched strike
+    exists (e.g., the matched-distance strike collides with a GEX
+    level on both above- and below-spot sides).
     """
-    spot = float(snap["spot"])
-    spread = spot * RANDOM_CONTROL_RANGE
-    # Round to $1 strikes (SPY/QQQ/IWM convention)
-    lo = int(round(spot - spread))
-    hi = int(round(spot + spread))
-    universe = [float(s) for s in range(lo, hi + 1)
-                if not any(abs(s - x) < 0.5 for x in exclude_levels)]
-    if not universe:
+    if real_level is None:
+        # Backward-compat shim — should not happen in v2 callers
         return None
-    lvl = rng.choice(universe)
-    side = "above" if spot >= lvl else "below"
-    return lvl, side
+    spot = float(snap["spot"])
+    if spot <= 0:
+        return None
+    abs_dist = abs(spot - float(real_level))
+    if abs_dist <= 0:
+        return None
+    # Try sign in random order; if first choice collides, try the other
+    signs = [+1.0, -1.0]
+    rng.shuffle(signs)
+    for sign in signs:
+        candidate_raw = spot + sign * abs_dist
+        # Round to $1 strike (SPY/QQQ/IWM convention)
+        candidate = float(round(candidate_raw))
+        if candidate <= 0:
+            continue
+        if any(abs(candidate - x) < 0.5 for x in exclude_levels):
+            continue
+        # If the rounding-induced distance shift moved us to the same
+        # side as spot but flipped beyond, snap to the side we wanted
+        side = "above" if spot >= candidate else "below"
+        return candidate, side
+    return None
 
 
 def compute_outcome(
@@ -319,7 +342,10 @@ def run_ticker(ticker: str) -> list[dict]:
                 # Random control — deterministic seed from (ticker, day, ts, level_name)
                 seed = abs(hash((ticker, day, ts, level_name))) & 0xFFFFFFFF
                 rng = _random.Random(seed)
-                rc = random_control_levels(ticker, snap_d, exclude, rng)
+                rc = random_control_levels(
+                    ticker, snap_d, exclude, rng,
+                    real_level=level_price,
+                )
                 if rc is None:
                     continue
                 rand_lvl, rand_side = rc

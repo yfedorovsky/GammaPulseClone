@@ -1,6 +1,44 @@
 # GEX Boundary-Behavior Audit — Pre-Registration
 
-**Status: PRE-REGISTERED. May 2 2026.**
+**Status: PRE-REGISTERED. May 2 2026 — AMENDED with v2 methodology
+fix (May 2 2026 evening) after the original v1 run produced a
+mechanically biased FAIL.**
+
+## Amendment history
+
+### v1 (initial pre-registration, committed cedd310)
+
+Original methodology used a random ATM-rounded strike sampled from
+±0.5% of spot as the matched control. Run produced verdict FAIL with
+a 40pp bounce-rate gap favoring random — a result so one-sided that it
+suggested mechanical bias rather than a real signal.
+
+### v2 (this amendment)
+
+The bias: GEX-approach events filter on `|spot − level| ≤ 0.3%`, so
+GEX levels are systematically CLOSER to spot than the random controls
+(which sample from a wider ±0.5% universe). Closer levels require
+larger directional moves to qualify as "bounced past level by 0.3%
+without first breaching by 0.2%" — so further-from-spot levels
+trivially win on the bounce metric.
+
+The fix: distance-matched random controls. For each GEX-approach
+event with the level X% from spot, the random control is sampled at
+exactly the same |X|% distance from spot (random direction
+above/below spot). This makes the comparison apples-to-apples.
+
+The amendment is justified because the asymmetry is INDEPENDENT of
+the result direction — it would have biased the FAIL verdict
+regardless of GEX's true behavior. Re-running with the fix is
+"repairing a bad matched-control design," not "p-hacking until the
+result looks good." The v2 result is the audit's actual answer; the
+v1 result is preserved for the audit trail in
+`BOUNDARY_BEHAVIOR_AUDIT_RESULTS_v1.md` (renamed from the original
+output) but does NOT inform any decision.
+
+This amendment-then-rerun pattern is allowed exactly once. If the v2
+result also shows a methodological asymmetry, the audit retires as
+inconclusive — no v3 silent re-runs.
 
 This audit is **explicitly exploratory secondary analysis** per cross-LLM
 round 4 policy guidance:
@@ -58,11 +96,19 @@ For each snapshot at time t, for each level L ∈ {king, floor, ceiling}:
 - L is an "approach event" iff `|spot_t - L| / L <= APPROACH_TOL`
 - `APPROACH_TOL = 0.003` (0.3% — matches the production
   `FLOOR_PROXIMITY_PCT` constant in `server/structural_turn.py`)
-- For the same snapshot t, build the equivalent random control:
-  - SPY: random ATM-rounded $1 strike within ±0.5% of spot (excluding
-    the actual king/floor/ceiling strikes)
-  - QQQ: same as SPY
-  - IWM: same as SPY (1-dollar strikes)
+- **v2 distance-matched random control (May 2 amendment)**: for each
+  GEX-approach event, the random control is sampled at the SAME
+  |spot − level| distance as the GEX level being controlled.
+  Specifically: if GEX level L has `dist = (L - spot) / spot`, the
+  random control is at `spot * (1 + sign * |dist|)` where `sign` is
+  randomly chosen (deterministic seed) from {+1, −1}, then rounded
+  to the nearest valid strike ($1 for SPY/QQQ/IWM). The sign-flip
+  averages over above/below symmetry; the absolute distance is
+  preserved so bounce/breach thresholds are equally challenging.
+  - Exclude any random level that lands within $0.50 of any actual
+    GEX level (king/floor/ceiling) on this snapshot. If exclusion
+    leaves no valid strike at the matched distance, drop this
+    approach from the audit.
 - Sample K=1 random level per real-level approach (matched-pair
   design — each GEX approach gets exactly one random control approach
   on the SAME snapshot, so day/regime effects net out)
