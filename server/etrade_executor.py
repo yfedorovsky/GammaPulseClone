@@ -50,7 +50,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from server.etrade import ETradeClient, get_cached_token, _is_sandbox  # noqa: E402
+from server.etrade import ETradeClient, get_cached_token, _is_sandbox, _base_url  # noqa: E402
 from server import paper_executions as pe  # noqa: E402
 
 
@@ -791,6 +791,51 @@ async def reconcile_on_startup(
 # ── Main loop ───────────────────────────────────────────────────
 
 
+def _startup_safety_banner(account_id_key: str, execute: bool) -> None:
+    """Loud, unmissable banner at daemon startup. If we're about to
+    place orders in PRODUCTION (real money), require interactive
+    confirmation before continuing — this is the foot-gun guard."""
+    is_sandbox = _is_sandbox()
+    base_url = _base_url()
+
+    print("=" * 70, flush=True)
+    if is_sandbox:
+        print("  E-TRADE EXECUTOR — SANDBOX MODE (simulated paper trades)",
+              flush=True)
+    else:
+        print("  ! ! ! E-TRADE EXECUTOR — PRODUCTION MODE — REAL MONEY ! ! !",
+              flush=True)
+    print("=" * 70, flush=True)
+    print(f"  base URL:    {base_url}", flush=True)
+    print(f"  account:     {account_id_key}", flush=True)
+    print(f"  execute:     {execute}  ({'orders WILL be placed' if execute else 'DRY RUN'})",
+          flush=True)
+    print(f"  TP:          +{int(TP_PCT*100)}%", flush=True)
+    print(f"  Stop:        {int(STOP_PCT*100)}%", flush=True)
+    print(f"  Time-stop:   {TIME_STOP_MIN} min from entry", flush=True)
+    print(f"  EOD close:   {EOD_CLOSE_HHMM} ET", flush=True)
+    print("=" * 70, flush=True)
+
+    # Production guard: require typed confirmation
+    if not is_sandbox and execute:
+        print(flush=True)
+        print("  *** PRODUCTION + EXECUTE = REAL ORDERS WITH REAL MONEY ***",
+              flush=True)
+        print("  *** Type 'YES TRADE LIVE' to proceed, anything else aborts. ***",
+              flush=True)
+        try:
+            confirm = input("  Confirmation: ").strip()
+        except EOFError:
+            confirm = ""
+        if confirm != "YES TRADE LIVE":
+            print("  Aborted by safety guard. Set ETRADE_USE_SANDBOX=1 to use paper account.",
+                  file=sys.stderr)
+            sys.exit(1)
+        print("  Confirmed. Starting in 5 seconds (Ctrl+C to abort)...", flush=True)
+        import time as _t
+        _t.sleep(5)
+
+
 async def run_loop(
     account_id_key: str, execute: bool = True, catchup: bool = False,
     skip_reconcile: bool = False,
@@ -802,9 +847,12 @@ async def run_loop(
               file=sys.stderr)
         sys.exit(1)
 
+    # Loud safety banner + production confirmation gate
+    _startup_safety_banner(account_id_key, execute)
+
     pe.init_db()
     client = ETradeClient(token=token)
-    print(f"[exec] starting — env={'sandbox' if _is_sandbox() else 'PROD'} "
+    print(f"[exec] starting loop — env={'sandbox' if _is_sandbox() else 'PROD'} "
           f"account={account_id_key} execute={execute}", flush=True)
 
     # Reconcile on startup (catches state changes during downtime)
