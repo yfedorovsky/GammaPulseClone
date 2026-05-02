@@ -245,9 +245,21 @@ def _ensure_db_schema() -> None:
 
 def _persist_alert(alert: "ZeroDTEAlert") -> None:
     """Write an alert to the persistent store. Best-effort — DB failures
-    log a warning but never interrupt the fire path (Telegram already sent)."""
+    log a warning but never interrupt the fire path (Telegram already sent).
+
+    May 2 2026: also writes annotation features (strike reachability,
+    day-state, episode_id, tape_regime_at_fire) per cross-LLM round 5
+    Tier-2 ship. Annotation compute is wrapped in try/except so any
+    failure there doesn't block the core alert insert."""
     try:
         _ensure_db_schema()
+        # Apply annotation-column migrations idempotently
+        try:
+            from .alert_annotations import apply_migrations as _apply_ann_mig
+            _apply_ann_mig(ZERO_DTE_DB_PATH)
+        except Exception:
+            pass
+
         conn = sqlite3.connect(ZERO_DTE_DB_PATH)
         try:
             conn.execute(
@@ -282,8 +294,83 @@ def _persist_alert(alert: "ZeroDTEAlert") -> None:
             conn.commit()
         finally:
             conn.close()
+
+        # Annotation features (May 2 2026 Tier-2 ship). Annotation only —
+        # never affects fire decision. Wrap in try so failures don't
+        # corrupt the alert pipeline.
+        try:
+            from .alert_annotations import annotate_alert
+            ann = annotate_alert({
+                "alert_id": alert.alert_id, "ticker": alert.ticker,
+                "fired_at": alert.fired_at, "direction": alert.direction,
+                "spot": alert.spot, "strike": alert.strike,
+            })
+            # Episode_id is computed across all alerts on the same day,
+            # so we compute it as: ticker_dir_YYYYMMDD_episode (where
+            # episode is the running count of distinct same-direction
+            # episodes today). Best-effort; full re-compute via backfill
+            # script periodically.
+            ep_id = _compute_episode_id_for_alert(alert)
+            ann["episode_id"] = ep_id
+
+            conn = sqlite3.connect(ZERO_DTE_DB_PATH)
+            try:
+                cols = ", ".join(f"{k} = ?" for k in ann.keys())
+                vals = list(ann.values()) + [alert.alert_id]
+                conn.execute(
+                    f"UPDATE zero_dte_alerts SET {cols} WHERE alert_id = ?",
+                    vals,
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"[ZERO_DTE] annotation failed for {alert.alert_id}: {e}")
     except Exception as e:
         print(f"[ZERO_DTE] persist failed for {alert.alert_id}: {e}")
+
+
+def _compute_episode_id_for_alert(alert: "ZeroDTEAlert") -> str:
+    """Episode ID for a NEW alert: look at most recent same-(ticker,
+    direction) alert today, see if it's within EPISODE_GAP_MAX_MIN
+    (45min). If yes → reuse its episode_id; if no → new episode.
+
+    Falls back to ep1 if anything goes wrong."""
+    try:
+        from .alert_annotations import EPISODE_GAP_MAX_MIN
+        from datetime import datetime as _dt
+        d = _dt.fromtimestamp(alert.fired_at)
+        day_str = d.strftime("%Y%m%d")
+        cutoff = alert.fired_at - EPISODE_GAP_MAX_MIN * 60
+        conn = sqlite3.connect(ZERO_DTE_DB_PATH)
+        try:
+            cur = conn.execute(
+                "SELECT episode_id FROM zero_dte_alerts WHERE ticker = ? "
+                "AND direction = ? AND fired_at >= ? AND fired_at < ? "
+                "AND alert_id != ? "
+                "ORDER BY fired_at DESC LIMIT 1",
+                (alert.ticker, alert.direction, cutoff,
+                 alert.fired_at, alert.alert_id),
+            )
+            row = cur.fetchone()
+            if row and row[0]:
+                return row[0]
+            # Otherwise count today's existing episodes for this (ticker, direction)
+            cur = conn.execute(
+                "SELECT COUNT(DISTINCT episode_id) FROM zero_dte_alerts "
+                "WHERE ticker = ? AND direction = ? AND episode_id LIKE ? "
+                "AND alert_id != ?",
+                (alert.ticker, alert.direction,
+                 f"{alert.ticker}_{alert.direction[:4]}_{day_str}_%",
+                 alert.alert_id),
+            )
+            n_existing = cur.fetchone()[0] or 0
+            ep_num = n_existing + 1
+            return f"{alert.ticker}_{alert.direction[:4]}_{day_str}_ep{ep_num}"
+        finally:
+            conn.close()
+    except Exception:
+        return f"{alert.ticker}_{alert.direction[:4]}_unknown_ep1"
 
 
 def load_alerts_from_db(limit: int = 50, ticker: str | None = None) -> list[dict[str, Any]]:
