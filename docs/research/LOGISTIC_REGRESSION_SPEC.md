@@ -1,7 +1,17 @@
 # Logistic Regression Spec — Pre-registered conditioning analysis
 
-**Status: PRE-REGISTERED. Do NOT run until forward window completes
-Stage 2 (≥50 fires AND ≥20 day clusters) per FALSIFICATION_PROTOCOL.md.**
+**Status: PRE-REGISTERED. Do NOT run until the forward window has
+LOCKED its trading decision (after Stage 3 stopping per
+FALSIFICATION_PROTOCOL.md, OR after a Stage 1/Stage 2 futility-retire).**
+
+May 2 2026 revision (cross-LLM round 3 Q4): originally specified to
+run after Stage 2 stopping. All three LLMs flagged that running at
+Stage 2 risks contaminating the Stage 2 → Stage 3 sizing decision
+even with the "descriptive only" disclaimer ("you are not good at that
+promise" — Perplexity; "subconscious contamination" — Gemini). The
+fix is to defer until trading decisions are locked. The regression
+becomes a postmortem feature attribution, never a control-room
+instrument.
 
 This document pre-commits the methodology, predictors, target,
 significance threshold, and interpretation rules for a single descriptive
@@ -26,14 +36,28 @@ and pre-commit everything below so the run is mechanical.
 
 ## Pre-registration — methodology
 
-### Sample
+### Sample — un-truncated attempted-fire dataset
 
-- Use ALL fires from the forward window at the moment Stage 2 stopping
-  rule is met (≥50 fires AND ≥20 day clusters).
+Use the FULL forward attempted-fire dataset, NOT the trade-accepted-only
+subset. Specifically:
+
+- Source: `structural_turns` table, all rows where `qualified = 1`
+  (the full set of fires that triggered paper trades), joined to
+  `paired_trades` for `gated.pnl_pct`.
+- This includes fires where `would_gate_spread_block = 1` (the shadow
+  gate would have filtered them) — they MUST be in the regression
+  sample, otherwise `spread_30m_mean` is tail-truncated and β₁(spread)
+  attenuates toward 0 (cross-LLM round 3 Q5a, 3/3 LLMs flagged this
+  as the "fatal flaw" of the original spec).
 - **Do NOT include the in-sample 27 fires.** This regression is
   forward-only.
-- Do not run on Stage 1 sample. Do not run intermediate refits.
+- Do not run intermediate refits.
 - One regression. One report. No model selection over specifications.
+
+If shadow-mode wiring lands part-way through the forward window
+(some fires lack `spread_30m_mean`), drop ONLY those rows from the
+regression — do not impute. Document the drop count in the result
+report.
 
 ### Target variable
 
@@ -114,6 +138,19 @@ re-run. The pre-registered specification is the only specification.
 In all branches the spread gate REMAINS. This regression is descriptive,
 not gate-deciding. Gate inclusion was pre-committed in V2_DETECTOR_SPEC.md
 based on the Test #6 in-sample effect.
+
+## Few-cluster caveat (May 2 round 3 update)
+
+ChatGPT round 3 noted: "HC1 clustered by trading day with 20 clusters
+is not magic. Few clusters can still produce unreliable inference;
+few-cluster robust methods are an active concern in applied
+econometrics." The deferral to post-Stage-3 helps (≥25 clusters),
+but not by much.
+
+Treat ALL coefficient inferences as approximate. The decision tree
+above is robust to standard error misestimation by design — the spread
+gate stays in production regardless of regression outcome. The
+regression's purpose is feature attribution, not gate inclusion.
 
 ## What this regression does NOT do
 

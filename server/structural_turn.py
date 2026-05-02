@@ -152,12 +152,26 @@ CREATE TABLE IF NOT EXISTS structural_turns (
   qualified INTEGER NOT NULL,
   evidence_json TEXT,
   reasons TEXT,
+  -- May 2 2026 — spread gate SHADOW MODE columns (cross-LLM round 3)
+  spread_30m_mean REAL,                   -- live trailing-30m NBBO spread at evaluation time (NULL = no live measurement)
+  spread_gate_active INTEGER DEFAULT 0,    -- 1 if gate had usable threshold + measurement, else 0
+  would_gate_spread_block INTEGER DEFAULT 0,  -- 1 if static-historical p90 was exceeded (post-hoc gating)
   UNIQUE(ticker, ts)
 );
 CREATE INDEX IF NOT EXISTS idx_st_ts ON structural_turns(ts);
 CREATE INDEX IF NOT EXISTS idx_st_ticker ON structural_turns(ticker, ts);
 CREATE INDEX IF NOT EXISTS idx_st_qualified ON structural_turns(qualified, ts);
 """
+
+# May 2 2026 — idempotent ADD COLUMN migrations for existing DBs (pattern
+# borrowed from server/flow_alerts.py _SWEEP_MIGRATIONS). SQLite errors on
+# duplicate column → swallow and continue. The columns exist in CREATE
+# TABLE for fresh DBs; this only matters for the live production DB.
+_SHADOW_SPREAD_MIGRATIONS = [
+    "ALTER TABLE structural_turns ADD COLUMN spread_30m_mean REAL",
+    "ALTER TABLE structural_turns ADD COLUMN spread_gate_active INTEGER DEFAULT 0",
+    "ALTER TABLE structural_turns ADD COLUMN would_gate_spread_block INTEGER DEFAULT 0",
+]
 
 
 @dataclass
@@ -190,6 +204,21 @@ class StructuralTurnEvent:
     gate_cvd_divergence: bool = False  # Gate 8 — Tier 1 absorption confirmation
     trend_filter_passed: bool = True   # Apr 30 preflight — block counter-trend fires
     regime_filter_passed: bool = True  # Apr 30 (Perplexity Fix #1) — block BEARISH on POS
+
+    # May 2 2026 — spread gate SHADOW MODE (cross-LLM round 3 consensus,
+    # docs/feedback/cross_llm_implementation_review_may01.md). The gate
+    # logs its decision but does NOT enter the tier/qualified computation.
+    # `spread_30m_mean` is the live 30-min trailing NBBO spread from
+    # spread_tracker; `would_gate_spread_block` is True iff the static
+    # historical p90 threshold for (ticker × TOD) was exceeded; `spread_gate_active`
+    # is True iff a usable threshold + live measurement existed for this
+    # evaluation (False during warm-up, off-hours, IWM/SPX, or feed outage).
+    # Post-hoc cohort simulation: filter `would_gate_spread_block = 0` to
+    # reconstruct the "with-gate-active" cohort without truncating the
+    # spread distribution at training time.
+    spread_30m_mean: float | None = None
+    spread_gate_active: bool = False
+    would_gate_spread_block: bool = False
 
     reasons: list[str] = field(default_factory=list)
     evidence: dict[str, Any] = field(default_factory=dict)
@@ -269,6 +298,9 @@ class StructuralTurnEvent:
             "gate_cvd_divergence": int(self.gate_cvd_divergence),
             "tier": self.tier if self.tier in ("A+", "A", "B") else None,
             "qualified": int(self.qualified),
+            "spread_30m_mean": self.spread_30m_mean,
+            "spread_gate_active": int(self.spread_gate_active),
+            "would_gate_spread_block": int(self.would_gate_spread_block),
             "evidence_json": json.dumps(self.evidence, default=str),
             "reasons": " | ".join(self.reasons),
         }
@@ -587,13 +619,30 @@ def _gate_pos_regime_bearish_block(
     ), {"direction": direction, "regime": regime}
 
 
-# ── Spread preflight gate (May 1 2026, Test #6 + cross-LLM consensus) ──
+# ── Spread preflight gate — SHADOW MODE (May 2 2026 revision) ──
 #
-# Test #6 (May 1 audit) found a 77pp difference between fires during
-# normal-spread regimes (+63% mean, 40% WR) and HIGH-spread regimes
-# (-14% mean, 30% WR). 5/5 LLM cross-critique converged on adding a
-# spread preflight gate as the ONE legitimate v2 modification surviving
-# the audit cycle (V2_DETECTOR_SPEC.md decision tree).
+# History:
+#   May 1: gate implemented as a hard-block; spread feed not yet wired.
+#   May 2 (cross-LLM round 3 consensus,
+#         docs/feedback/cross_llm_implementation_review_may01.md):
+#         convert to shadow mode. Wire live Tradier bid/ask via
+#         server/spread_tracker.py. Log decision to structural_turns
+#         (spread_30m_mean, spread_gate_active, would_gate_spread_block)
+#         but do NOT include in the tier/qualified path.
+#
+# Why shadow not hard-block:
+#   - 3/3 LLMs flagged tail-truncation bias as the fatal flaw of the
+#     hard-block design: actively gating high-spread fires removes them
+#     from the dataset, which biases any later regression of P&L on
+#     spread toward "spread doesn't matter" (attenuation bias on the
+#     truncated independent variable).
+#   - Shadow mode preserves the un-truncated dataset. Post-hoc bootstrap
+#     analyses can simulate the "with-gate-active" cohort by filtering
+#     `would_gate_spread_block = 0`, while the regression sees the full
+#     spread distribution.
+#   - This also solves the dormancy/regime-change concern (Q3): the
+#     forward window is one consistent cohort regardless of when feed
+#     wiring lands.
 #
 # Threshold table = static historical p90 from background_distributions.md
 # (96,304 per-minute observations across 124 days × {SPY, QQQ}). Values
@@ -601,19 +650,10 @@ def _gate_pos_regime_bearish_block(
 # data, not the 27-fire in-sample sample, so result is testable
 # out-of-sample without contamination.
 #
-# Static-historical (option B) chosen over day-relative (option A) and
-# both-required (option C) per the design decision in
-# docs/feedback/cross_llm_followup_may01_post_synthesis.md (ChatGPT +
-# Perplexity-r2: simpler, fully pre-committed; vs Gemini-r2's hybrid):
-# 2-1 split for the simpler design.
-#
-# IMPORTANT: This gate evaluates `spread_30m_mean` provided by the live
-# worker. The worker does NOT yet populate this — yfinance gives no
-# bid/ask. Live spread feed wiring is BACKLOG'd as a separate prerequisite
-# task (~2-3 hours, see docs/BACKLOG.md). Until that wiring exists, this
-# gate is dormant: when called with `spread_30m_mean=None`, it returns
-# (True, "spread feed unavailable", ...) so fires proceed exactly as in
-# the current frozen v1.
+# Test #6 (May 1 audit) found a 77pp difference between fires during
+# normal-spread regimes (+63% mean, 40% WR) and HIGH-spread regimes
+# (-14% mean, 30% WR). The shadow-mode logging lets us validate that
+# finding on the forward sample without committing to filter on it.
 
 # (ticker, tod_bucket) -> p90 stock spread in dollars (NBBO mean spread
 # over the per-minute observations). Source: docs/research/
@@ -1111,6 +1151,7 @@ def evaluate_turn(
     snapshots_db: str = "./snapshots.db",
     floor_migrations_db: str | None = "./floor_migrations.db",
     iv_lookup_fn: Any | None = None,
+    spread_30m_mean: float | None = None,
 ) -> StructuralTurnEvent:
     """Evaluate all 5 gates at a given (ticker, ts, direction)."""
     cur_snap = next(
@@ -1157,6 +1198,24 @@ def evaluate_turn(
     ev.regime_filter_passed = rg_ok
     ev.reasons.append(("✅ " if rg_ok else "🚫 ") + rg_msg)
     ev.evidence["regime_filter"] = {"ok": rg_ok, "msg": rg_msg, **rg_info}
+
+    # SHADOW-MODE spread gate (May 2 2026 — cross-LLM round 3 consensus).
+    # Logs would-gate decision for post-hoc cohort simulation. Does NOT
+    # affect tier/qualified — see _gate_spread_regime docstring above for
+    # the truncation-bias rationale.
+    sg_ok, sg_msg, sg_info = _gate_spread_regime(ticker, ts, spread_30m_mean)
+    ev.spread_30m_mean = (float(spread_30m_mean)
+                          if spread_30m_mean is not None else None)
+    ev.spread_gate_active = bool(sg_info.get("active", False))
+    ev.would_gate_spread_block = (not sg_ok) and ev.spread_gate_active
+    shadow_marker = ("👁🚫" if ev.would_gate_spread_block
+                     else ("👁✅" if ev.spread_gate_active else "👁∅"))
+    ev.reasons.append(f"{shadow_marker} [SHADOW spread] {sg_msg}")
+    ev.evidence["spread_shadow"] = {
+        "would_block": ev.would_gate_spread_block,
+        "active": ev.spread_gate_active,
+        "msg": sg_msg, **sg_info,
+    }
 
     # Gate 1 — proximity to support (BULLISH) or resistance (BEARISH)
     ok, msg = _gate_proximity(direction, spot, floor, king, ceiling)
@@ -1459,11 +1518,20 @@ async def _eval_ticker_live(ticker: str) -> None:
     if not snaps:
         return
 
+    # SHADOW-MODE spread: read from spread_tracker singleton (None if
+    # tracker not started, ticker not registered, or feed warming up).
+    try:
+        from .spread_tracker import get_spread_30m_mean as _get_spread
+        spread_30m = _get_spread(ticker)
+    except Exception:
+        spread_30m = None
+
     ev = evaluate_turn(
         ticker=ticker, ts=now_ts, direction="BULLISH",
         snapshots_in_window=snaps, minute_bars=bars,
         snapshots_db="./snapshots.db",
         floor_migrations_db="./floor_migrations.db",
+        spread_30m_mean=spread_30m,
     )
     try:
         persist_event(ev)
@@ -1479,11 +1547,35 @@ async def _eval_ticker_live(ticker: str) -> None:
 
 
 async def run_structural_turn_live_loop(stop_event) -> None:
-    """Background task — evaluate WATCH_LIST every 60s during market hours."""
+    """Background task — evaluate WATCH_LIST every 60s during market hours.
+
+    Also starts the SpreadTracker subordinate task (May 2 2026) so the
+    SHADOW-MODE spread gate has live 30-min trailing NBBO mean spread
+    available per ticker. The tracker self-skips outside RTH; if it
+    fails to start, the structural-turn loop continues with
+    spread_30m_mean=None (gate logs "dormant").
+    """
     print(f"[ST] live loop starting — tickers={WATCH_LIST}, interval=60s (shadow mode)")
+
+    # Start the spread tracker as a subordinate task. Singleton registered
+    # via set_global_tracker so evaluate_turn can read via the module-level
+    # helper without threading the instance through call sites.
+    spread_task = None
+    try:
+        from .spread_tracker import SpreadTracker, set_global_tracker
+        tracker = SpreadTracker(WATCH_LIST)
+        set_global_tracker(tracker)
+        spread_task = asyncio.create_task(tracker.run(stop_event))
+        print(f"[ST] spread_tracker started for {WATCH_LIST} (shadow mode)")
+    except Exception as e:
+        print(f"[ST] spread_tracker start failed: {type(e).__name__}: {e} "
+              f"— gate stays dormant", flush=True)
+
     # Warm up
     try:
         await asyncio.wait_for(stop_event.wait(), timeout=90.0)
+        if spread_task is not None:
+            await spread_task
         return
     except asyncio.TimeoutError:
         pass
@@ -1512,6 +1604,12 @@ async def run_structural_turn_live_loop(stop_event) -> None:
             break
         except asyncio.TimeoutError:
             pass
+    # Wait for spread tracker to finish on shutdown
+    if spread_task is not None:
+        try:
+            await asyncio.wait_for(spread_task, timeout=10.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
     print("[ST] live loop stopped")
 
 
@@ -1519,6 +1617,13 @@ def persist_event(ev: StructuralTurnEvent) -> None:
     conn = sqlite3.connect(STRUCTURAL_TURN_DB_PATH)
     try:
         conn.executescript(STRUCTURAL_TURN_SCHEMA)
+        # Idempotent ADD COLUMN migrations for pre-May-2 DBs
+        for stmt in _SHADOW_SPREAD_MIGRATIONS:
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                # Column already exists — expected
+                pass
         row = ev.to_row()
         conn.execute(
             """INSERT OR IGNORE INTO structural_turns (
@@ -1529,10 +1634,14 @@ def persist_event(ev: StructuralTurnEvent) -> None:
                  gate_floor_proximity, gate_floor_event,
                  gate_volume_absorption, gate_agg_flow, gate_ncp_corroboration,
                  gate_magnitude, gate_regime_match, gate_cvd_divergence, tier,
-                 qualified, evidence_json, reasons
+                 qualified,
+                 spread_30m_mean, spread_gate_active, would_gate_spread_block,
+                 evidence_json, reasons
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                          ?, ?, ?, ?, ?, ?,
-                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                         ?, ?, ?,
+                         ?, ?)""",
             (row["ticker"], row["ts"], row["iso"], row["direction"],
              row["spot"], row["king"], row["floor"], row["regime"],
              row["pos_gex"], row["neg_gex"], row["ratio"],
@@ -1543,7 +1652,10 @@ def persist_event(ev: StructuralTurnEvent) -> None:
              row["gate_ncp_corroboration"],
              row["gate_magnitude"], row["gate_regime_match"],
              row["gate_cvd_divergence"], row["tier"],
-             row["qualified"], row["evidence_json"], row["reasons"]),
+             row["qualified"],
+             row["spread_30m_mean"], row["spread_gate_active"],
+             row["would_gate_spread_block"],
+             row["evidence_json"], row["reasons"]),
         )
         conn.commit()
     finally:

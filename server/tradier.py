@@ -93,6 +93,12 @@ class TradierClient:
             for q in quotes:
                 sym = q.get("symbol")
                 if sym:
+                    # bid/ask added May 2 2026 for spread-tracker (Tier-1
+                    # spread-shadow-mode per cross-LLM round 3 consensus).
+                    # Tradier returns these on /markets/quotes for equities;
+                    # may be None outside RTH or for some root symbols.
+                    bid = q.get("bid")
+                    ask = q.get("ask")
                     out[sym] = {
                         "last": q.get("last") or q.get("close") or q.get("prevclose"),
                         "volume": q.get("volume", 0),
@@ -101,6 +107,12 @@ class TradierClient:
                         "high": q.get("high"),
                         "low": q.get("low"),
                         "prevclose": q.get("prevclose"),
+                        "bid": float(bid) if bid is not None else None,
+                        "ask": float(ask) if ask is not None else None,
+                        "bid_size": q.get("bidsize"),
+                        "ask_size": q.get("asksize"),
+                        "bid_exch": q.get("bidexch"),
+                        "ask_exch": q.get("askexch"),
                     }
         return out
 

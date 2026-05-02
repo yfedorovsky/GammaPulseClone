@@ -87,45 +87,90 @@ Outputs:
 - cluster-bootstrap-by-day 95% CI on mean difference
 - per-day, per-direction breakdowns
 
-## Stopping rule (staged — May 1 2026 revision)
+## Stopping rule (staged — May 2 2026 revision, futility-only S1+S2)
 
-Earlier rule was "≥30 fires AND ≥5 day clusters." After the May 1 audit
-cycle and 5-LLM critique converged on **at least 15 day clusters as the
-absolute floor**, with explicit consensus that 5 clusters lets bootstrap
-intervals look more stable than they are. ChatGPT's MDE math applied to
-the in-sample day-level SD (~30pp) gives MDE ≈ 2.8 × 30pp / √n_clusters,
-so 15 clusters → ~22pp MDE, 20 → ~19pp, 25 → ~17pp. The protocol is
-**powered for ≥20–30pp true effects and will NOT detect anything <10pp**
-even with full sample. That's an accepted limitation — there is no path
-to "small effect" detection at retail-strategy n-availability.
+History:
+- Apr 30: ≥30 fires AND ≥5 day clusters (initial)
+- May 1: tightened to ≥30 AND ≥15 day clusters across 5-LLM consensus
+- **May 2 (current): asymmetric staging per cross-LLM round 3 consensus
+  on Q1 (sequential testing).** Stages 1 + 2 are FUTILITY-ONLY (can only
+  retire); Stage 3 is the FIRST allowed efficacy decision. This solves
+  the multiple-looks Type I inflation concern without requiring formal
+  Pocock / O'Brien-Fleming alpha spending.
 
-The window proceeds in three stages. Each stage gates progression to
-the next; do not act on intermediate CIs.
+Why asymmetric: ChatGPT and Gemini both observed that allowing positive
+verdicts at three CI looks inflates the unconditional false-positive
+rate to ~10-12%. The practical fix is not formal alpha spending (which
+implies clinical-trial pretensions we shouldn't claim) but to forbid
+positive stopping early. Futility stops do NOT inflate Type I — they
+only inflate Type II (false negatives). Killing a marginal +5pp edge
+early is acceptable when the deployment threshold is already at
+"micro-scale exploratory" sizing.
 
-**Stage 1 — Initial (≥30 fires AND ≥15 day clusters)**:
-Run a first cluster-bootstrap on the PRIMARY metric. Treat as a check on
-"is the in-sample +28.6pp claim collapsing immediately?" — not a verdict.
-- CI strongly negative or 95% CI upper bound < +5pp → retire as
-  production immediately; document the result.
-- Otherwise continue to Stage 2.
+ChatGPT's MDE math on day-level SD ~30pp: MDE ≈ 2.8 × 30 / √n_clusters
+→ 15 clusters ~22pp, 20 ~19pp, 25 ~17pp. Powered for ≥20-30pp true
+effects; will NOT reliably detect <10pp even at Stage 3.
 
-**Stage 2 — Decision (≥50 fires AND ≥20 day clusters)**:
-This is the primary verdict point.
-- 95% CI excludes 0 on positive side AND day-level effect is not
-  carried by 1–2 outlier sessions AND sign of paired-diff is consistent
-  across the majority of clusters → move to Stage 3 with optional micro
-  live deployment (see sizing below).
-- CI excludes 0 but the result is dominated by a single outlier day →
-  not falsified, not green-lit; continue paper-only to Stage 3.
-- CI includes 0 → retire as production. Keep code as research artifact.
+The window proceeds in three stages. Each stage gates progression
+to the next; do not act on intermediate CIs except in the explicitly
+specified futility branches.
 
-**Stage 3 — Validation (≥75–100 fires AND ≥25 day clusters)**:
-Optional confirmatory window. Only worth running if Stage 2 cleared.
-Tightens the CI and reduces the chance the Stage 2 result was
-borderline noise. If Stage 3 CI also excludes 0 with the same effect
-sign and no single-day dominance → "small noisy edge confirmed at
-hobby scale," which is the best plausible outcome of this whole exercise
-per the FINAL_INTERPRETATION.md honest-expected-outcome section.
+**Stage 1 — Data-quality + futility check (≥30 fires AND ≥15 day clusters)**:
+Run cluster-bootstrap on PRIMARY metric. **No positive verdict allowed.**
+
+Allowed actions at Stage 1:
+- Retire only if ALL of the following hold (asymmetric futility per
+  ChatGPT round 3 — strict to avoid false-killing a +5pp edge):
+  - 95% CI upper bound < +5pp, AND
+  - median daily alpha ≤ 0, AND
+  - best-day-removed alpha ≤ 0, AND
+  - sign of paired-diff is negative on >50% of day clusters
+- Data-quality checks (ALL must pass to continue):
+  - per-day fire counts not dominated by 1-2 days
+  - spread feed populating (`spread_30m_mean` non-null on ≥80% of fires)
+  - paired_trades.db has all three sources (gated, random_minute_atm,
+    naive_open_atm) per fire
+  - no >1 standard deviation regime change in median daily alpha
+    between first and second half of Stage 1 fires
+- If any data-quality check fails: pause, fix, and DO NOT advance the
+  fire count toward Stage 2 until clean.
+
+If neither retire nor data-quality halt fires → continue to Stage 2.
+
+**Stage 2 — Continued futility check (≥50 fires AND ≥20 day clusters)**:
+Same logic as Stage 1, looser futility threshold. **Still no positive
+verdict allowed.**
+
+Allowed actions at Stage 2:
+- Retire if 95% CI upper bound < 0 AND median daily alpha ≤ 0
+  (i.e., the bootstrap is sliding toward the null, not just below
+  the production-relevance threshold).
+- Otherwise continue to Stage 3.
+
+This stage exists primarily to give the experiment more time to
+accrue data before making any positive call. If you find yourself
+wanting to "wrap it up at Stage 2 because the CI looks good," that
+is exactly the multiple-looks bias the staged design exists to prevent.
+
+**Stage 3 — First allowed efficacy decision (≥75-100 fires AND ≥25 day clusters)**:
+THIS is the only stage that can produce a positive verdict.
+
+Decision rules (ALL three must hold for positive):
+1. 95% CI on PRIMARY paired-diff excludes 0 on the positive side, AND
+2. day-level effect is not carried by 1-2 outlier sessions
+   (best-2-days-removed CI still excludes 0), AND
+3. sign of paired-diff is positive on >60% of day clusters
+
+If all three hold → "small noisy edge confirmed at hobby scale";
+proceed to micro live deployment per Sizing section below.
+If any one fails but CI excludes 0 → ambiguous; document and continue
+paper-only for additional 25-50 fires before re-evaluating.
+If CI includes 0 → retire as production. Keep code as research artifact.
+
+The asymmetry is intentional. The price of late efficacy stopping is
+~50 extra calendar days of paper trading. The price of allowing early
+efficacy stopping is potentially shipping live on a noise-driven
+positive that would have flipped at Stage 3.
 
 The verdict is on the **PRIMARY control** (gated vs random_minute_atm).
 The SECONDARY control (gated vs naive_open_atm) is reported alongside
@@ -133,13 +178,15 @@ but does NOT determine the verdict. If gated > naive_open_atm but
 gated ≈ random_minute_atm, the "edge" is contract/day selection, not
 structural detection — that's a different and weaker claim.
 
-## Sizing (revised — May 1 2026)
+## Sizing (revised — May 2 2026)
 
-**Paper-only through Stage 1 and Stage 2.** Do not allocate live capital
-on intermediate bootstrap results.
+**Paper-only through Stage 1, Stage 2, and Stage 3.** Do not allocate
+live capital on intermediate bootstrap results. Stage 3 is the FIRST
+stage that can produce a positive verdict; under the May 2 asymmetric
+staging rule, Stages 1 and 2 are futility-only.
 
-If Stage 2 cleared (CI excludes 0, no single-day dominance, sign
-consistent): **fixed tiny size, 0.25–0.5% of account per trade,
+If Stage 3 cleared (CI excludes 0, no 1-2-day dominance, sign positive
+on >60% of clusters): **fixed tiny size, 0.25–0.5% of account per trade,
 exploratory capital only.** Treat the live deployment as data
 collection, not income. The point is to see whether the paper effect
 survives slippage and execution friction, not to extract returns.
@@ -151,8 +198,11 @@ imports the wrong premise. The right framing is "tiny exploratory
 position size" — the dollar amount is justified by the question
 ("does the edge survive live friction?"), not by an edge estimate.
 
-If/when Stage 3 confirms, sizing remains tiny. There is no point in
-the procedure where significant capital is justified.
+If/when Stage 3 confirms and the in-the-wild micro deployment also
+shows positive expectancy net of slippage, sizing REMAINS tiny.
+There is no point in this procedure where significant capital is
+justified — the protocol is calibrated to detect "is there anything
+here?" not "how big is the edge?"
 
 ## Framing — falsification vs premature monetization
 
@@ -180,6 +230,37 @@ Both tails ("this works" and "this doesn't") are valuable answers.
 that inconclusive at Stage 1 ≠ inconclusive at Stage 3, but inconclusive
 at Stage 3 means the edge is too small for retail-strategy n to detect
 and the right move is to retire as production regardless.
+
+## Spread gate — SHADOW MODE (May 2 2026)
+
+Per cross-LLM round 3 consensus
+(`docs/feedback/cross_llm_implementation_review_may01.md`), the spread
+preflight gate runs in SHADOW MODE during the forward window. It does
+NOT block fires. It logs the would-gate decision (alongside live
+`spread_30m_mean`) to `structural_turns.spread_*` columns.
+
+Why shadow not hard-block: 3/3 LLMs flagged tail-truncation bias as
+the fatal flaw of hard-blocking. Actively gating high-spread fires
+would remove them from the dataset, biasing any later regression of
+P&L on spread toward "spread doesn't matter" via attenuation on the
+truncated independent variable. Shadow mode preserves the full
+spread distribution.
+
+Implications for the bootstrap analysis:
+- `paired_bootstrap_analysis.py` should report TWO PRIMARY CIs:
+  - **PRIMARY-RAW**: gated vs random_minute_atm on ALL fires
+    (current production behavior — single internally consistent cohort)
+  - **PRIMARY-SHADOW-FILTERED**: same but restricted to fires with
+    `would_gate_spread_block = 0` (post-hoc simulation of the spread
+    gate without truncating the underlying spread distribution)
+- Difference between the two CIs estimates the shadow gate's effect
+- The Stage 3 verdict is on PRIMARY-RAW; PRIMARY-SHADOW-FILTERED is
+  reported alongside as supporting context
+
+If the shadow-filtered CI is materially better than raw → the spread
+gate is worth promoting to a hard-block in a future iteration. If
+the two CIs are similar → the in-sample Test #6 effect did not
+replicate forward, and the spread gate is not adopted.
 
 ## Minimum detectable effect (MDE) expectations
 
