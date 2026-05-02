@@ -103,6 +103,12 @@ ALERT_ANNOTATION_MIGRATIONS = [
     "ALTER TABLE zero_dte_alerts ADD COLUMN episode_id TEXT",
     # Tape regime tag at fire time (already classified elsewhere; persist here)
     "ALTER TABLE zero_dte_alerts ADD COLUMN tape_regime_at_fire TEXT",
+    # Cross-ticker alignment (May 2 evening — OpenAI recommendation)
+    "ALTER TABLE zero_dte_alerts ADD COLUMN cross_ticker_aligned INTEGER",
+    "ALTER TABLE zero_dte_alerts ADD COLUMN cross_ticker_corr_30m REAL",
+    # Macro event window (hardcoded FOMC/CPI/NFP calendar)
+    "ALTER TABLE zero_dte_alerts ADD COLUMN in_macro_window INTEGER",
+    "ALTER TABLE zero_dte_alerts ADD COLUMN macro_event_label TEXT",
 ]
 
 
@@ -124,6 +130,137 @@ def apply_migrations(db_path: str = "zero_dte_alerts.db") -> int:
 # ── Minute-bar loaders (Databento + yfinance) ──────────────────────
 
 _BARS_CACHE: dict[tuple[str, str], pd.DataFrame] = {}
+
+
+# ── Macro-event calendar (hardcoded — replace with API later) ──────
+
+# 2026 macro events (conservative — only well-known ones, avoid false
+# positives that contaminate the analysis). Dates are ET.
+# Format: "YYYY-MM-DD HH:MM" → label
+MACRO_EVENTS: dict[str, str] = {
+    # FOMC announcements (typically 14:00 ET)
+    "2026-01-28 14:00": "FOMC",
+    "2026-03-18 14:00": "FOMC",
+    "2026-04-29 14:00": "FOMC",
+    "2026-06-17 14:00": "FOMC",
+    "2026-07-29 14:00": "FOMC",
+    "2026-09-16 14:00": "FOMC",
+    "2026-11-04 14:00": "FOMC",
+    "2026-12-09 14:00": "FOMC",
+    # CPI releases (typically 08:30 ET — pre-market but affects open)
+    "2026-01-13 08:30": "CPI",
+    "2026-02-11 08:30": "CPI",
+    "2026-03-12 08:30": "CPI",
+    "2026-04-10 08:30": "CPI",
+    "2026-05-13 08:30": "CPI",
+    "2026-06-10 08:30": "CPI",
+    "2026-07-15 08:30": "CPI",
+    "2026-08-12 08:30": "CPI",
+    "2026-09-10 08:30": "CPI",
+    "2026-10-15 08:30": "CPI",
+    "2026-11-12 08:30": "CPI",
+    "2026-12-10 08:30": "CPI",
+    # NFP releases (typically first Friday at 08:30 ET)
+    "2026-01-09 08:30": "NFP",
+    "2026-02-06 08:30": "NFP",
+    "2026-03-06 08:30": "NFP",
+    "2026-04-03 08:30": "NFP",
+    "2026-05-01 08:30": "NFP",  # ← May 1 NFP! that explains the chase
+    "2026-06-05 08:30": "NFP",
+    "2026-07-02 08:30": "NFP",  # July 4th week shifts
+    "2026-08-07 08:30": "NFP",
+    "2026-09-04 08:30": "NFP",
+    "2026-10-02 08:30": "NFP",
+    "2026-11-06 08:30": "NFP",
+    "2026-12-04 08:30": "NFP",
+}
+
+# Window around a macro event during which an alert is "in the macro
+# window". Pre-event = 30 min before (positioning); post-event = 90 min
+# after (volatility absorption).
+MACRO_PRE_EVENT_MIN = 30
+MACRO_POST_EVENT_MIN = 90
+
+
+def macro_event_at(fire_ts: int) -> tuple[bool, str | None]:
+    """Returns (in_window, event_label_or_None) for a given fire timestamp."""
+    fire_dt = datetime.fromtimestamp(fire_ts)
+    fire_iso = fire_dt.strftime("%Y-%m-%d %H:%M")
+    fire_day = fire_dt.strftime("%Y-%m-%d")
+    for event_iso, label in MACRO_EVENTS.items():
+        # Same-day events only (skip cross-day comparisons)
+        if not event_iso.startswith(fire_day):
+            continue
+        try:
+            event_dt = datetime.strptime(event_iso, "%Y-%m-%d %H:%M")
+            delta_min = (fire_dt - event_dt).total_seconds() / 60
+            if -MACRO_PRE_EVENT_MIN <= delta_min <= MACRO_POST_EVENT_MIN:
+                return True, label
+        except ValueError:
+            continue
+    return False, None
+
+
+def cross_ticker_alignment(
+    primary_ticker: str, day: str, fire_ts: int,
+    primary_open_to_spot_pct: float | None,
+) -> tuple[int | None, float | None]:
+    """For SPY/QQQ alerts, check if the OTHER index is moving in the
+    same direction by similar magnitude. Returns:
+      (aligned_int, correlation_30m) where aligned_int is 1/0/None.
+
+    Aligned = both on same side of open AND magnitudes within 0.4pp
+    of each other AND 30-min log-return correlation > 0.5.
+
+    NOTE: `primary_open_to_spot_pct` is a percentage value (e.g. 0.19
+    for +0.19% from open), matching the storage convention in
+    `compute_day_state_features`.
+    """
+    if primary_ticker not in ("SPY", "QQQ") or primary_open_to_spot_pct is None:
+        return None, None
+    other = "QQQ" if primary_ticker == "SPY" else "SPY"
+    other_bars = get_minute_bars(other, day)
+    if other_bars.empty:
+        return None, None
+
+    other_sub = other_bars[other_bars["minute"].astype("int64") // 10**9 <= fire_ts].copy()
+    if other_sub.empty or len(other_sub) < 10:
+        return None, None
+
+    other_open = float(other_sub.iloc[0]["open"])
+    other_spot = float(other_sub.iloc[-1]["close"])
+    # other_otp computed as percentage (matching the primary's units)
+    other_otp_pct = ((other_spot - other_open) / other_open * 100
+                     if other_open > 0 else 0)
+    primary_otp_pct = primary_open_to_spot_pct  # already in %
+
+    # 30-min trailing correlation
+    prim_bars = get_minute_bars(primary_ticker, day)
+    prim_sub = prim_bars[prim_bars["minute"].astype("int64") // 10**9 <= fire_ts].copy()
+    fast_cutoff = fire_ts - 30 * 60
+    other_30m = other_sub[other_sub["minute"].astype("int64") // 10**9 >= fast_cutoff]
+    prim_30m = prim_sub[prim_sub["minute"].astype("int64") // 10**9 >= fast_cutoff]
+    corr = None
+    if len(other_30m) >= 5 and len(prim_30m) >= 5:
+        # Align on minute and compute log-return correlation
+        other_30m = other_30m.set_index("minute")["close"]
+        prim_30m = prim_30m.set_index("minute")["close"]
+        merged = pd.concat({"prim": prim_30m, "other": other_30m},
+                           axis=1).dropna()
+        if len(merged) >= 5:
+            prim_ret = merged["prim"].pct_change().dropna()
+            other_ret = merged["other"].pct_change().dropna()
+            if len(prim_ret) >= 4 and prim_ret.std() > 0 and other_ret.std() > 0:
+                corr = float(prim_ret.corr(other_ret))
+
+    # Aligned if same side of open AND |magnitudes| within 0.4pp of each
+    # other (rough proxy for "no major divergence"). All in percent.
+    same_side = (primary_otp_pct > 0) == (other_otp_pct > 0)
+    mag_close = abs(abs(primary_otp_pct) - abs(other_otp_pct)) < 0.4  # 0.4pp
+    high_corr = corr is not None and corr > 0.5
+    aligned = 1 if (same_side and mag_close and high_corr) else 0
+
+    return aligned, round(corr, 3) if corr is not None else None
 
 
 def get_minute_bars(ticker: str, day: str) -> pd.DataFrame:
@@ -411,5 +548,25 @@ def annotate_alert(alert: dict) -> dict:
             out["tape_regime_at_fire"] = None
     except Exception:
         out["tape_regime_at_fire"] = None
+
+    # Cross-ticker SPY/QQQ alignment (May 2 evening — OpenAI rec)
+    try:
+        aligned, corr = cross_ticker_alignment(
+            ticker, day, fire_ts, out.get("open_to_spot_pct"),
+        )
+        out["cross_ticker_aligned"] = aligned
+        out["cross_ticker_corr_30m"] = corr
+    except Exception:
+        out["cross_ticker_aligned"] = None
+        out["cross_ticker_corr_30m"] = None
+
+    # Macro-event window flag (May 2 evening)
+    try:
+        in_window, label = macro_event_at(fire_ts)
+        out["in_macro_window"] = int(in_window)
+        out["macro_event_label"] = label
+    except Exception:
+        out["in_macro_window"] = None
+        out["macro_event_label"] = None
 
     return out

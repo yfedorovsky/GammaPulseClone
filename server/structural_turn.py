@@ -1637,6 +1637,12 @@ def persist_event(ev: StructuralTurnEvent) -> None:
             except sqlite3.OperationalError:
                 # Column already exists — expected
                 pass
+        # May 2 evening — st_near_fire annotation columns
+        try:
+            from .st_near_fire import apply_migrations as _apply_nf_mig
+            _apply_nf_mig(STRUCTURAL_TURN_DB_PATH)
+        except Exception:
+            pass
         row = ev.to_row()
         conn.execute(
             """INSERT OR IGNORE INTO structural_turns (
@@ -1671,5 +1677,53 @@ def persist_event(ev: StructuralTurnEvent) -> None:
              row["evidence_json"], row["reasons"]),
         )
         conn.commit()
+
+        # May 2 evening — compute and persist near-fire annotations.
+        # Wrapped in try/except so a failure here can't block the eval
+        # loop. Annotation only — does NOT affect qualified column.
+        try:
+            from .st_near_fire import compute_near_fire_features
+            cur = conn.execute(
+                "SELECT id FROM structural_turns WHERE ticker = ? AND ts = ?",
+                (ev.ticker, ev.ts),
+            )
+            row_result = cur.fetchone()
+            if row_result is not None:
+                eval_id = row_result[0]
+                # Pull recent history (15min trailing) for this ticker
+                from .st_near_fire import SLOW_TTL_SEC
+                cur = conn.execute(
+                    """SELECT id, ts, ticker,
+                              gate_floor_proximity, gate_floor_event,
+                              gate_volume_absorption, gate_agg_flow,
+                              gate_ncp_corroboration, gate_magnitude,
+                              gate_regime_match, gate_cvd_divergence
+                       FROM structural_turns
+                       WHERE ticker = ? AND ts BETWEEN ? AND ?
+                       ORDER BY ts""",
+                    (ev.ticker, ev.ts - SLOW_TTL_SEC, ev.ts),
+                )
+                history = [dict(zip([d[0] for d in cur.description], r))
+                           for r in cur.fetchall()]
+                if history:
+                    feats = compute_near_fire_features(history[-1], history)
+                    conn.execute(
+                        """UPDATE structural_turns
+                           SET near_fire_score = ?, missing_gate_name = ?,
+                               n_slow_active = ?, n_fast_active = ?,
+                               slow_state_pct_15m = ?,
+                               fast_trigger_count_5m = ?,
+                               temporal_near_fire = ?
+                           WHERE id = ?""",
+                        (feats.near_fire_score, feats.missing_gate_name,
+                         feats.n_slow_active, feats.n_fast_active,
+                         feats.slow_state_pct_15m,
+                         feats.fast_trigger_count_5m,
+                         int(feats.temporal_near_fire), eval_id),
+                    )
+                    conn.commit()
+        except Exception as e:
+            # Annotation failure must never block the eval pipeline
+            print(f"[ST] near-fire annotation failed: {e}")
     finally:
         conn.close()

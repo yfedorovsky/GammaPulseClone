@@ -203,6 +203,50 @@ fires due to flow gates failing.
 
 ---
 
+## Pre-registered analysis triggers (May 2 2026)
+
+Three pre-registered specs are now in place to evaluate features that
+got annotation-instrumented this weekend. None will run until the
+forward window has accrued enough data per the trigger conditions.
+
+- `docs/research/STRIKE_FEASIBILITY_SPEC.md` — does
+  `strike_reachability_ratio` predict 0DTE alert outcomes? Trigger:
+  ≥50 forward alerts × ≥20 day clusters with reachability computed.
+- `docs/research/MIXED_REFINEMENT_SPEC.md` — three pre-committed splits
+  for sub-classifying the MIXED tape regime. Trigger: ≥30 MIXED-day
+  forward alerts × ≥15 MIXED day clusters.
+- `docs/research/ST_TEMPORAL_AUDIT_SPEC.md` — does the temporal-aware
+  loose-intersection version of ST produce better expected outcomes
+  than the strict 8-gate boolean-AND? Trigger: Stage 3 stopping rule
+  met AND ≥30 temporal-near-fire moments where qualified=0.
+
+---
+
+## Macro-window winner pattern (May 2 — discovered via backfill)
+
+The intrinsic capture analysis surfaced 5/20 winners. Backfill of the
+new `in_macro_window` annotation revealed:
+- May 1 09:55 SPY 724C (peak +73%) and QQQ 675C (peak +50%) BOTH
+  fired 85 min after NFP at 08:30 ET — INSIDE the post-event window
+- Apr 28 winners (10:39 QQQ +3%, 11:48 QQQ +213%) NOT in macro window
+  (no event that day)
+- Apr 29 alerts in FOMC window were both losers — but n=2 isn't
+  enough to conclude post-FOMC is a bad regime
+
+Tentative pattern: 0DTE engine alerts in NFP-morning window may be
+more tradeable than alerts on quiet drift days. Validation requires
+more forward NFP days to accumulate.
+
+**Pre-registered methodology decision (do not act on n=20)**:
+- After ≥10 forward macro-window-overlapping alerts, run a paired
+  bootstrap on macro-window vs non-macro-window alerts on the same
+  day. Decision rule: if macro-window mean P&L exceeds non-macro by
+  ≥+30pp with CI excluding 0, propose adding macro window as a
+  workflow-rule input.
+- Until then, the annotation is logged but not used.
+
+---
+
 ## Old / lower-priority ideas
 
 (Add as they come up. Date-stamp them so we know what's stale.)
