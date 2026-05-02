@@ -1,0 +1,101 @@
+======================================================================
+  MAY 1 STRUCTURAL TURN FORENSIC
+  Why zero qualified fires across 1131 evaluations × 3 tickers?
+======================================================================
+
+======================================================================
+  SPY forensic — May 1 2026
+======================================================================
+
+Total evaluations: 356
+  Gate 1 (proximity ): 356/356 = 100.0%
+  Gate 2 (event     ): 356/356 = 100.0%
+  Gate 3 (volabs    ): 68/356 =  19.1%
+  Gate 4 (aggflow   ): 159/356 =  44.7%
+  Gate 5 (ncp       ): 150/356 =  42.1%
+  Gate 6 (magnitude ): 356/356 = 100.0%
+  Gate 7 (regime    ): 32/356 =   9.0%
+  Gate 8 (cvd       ): 179/356 =  50.3%
+
+Best evaluation: 10:28 — 7/8 gates
+  failed: ['volabs']
+  spot=$724.51 regime=POS ratio=2.09
+
+--- volume_absorption (gate 3) deep-dive ---
+  per-minute bars: 390 (Databento, true 1-min)
+  bars near LOD (within 0.2%):  162/390
+  bars with vol >= 2.0x avg:    24/390
+  bars meeting BOTH (would fire): 12/390
+
+  Top 5 near-LOD bars by vol-ratio:
+ hhmm     low  session_lod  volume  avg_20m_vol  vol_ratio  would_pass
+15:59 720.470      720.470   43361    10423.500      4.160        True
+15:58 720.950      720.760   30875     9052.700      3.411        True
+15:49 721.840      720.760   14961     5431.000      2.755        True
+15:05 721.400      720.760    7286     2903.600      2.509        True
+15:55 721.030      720.760   17291     7419.000      2.331        True
+
+--- regime_match (gate 7) deep-dive ---
+  Regime distribution: {'POS': 356}
+  Pos/neg ratio: min=1.29 median=1.71 max=2.12
+  ratio < 1.0 (neg dominant): 0
+  ratio > 2.0 (pos dominant): 32
+  Passing rows: ratio range 2.01-2.12 (n=32)
+  Failing rows: ratio range 1.29-2.00 (n=324)
+
+======================================================================
+  QQQ forensic — May 1 2026
+======================================================================
+
+Total evaluations: 356
+  Gate 1 (proximity ): 356/356 = 100.0%
+  Gate 2 (event     ): 210/356 =  59.0%
+  Gate 3 (volabs    ): 0/356 =   0.0%
+  Gate 4 (aggflow   ): 54/356 =  15.2%
+  Gate 5 (ncp       ): 168/356 =  47.2%
+  Gate 6 (magnitude ): 356/356 = 100.0%
+  Gate 7 (regime    ): 356/356 = 100.0%
+  Gate 8 (cvd       ): 108/356 =  30.3%
+
+Best evaluation: 10:00 — 6/8 gates
+  failed: ['volabs', 'cvd']
+  spot=$674.37 regime=POS ratio=3.35
+
+--- volume_absorption (gate 3) deep-dive ---
+  per-minute bars: 390 (Databento, true 1-min)
+  bars near LOD (within 0.2%):  2/390
+  bars with vol >= 2.0x avg:    44/390
+  bars meeting BOTH (would fire): 0/390
+
+  Top 5 near-LOD bars by vol-ratio:
+ hhmm     low  session_lod  volume  avg_20m_vol  vol_ratio  would_pass
+09:30 668.890      668.890    8473          NaN        NaN       False
+09:31 669.850      668.890    7507          NaN        NaN       False
+
+======================================================================
+  IWM forensic — May 1 2026
+======================================================================
+
+Total evaluations: 356
+  Gate 1 (proximity ): 306/356 =  86.0%
+  Gate 2 (event     ): 0/356 =   0.0%
+  Gate 3 (volabs    ): 0/356 =   0.0%
+  Gate 4 (aggflow   ): 0/356 =   0.0%
+  Gate 5 (ncp       ): 88/356 =  24.7%
+  Gate 6 (magnitude ): 356/356 = 100.0%
+  Gate 7 (regime    ): 343/356 =  96.3%
+  Gate 8 (cvd       ): 111/356 =  31.2%
+
+Best evaluation: 10:35 — 5/8 gates
+  failed: ['event', 'volabs', 'aggflow']
+  spot=$278.73 regime=NEG ratio=0.60
+
+======================================================================
+  SUMMARY
+======================================================================
+
+SPY: best 7day-eval = 7/8 (bottlenecks: ['volabs', 'regime'])
+
+QQQ: best 7day-eval = 6/8 (bottlenecks: ['volabs', 'aggflow'])
+
+IWM: best 7day-eval = 5/8 (bottlenecks: ['event', 'volabs', 'aggflow', 'ncp'])
