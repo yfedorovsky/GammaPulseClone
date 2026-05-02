@@ -133,6 +133,52 @@ CREATE TABLE IF NOT EXISTS paired_trades (
 CREATE INDEX IF NOT EXISTS idx_paired_day ON paired_trades(day);
 CREATE INDEX IF NOT EXISTS idx_paired_fire ON paired_trades(fire_id);
 CREATE INDEX IF NOT EXISTS idx_paired_source ON paired_trades(source);
+
+-- Iron condor passive logging (Gemini round 2 MVP, May 1 2026):
+-- Per fire, log the credit (mid) of two pre-committed IC structures at
+-- fire-time and at EOD. Lightest-possible test of the GEX-as-spatial-
+-- boundary credit-spread reframe alongside the long-premium falsification.
+-- Decision tree in docs/BACKLOG.md: pivot to full credit-spread variant
+-- only if (a) GEX boundary-behavior audit passes AND (b) IC structure
+-- wins on different days than long premium.
+--
+-- ATM IC = short C/P at spot-rounded strike, long wings WING_WIDTH farther
+-- OTM IC = short C at king (rounded), short P at floor (rounded),
+--          long wings WING_WIDTH farther
+-- Wing widths: SPY/QQQ/IWM = $5, SPX = $25 (5 strike intervals).
+--
+-- IC mid (credit) = (short_call_mid + short_put_mid)
+--                 - (long_call_mid + long_put_mid)
+CREATE TABLE IF NOT EXISTS iron_condor_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  fire_id TEXT NOT NULL,
+  ticker TEXT NOT NULL,
+  day TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  fire_hhmm TEXT NOT NULL,
+  spot_at_fire REAL,
+  king REAL,
+  floor REAL,
+  expiration TEXT,
+  -- ATM structure (short strikes at spot-rounded ATM)
+  atm_short_call_strike REAL,
+  atm_long_call_strike REAL,
+  atm_short_put_strike REAL,
+  atm_long_put_strike REAL,
+  atm_ic_mid_at_fire REAL,
+  atm_ic_mid_at_eod REAL,
+  -- OTM structure (short strikes at king/floor)
+  otm_short_call_strike REAL,
+  otm_long_call_strike REAL,
+  otm_short_put_strike REAL,
+  otm_long_put_strike REAL,
+  otm_ic_mid_at_fire REAL,
+  otm_ic_mid_at_eod REAL,
+  computed_at INTEGER NOT NULL,
+  UNIQUE(fire_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ic_day ON iron_condor_logs(day);
+CREATE INDEX IF NOT EXISTS idx_ic_fire ON iron_condor_logs(fire_id);
 """
 
 
@@ -152,6 +198,18 @@ def _strike_round(ticker: str, spot: float) -> float:
 
 def _right_for_direction(direction: str) -> str:
     return "C" if direction.upper() == "BULLISH" else "P"
+
+
+# Iron condor wing widths per ticker (Gemini round 2 MVP, May 1 2026).
+# Pre-committed; do not tune. Wings are dollar offsets from short strike.
+IC_WING_WIDTH = {
+    "SPY": 5.0, "QQQ": 5.0, "IWM": 5.0,
+    "SPX": 25.0,  # SPX strikes are $5 apart; 5-strike wings
+}
+
+
+def _ic_wing(ticker: str) -> float:
+    return IC_WING_WIDTH.get(ticker, 5.0)
 
 
 # ── ThetaData NBBO bar pull ──────────────────────────────────────
@@ -182,6 +240,208 @@ def _fetch_quote_bars(
     df["ts"] = (df["t"].astype("int64") // 10**9).astype(int)
     df = df[(df["bid"] > 0) | (df["ask"] > 0)].copy()
     return df[["ts", "hhmm", "bid", "ask"]]
+
+
+# ── Iron condor logging helpers (Gemini round 2 MVP, May 1 2026) ──
+
+
+def _bar_mid_at(bars: pd.DataFrame, hhmm: str) -> float | None:
+    """Return mid price of the first bar at-or-after hhmm (None if absent
+    or non-positive bid/ask)."""
+    if bars is None or bars.empty:
+        return None
+    sub = bars[bars["hhmm"] >= hhmm]
+    if sub.empty:
+        return None
+    row = sub.iloc[0]
+    bid = float(row["bid"])
+    ask = float(row["ask"])
+    if bid <= 0 or ask <= 0:
+        return None
+    return (bid + ask) / 2
+
+
+def _ic_mid_at(
+    ticker: str, day: str, expiration: str, hhmm: str,
+    short_call_strike: float, long_call_strike: float,
+    short_put_strike: float, long_put_strike: float,
+) -> float | None:
+    """Iron condor credit (mid) at given HH:MM.
+
+    credit = (short_call_mid + short_put_mid)
+           - (long_call_mid + long_put_mid)
+
+    Any leg with no usable quote → return None (whole-IC mid undefined).
+    """
+    sym = _option_root(ticker)
+    sc = _fetch_quote_bars(sym, expiration, short_call_strike, "C", day)
+    lc = _fetch_quote_bars(sym, expiration, long_call_strike, "C", day)
+    sp = _fetch_quote_bars(sym, expiration, short_put_strike, "P", day)
+    lp = _fetch_quote_bars(sym, expiration, long_put_strike, "P", day)
+    sc_mid = _bar_mid_at(sc, hhmm)
+    lc_mid = _bar_mid_at(lc, hhmm)
+    sp_mid = _bar_mid_at(sp, hhmm)
+    lp_mid = _bar_mid_at(lp, hhmm)
+    if any(x is None for x in (sc_mid, lc_mid, sp_mid, lp_mid)):
+        return None
+    return (sc_mid + sp_mid) - (lc_mid + lp_mid)
+
+
+def _build_ic_structures(
+    ticker: str, spot: float, king: float | None, floor: float | None,
+) -> dict:
+    """Pre-committed IC strike picks. Returns ATM and OTM structures.
+
+    ATM:
+      short C = round(spot), long C = short C + wing
+      short P = round(spot), long P = short P − wing
+    OTM (GEX boundaries):
+      short C = round(king),  long C = short C + wing
+      short P = round(floor), long P = short P − wing
+
+    If king/floor missing, OTM strikes fall back to spot ± wing
+    (so OTM short C = spot+wing, short P = spot−wing). Documented in
+    iron_condor_logs as "OTM fallback used" implicit in equal strike
+    deltas; downstream analysis can flag rows where king IS NULL.
+    """
+    wing = _ic_wing(ticker)
+    atm_strike = _strike_round(ticker, spot)
+
+    if king is not None and king > 0:
+        otm_short_call = _strike_round(ticker, float(king))
+    else:
+        otm_short_call = _strike_round(ticker, spot + wing)
+    if floor is not None and floor > 0:
+        otm_short_put = _strike_round(ticker, float(floor))
+    else:
+        otm_short_put = _strike_round(ticker, spot - wing)
+
+    return {
+        "atm_short_call": atm_strike,
+        "atm_long_call": atm_strike + wing,
+        "atm_short_put": atm_strike,
+        "atm_long_put": atm_strike - wing,
+        "otm_short_call": otm_short_call,
+        "otm_long_call": otm_short_call + wing,
+        "otm_short_put": otm_short_put,
+        "otm_long_put": otm_short_put - wing,
+    }
+
+
+def compute_iron_condor_log_for_fire(fire: dict) -> dict:
+    """Build one iron_condor_logs row for one gated fire.
+
+    Passive logging: any pull failure → NULL mid for that snapshot.
+    Per BACKLOG.md, this MVP is the lightest possible test of the GEX-
+    as-spatial-boundary credit-spread reframe alongside the long-premium
+    falsification. No decisions are made on these numbers during the
+    forward window; analysis is post-experiment per the backlog decision
+    tree.
+    """
+    ticker = fire["ticker"]
+    day = fire["day"]
+    direction = fire["direction"]
+    fire_hhmm = fire["fire_hhmm"]
+    spot = float(fire.get("spot") or 0)
+    king = fire.get("king")
+    floor = fire.get("floor")
+    expiration = day
+    fire_id = f"{day}_{ticker}_{fire_hhmm}_{direction}"
+
+    if spot <= 0:
+        return {
+            "fire_id": fire_id, "ticker": ticker, "day": day,
+            "direction": direction, "fire_hhmm": fire_hhmm,
+            "spot_at_fire": None, "king": king, "floor": floor,
+            "expiration": expiration,
+            "atm_short_call_strike": None, "atm_long_call_strike": None,
+            "atm_short_put_strike": None, "atm_long_put_strike": None,
+            "atm_ic_mid_at_fire": None, "atm_ic_mid_at_eod": None,
+            "otm_short_call_strike": None, "otm_long_call_strike": None,
+            "otm_short_put_strike": None, "otm_long_put_strike": None,
+            "otm_ic_mid_at_fire": None, "otm_ic_mid_at_eod": None,
+            "computed_at": int(time.time()),
+        }
+
+    s = _build_ic_structures(ticker, spot, king, floor)
+
+    atm_at_fire = _ic_mid_at(
+        ticker, day, expiration, fire_hhmm,
+        s["atm_short_call"], s["atm_long_call"],
+        s["atm_short_put"], s["atm_long_put"],
+    )
+    atm_at_eod = _ic_mid_at(
+        ticker, day, expiration, SESSION_END_HHMM,
+        s["atm_short_call"], s["atm_long_call"],
+        s["atm_short_put"], s["atm_long_put"],
+    )
+    otm_at_fire = _ic_mid_at(
+        ticker, day, expiration, fire_hhmm,
+        s["otm_short_call"], s["otm_long_call"],
+        s["otm_short_put"], s["otm_long_put"],
+    )
+    otm_at_eod = _ic_mid_at(
+        ticker, day, expiration, SESSION_END_HHMM,
+        s["otm_short_call"], s["otm_long_call"],
+        s["otm_short_put"], s["otm_long_put"],
+    )
+
+    return {
+        "fire_id": fire_id, "ticker": ticker, "day": day,
+        "direction": direction, "fire_hhmm": fire_hhmm,
+        "spot_at_fire": spot,
+        "king": float(king) if king is not None else None,
+        "floor": float(floor) if floor is not None else None,
+        "expiration": expiration,
+        "atm_short_call_strike": s["atm_short_call"],
+        "atm_long_call_strike": s["atm_long_call"],
+        "atm_short_put_strike": s["atm_short_put"],
+        "atm_long_put_strike": s["atm_long_put"],
+        "atm_ic_mid_at_fire": atm_at_fire,
+        "atm_ic_mid_at_eod": atm_at_eod,
+        "otm_short_call_strike": s["otm_short_call"],
+        "otm_long_call_strike": s["otm_long_call"],
+        "otm_short_put_strike": s["otm_short_put"],
+        "otm_long_put_strike": s["otm_long_put"],
+        "otm_ic_mid_at_fire": otm_at_fire,
+        "otm_ic_mid_at_eod": otm_at_eod,
+        "computed_at": int(time.time()),
+    }
+
+
+def persist_iron_condor_log(row: dict, path: str = PAIRED_DB) -> int:
+    if not row:
+        return 0
+    conn = _ensure_db(path)
+    try:
+        conn.execute(
+            """INSERT OR REPLACE INTO iron_condor_logs
+                 (fire_id, ticker, day, direction, fire_hhmm,
+                  spot_at_fire, king, floor, expiration,
+                  atm_short_call_strike, atm_long_call_strike,
+                  atm_short_put_strike, atm_long_put_strike,
+                  atm_ic_mid_at_fire, atm_ic_mid_at_eod,
+                  otm_short_call_strike, otm_long_call_strike,
+                  otm_short_put_strike, otm_long_put_strike,
+                  otm_ic_mid_at_fire, otm_ic_mid_at_eod,
+                  computed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, ?, ?, ?)""",
+            (row["fire_id"], row["ticker"], row["day"], row["direction"],
+             row["fire_hhmm"], row["spot_at_fire"], row["king"], row["floor"],
+             row["expiration"],
+             row["atm_short_call_strike"], row["atm_long_call_strike"],
+             row["atm_short_put_strike"], row["atm_long_put_strike"],
+             row["atm_ic_mid_at_fire"], row["atm_ic_mid_at_eod"],
+             row["otm_short_call_strike"], row["otm_long_call_strike"],
+             row["otm_short_put_strike"], row["otm_long_put_strike"],
+             row["otm_ic_mid_at_fire"], row["otm_ic_mid_at_eod"],
+             row["computed_at"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return 1
 
 
 # ── Spot-at-time lookup (snapshots fallback to ThetaData index) ──
@@ -568,7 +828,7 @@ def fetch_qualified_fires_for_day(day: str) -> list[dict]:
         t0 = int(d.replace(hour=0, minute=0, second=0).timestamp())
         t1 = int(d.replace(hour=23, minute=59, second=59).timestamp())
         cur = conn.execute(
-            """SELECT ts, ticker, direction, spot, regime, tier
+            """SELECT ts, ticker, direction, spot, king, floor, regime, tier
                FROM structural_turns
                WHERE qualified = 1 AND ts BETWEEN ? AND ?
                ORDER BY ts""",
@@ -581,6 +841,7 @@ def fetch_qualified_fires_for_day(day: str) -> list[dict]:
         {
             "ts": r["ts"], "ticker": r["ticker"],
             "direction": r["direction"], "spot": r["spot"],
+            "king": r["king"], "floor": r["floor"],
             "regime": r["regime"], "tier": r["tier"],
             "day": datetime.fromtimestamp(r["ts"]).strftime("%Y-%m-%d"),
             "fire_hhmm": datetime.fromtimestamp(r["ts"]).strftime("%H:%M"),
@@ -602,11 +863,17 @@ def fetch_qualified_fires_from_csv(
         df = df[df["day"] == day]
     out = []
     for _, r in df.iterrows():
+        # king/floor optional in older CSVs — None when missing so the
+        # IC logger falls back to spot ± wing per _build_ic_structures.
+        king = r.get("king") if "king" in df.columns else None
+        floor = r.get("floor") if "floor" in df.columns else None
         out.append({
             "ts": int(r["ts"]),
             "ticker": r["ticker"],
             "direction": r["direction"],
             "spot": float(r["spot"]),
+            "king": float(king) if king is not None and pd.notna(king) else None,
+            "floor": float(floor) if floor is not None and pd.notna(floor) else None,
             "regime": r.get("regime"),
             "tier": r.get("tier"),
             "day": r["day"],
@@ -630,6 +897,7 @@ def run_eod(date_str: str, csv_path: str | None = None) -> int:
     # baseline can exclude them.
     all_fire_minutes = {f["fire_hhmm"] for f in fires}
     total = 0
+    ic_total = 0
     for f in fires:
         try:
             rows = compute_paired_trades_for_fire(
@@ -643,13 +911,26 @@ def run_eod(date_str: str, csv_path: str | None = None) -> int:
             g_pnl = (gated or {}).get("pnl_pct")
             r_pnl = (rmin or {}).get("pnl_pct")
             n_pnl = (naive or {}).get("pnl_pct")
+            # Iron condor passive log (Gemini round 2 MVP, May 1 2026).
+            # Errors here MUST NOT affect the long-premium falsification —
+            # log warning, continue.
+            try:
+                ic_row = compute_iron_condor_log_for_fire(f)
+                ic_total += persist_iron_condor_log(ic_row)
+                ic_atm = ic_row.get("atm_ic_mid_at_fire")
+                ic_otm = ic_row.get("otm_ic_mid_at_fire")
+            except Exception as ic_e:
+                print(f"    [ic] {type(ic_e).__name__}: {ic_e}", flush=True)
+                ic_atm = ic_otm = None
             print(f"  {f['fire_hhmm']} {f['ticker']} {f['direction']} "
-                  f"tier={f['tier']}  gated={g_pnl}  rmin={r_pnl}  naive={n_pnl}",
+                  f"tier={f['tier']}  gated={g_pnl}  rmin={r_pnl}  naive={n_pnl}  "
+                  f"ic_atm={ic_atm} ic_otm={ic_otm}",
                   flush=True)
         except Exception as e:
             print(f"  ! fire {f['ticker']}@{f['fire_hhmm']}: {type(e).__name__}: {e}",
                   flush=True)
-    print(f"[paired] {date_str}: persisted {total} rows", flush=True)
+    print(f"[paired] {date_str}: persisted {total} paired rows, "
+          f"{ic_total} iron_condor_logs rows", flush=True)
     return total
 
 

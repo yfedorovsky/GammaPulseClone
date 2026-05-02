@@ -587,6 +587,134 @@ def _gate_pos_regime_bearish_block(
     ), {"direction": direction, "regime": regime}
 
 
+# ── Spread preflight gate (May 1 2026, Test #6 + cross-LLM consensus) ──
+#
+# Test #6 (May 1 audit) found a 77pp difference between fires during
+# normal-spread regimes (+63% mean, 40% WR) and HIGH-spread regimes
+# (-14% mean, 30% WR). 5/5 LLM cross-critique converged on adding a
+# spread preflight gate as the ONE legitimate v2 modification surviving
+# the audit cycle (V2_DETECTOR_SPEC.md decision tree).
+#
+# Threshold table = static historical p90 from background_distributions.md
+# (96,304 per-minute observations across 124 days × {SPY, QQQ}). Values
+# pre-committed before any forward analysis — calibrated against EXTERNAL
+# data, not the 27-fire in-sample sample, so result is testable
+# out-of-sample without contamination.
+#
+# Static-historical (option B) chosen over day-relative (option A) and
+# both-required (option C) per the design decision in
+# docs/feedback/cross_llm_followup_may01_post_synthesis.md (ChatGPT +
+# Perplexity-r2: simpler, fully pre-committed; vs Gemini-r2's hybrid):
+# 2-1 split for the simpler design.
+#
+# IMPORTANT: This gate evaluates `spread_30m_mean` provided by the live
+# worker. The worker does NOT yet populate this — yfinance gives no
+# bid/ask. Live spread feed wiring is BACKLOG'd as a separate prerequisite
+# task (~2-3 hours, see docs/BACKLOG.md). Until that wiring exists, this
+# gate is dormant: when called with `spread_30m_mean=None`, it returns
+# (True, "spread feed unavailable", ...) so fires proceed exactly as in
+# the current frozen v1.
+
+# (ticker, tod_bucket) -> p90 stock spread in dollars (NBBO mean spread
+# over the per-minute observations). Source: docs/research/
+# background_distributions.md `mean_spread` table. Frozen May 1 2026.
+_SPREAD_P90_TABLE: dict[tuple[str, str], float] = {
+    ("SPY", "open"):       0.07947,
+    ("SPY", "morning"):    0.04909,
+    ("SPY", "midday"):     0.04302,
+    ("SPY", "afternoon"):  0.03995,
+    ("SPY", "close"):      0.03440,
+    ("QQQ", "open"):       0.09973,
+    ("QQQ", "morning"):    0.05304,
+    ("QQQ", "midday"):     0.04359,
+    ("QQQ", "afternoon"):  0.04014,
+    ("QQQ", "close"):      0.03728,
+}
+
+
+def _spread_tod_bucket(ts: int) -> str | None:
+    """Map a UNIX timestamp (assumed market hours) to a TOD bucket
+    matching `background_distributions.md`. Returns None if outside
+    09:30–16:00 ET (pre-market or after-hours; gate should bypass).
+    """
+    from datetime import datetime as _dt
+    hhmm = _dt.fromtimestamp(ts).strftime("%H:%M")
+    if "09:30" <= hhmm < "10:00":
+        return "open"
+    if "10:00" <= hhmm < "12:00":
+        return "morning"
+    if "12:00" <= hhmm < "14:00":
+        return "midday"
+    if "14:00" <= hhmm < "15:30":
+        return "afternoon"
+    if "15:30" <= hhmm <= "16:00":
+        return "close"
+    return None
+
+
+def _gate_spread_regime(
+    ticker: str, ts: int, spread_30m_mean: float | None,
+) -> tuple[bool, str, dict]:
+    """Block fires when 30-min trailing mean stock spread exceeds the
+    static historical p90 for this (ticker × TOD).
+
+    Returns (passes, reason, evidence). Bypass conditions (return True):
+      - spread_30m_mean is None  → live feed not yet wired (backlog item)
+      - ticker not in threshold table (IWM, SPX) → no calibrated p90
+      - timestamp outside market hours → no TOD bucket
+      - spread_30m_mean <= 0 → measurement error; do not gate
+
+    Theoretical basis: Test #6 PASS, normal-spread +63%/40%WR vs
+    HIGH-spread -14%/30%WR (77pp diff). Largest empirical effect we
+    measured. Both Perplexity and Gemini round 1, plus ChatGPT and
+    Perplexity round 2, endorsed adding this gate. Gemini round 2
+    proposed a hybrid (day-relative + static); we chose static-only for
+    simplicity and full pre-commitment. 2-1 LLM consensus.
+
+    The gate is INACTIVE until live spread wiring lands. See BACKLOG.md
+    "Live spread feed wiring (PREREQUISITE for the spread gate)".
+    """
+    bucket = _spread_tod_bucket(ts)
+
+    if spread_30m_mean is None:
+        return True, "spread feed unavailable — gate dormant", {
+            "ticker": ticker, "spread_30m_mean": None, "tod_bucket": bucket,
+            "threshold_p90": None, "active": False,
+        }
+    if spread_30m_mean <= 0:
+        return True, "spread <= 0 — measurement error; bypass", {
+            "ticker": ticker, "spread_30m_mean": float(spread_30m_mean),
+            "tod_bucket": bucket, "threshold_p90": None, "active": False,
+        }
+    if bucket is None:
+        return True, "outside market hours — gate not applicable", {
+            "ticker": ticker, "spread_30m_mean": float(spread_30m_mean),
+            "tod_bucket": None, "threshold_p90": None, "active": False,
+        }
+    p90 = _SPREAD_P90_TABLE.get((ticker, bucket))
+    if p90 is None:
+        return True, f"no calibrated p90 for {ticker}×{bucket} — bypass", {
+            "ticker": ticker, "spread_30m_mean": float(spread_30m_mean),
+            "tod_bucket": bucket, "threshold_p90": None, "active": False,
+        }
+    if spread_30m_mean > p90:
+        return False, (
+            f"HIGH spread regime: 30m mean {spread_30m_mean:.4f} > "
+            f"static historical p90 {p90:.4f} for {ticker} {bucket}; "
+            f"Test #6 showed -14%/30%WR in this regime"
+        ), {
+            "ticker": ticker, "spread_30m_mean": float(spread_30m_mean),
+            "tod_bucket": bucket, "threshold_p90": p90, "active": True,
+        }
+    return True, (
+        f"normal spread regime: 30m mean {spread_30m_mean:.4f} <= p90 {p90:.4f} "
+        f"for {ticker} {bucket}"
+    ), {
+        "ticker": ticker, "spread_30m_mean": float(spread_30m_mean),
+        "tod_bucket": bucket, "threshold_p90": p90, "active": True,
+    }
+
+
 def _gate_trend_filter(
     direction: str, ts: int, spot: float, minute_bars: list[dict],
 ) -> tuple[bool, str, dict]:
