@@ -109,6 +109,20 @@ ALERT_ANNOTATION_MIGRATIONS = [
     # Macro event window (hardcoded FOMC/CPI/NFP calendar)
     "ALTER TABLE zero_dte_alerts ADD COLUMN in_macro_window INTEGER",
     "ALTER TABLE zero_dte_alerts ADD COLUMN macro_event_label TEXT",
+    # Outcome enrichment (May 2 evening — bridges annotations to outcomes)
+    # Peak intrinsic P&L during trade window (intrinsic-only proxy)
+    "ALTER TABLE zero_dte_alerts ADD COLUMN peak_pnl_pct REAL",
+    "ALTER TABLE zero_dte_alerts ADD COLUMN peak_hhmm TEXT",
+    "ALTER TABLE zero_dte_alerts ADD COLUMN mins_to_peak INTEGER",
+    "ALTER TABLE zero_dte_alerts ADD COLUMN eod_pnl_pct REAL",
+    "ALTER TABLE zero_dte_alerts ADD COLUMN reached_itm INTEGER",
+    "ALTER TABLE zero_dte_alerts ADD COLUMN mins_above_entry INTEGER",
+    "ALTER TABLE zero_dte_alerts ADD COLUMN mins_2x_entry INTEGER",
+    # Outcome category: WIN_BIG (>=200%), WIN (50-200%), MARGINAL (0-50%),
+    # LOSS_BOUNCED (-50 to 0% peak), WIPEOUT (<-50% peak)
+    "ALTER TABLE zero_dte_alerts ADD COLUMN outcome_category TEXT",
+    # Workflow filter status (computed from ST coincidence rule)
+    "ALTER TABLE zero_dte_alerts ADD COLUMN st_confirmation_within_90m INTEGER",
 ]
 
 
