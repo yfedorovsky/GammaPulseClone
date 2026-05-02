@@ -1457,6 +1457,17 @@ async def _send_structural_turn_telegram(ev: StructuralTurnEvent) -> None:
                      f"@ ${confirm['est_entry_price']:.2f} | now ENTER on this ST signal")
         lines.append("")
 
+    # Tape regime annotation (May 2 2026 — annotation only, no logic
+    # change). Surfaces day character so the trader can see whether the
+    # ST fire is happening in a TREND/RANGE/NOISY tape backdrop.
+    tape_banner = ""
+    try:
+        from .tape_regime import classify_from_yfinance
+        tr = classify_from_yfinance(ev.ticker, ev.ts)
+        tape_banner = tr.banner_str()
+    except Exception:
+        pass
+
     lines.extend([
         f"{tier_emoji} [SHADOW] STRUCTURAL TURN — {ev.ticker} {arrow} {ev.direction}",
         tier_label,
@@ -1464,6 +1475,8 @@ async def _send_structural_turn_telegram(ev: StructuralTurnEvent) -> None:
         f"Spot ${ev.spot:.2f}  |  Floor ${ev.floor or 0:.0f}  |  King ${ev.king or 0:.0f}",
         f"Regime {ev.regime or '?'}  |  Pos/Neg ${pos_m:.0f}M/${neg_m:.0f}M (ratio {ratio_str})",
     ])
+    if tape_banner:
+        lines.append(tape_banner)
     # Info-only fields
     if ev.zgl is not None and ev.spot_minus_zgl is not None:
         flip_state = "above" if ev.spot_minus_zgl > 0 else "below"

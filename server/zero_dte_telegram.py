@@ -145,9 +145,26 @@ def format_zero_dte_alert(alert: Any) -> str:
             f"   On TREND days (no LOD retest), ST may not fire — discretionary call.\n\n"
         )
 
+    # Tape regime annotation (May 2 2026 — added per the bimodal-by-day
+    # finding in INTRINSIC_CAPTURE_ANALYSIS.md). Surfaces day character
+    # so the trader can mentally apply different exit rules per regime.
+    # Annotation only; does NOT affect gate logic, sizing, or stopping.
+    regime_banner = ""
+    try:
+        from .tape_regime import classify_from_yfinance, regime_play_guidance
+        tr = classify_from_yfinance(alert.ticker, fired_at if fired_at else None)
+        regime_banner = (
+            f"{tr.banner_str()}\n"
+            f"   {regime_play_guidance(tr.regime)}\n\n"
+        )
+    except Exception as e:
+        # Fail-soft: regime annotation is decorative; never block the alert
+        regime_banner = ""
+
     # Header
     header = (
         f"{banner}"
+        f"{regime_banner}"
         f"{_grade_emoji(alert.grade)} 0DTE ALERT · {alert.ticker} · {alert.grade}\n"
         f"{_direction_emoji(alert.direction)} {action} {strike_str} {right} {exp}\n"
     )
@@ -175,13 +192,20 @@ def format_zero_dte_alert(alert: Any) -> str:
     pricing_lines.append(f"Time stop: {alert.time_stop_minutes}min")
     pricing = "\n".join(pricing_lines)
 
-    # Management reminder — Apr 27 audit on small sample (n=5) suggested
-    # buy-and-hold to time-stop bleeds (avg end-of-90min was -38% despite
-    # avg MFE +90%). Treat the timing claim as anecdotal until larger
-    # sample confirms. Behavioral nudge to scale > rule of law.
+    # Management reminder — May 2 2026 update based on n=20 historical
+    # backtest (INTRINSIC_CAPTURE_ANALYSIS.md):
+    #   Hold to EOD:  mean -91% per trade
+    #   TP at +50%:   mean -65% per trade
+    #   TP at +25%:   mean -70% per trade
+    #   TP+50/Stop-30/Time-30min (estimated): ~-14% per trade
+    # The default "hold to EOD or stop" is structurally broken for this
+    # signal class. Of 20 alerts, only 5 (25%) ever exceeded entry-paid
+    # value — and they did it within median 71 min of fire.
+    # If the alert is taken (workflow rule satisfied), exit aggressively.
     manage = (
-        "⚠ MANAGE: small sample suggests scaling at +50% beats "
-        "hold-to-time-stop. Trail rest."
+        "⚠ EXIT: TP +50% / Stop -30% / Time-stop 30min. "
+        "DO NOT hold to EOD — n=20 backtest: hold-EOD = -91%/trade, "
+        "TP+50 = -65%/trade. Win rate is the constraint, not exits."
     )
 
     # Confluence breakdown
