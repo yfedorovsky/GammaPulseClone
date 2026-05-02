@@ -80,10 +80,13 @@ def load_snapshots(ticker: str) -> pd.DataFrame:
         )
     finally:
         conn.close()
-    df["dt"] = pd.to_datetime(df["ts"], unit="s")
-    df["day"] = df["dt"].dt.strftime("%Y-%m-%d")
-    df["hhmm"] = df["dt"].dt.strftime("%H:%M")
-    # RTH only — boundary behavior outside RTH is meaningless
+    # snapshots.ts is UTC epoch seconds; convert to America/New_York for
+    # RTH filtering and day grouping
+    df["dt_utc"] = pd.to_datetime(df["ts"], unit="s", utc=True)
+    df["dt_et"] = df["dt_utc"].dt.tz_convert("America/New_York")
+    df["day"] = df["dt_et"].dt.strftime("%Y-%m-%d")
+    df["hhmm"] = df["dt_et"].dt.strftime("%H:%M")
+    # RTH only (ET) — boundary behavior outside RTH is meaningless
     df = df[(df["hhmm"] >= "09:30") & (df["hhmm"] < "15:30")].copy()
     return df
 
@@ -120,12 +123,16 @@ def get_day_bars(ticker: str, day: str) -> pd.DataFrame:
             df.columns = df.columns.get_level_values(0)
         df = df.reset_index()
         df.columns = [c.lower() for c in df.columns]
-        # Normalize the timestamp column name
+        # Normalize the timestamp column name (yfinance gives "Datetime")
         ts_col = next((c for c in df.columns
                        if c in ("datetime", "date", "index")), df.columns[0])
-        df["ts"] = pd.to_datetime(df[ts_col], utc=True).astype("int64") // 10**9
-        df = df[df["datetime"].dt.strftime("%Y-%m-%d") == day].copy() \
-             if "datetime" in df.columns else df
+        # yfinance returns datetime64[s, UTC] (seconds since epoch). Use
+        # .apply(t.timestamp()) — robust across dtype-unit variations
+        ts_series = pd.to_datetime(df[ts_col], utc=True)
+        df["ts"] = ts_series.apply(lambda t: int(t.timestamp())).astype("int64")
+        # Keep only this trading day's bars (yf can spill across day with end+1)
+        ts_local = ts_series.dt.tz_convert("America/New_York")
+        df = df[ts_local.dt.strftime("%Y-%m-%d") == day].copy()
         df = df[["ts", "open", "high", "low", "close"]].copy()
     except Exception as e:
         print(f"  ! yf {ticker} {day}: {type(e).__name__}: {e}", flush=True)
@@ -348,6 +355,10 @@ def run_ticker(ticker: str) -> list[dict]:
 
 def cohen_d(x: np.ndarray, y: np.ndarray) -> float:
     """Paired Cohen's d on (x - y)."""
+    # Coerce to float — pandas .to_numpy() on a column with mixed
+    # types returns object dtype, which kills np.isnan
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
     diff = x - y
     diff = diff[~np.isnan(diff)]
     if len(diff) < 2:
@@ -373,7 +384,8 @@ def cluster_bootstrap_diff(
         return float("nan"), float("nan"), float("nan")
     rng = np.random.default_rng(seed)
     means = []
-    by_day = {d: df.loc[df["day"] == d, "diff"].values for d in days}
+    by_day = {d: df.loc[df["day"] == d, "diff"].values.astype(float)
+              for d in days}
     for _ in range(n_boot):
         sampled = rng.choice(days, size=len(days), replace=True)
         diffs = np.concatenate([by_day[d] for d in sampled])
@@ -398,7 +410,8 @@ def cluster_bootstrap_proportion_diff(
         return float("nan"), float("nan"), float("nan")
     rng = np.random.default_rng(seed)
     means = []
-    by_day = {d: df.loc[df["day"] == d, "diff_pp"].values for d in days}
+    by_day = {d: df.loc[df["day"] == d, "diff_pp"].values.astype(float)
+              for d in days}
     for _ in range(n_boot):
         sampled = rng.choice(days, size=len(days), replace=True)
         diffs = np.concatenate([by_day[d] for d in sampled])
@@ -530,27 +543,39 @@ def render_results(result: dict) -> str:
     lines.append("")
     lines.append("| Window | n | Mean real | Mean rand | Diff (real − rand) | 95% CI | Cohen's d | Favors GEX? |")
     lines.append("|---|---|---|---|---|---|---|---|")
+    def fmt_pct(v: Any) -> str:
+        return f"{v*100:+.3f}%" if v is not None and not (isinstance(v, float) and np.isnan(v)) else "n/a"
+    def fmt_pp(v: Any) -> str:
+        return f"{v*100:+.3f}pp" if v is not None and not (isinstance(v, float) and np.isnan(v)) else "n/a"
+    def fmt_d(v: Any) -> str:
+        return f"{v:+.3f}" if v is not None and not (isinstance(v, float) and np.isnan(v)) else "n/a"
+
     for w in ("30m", "60m"):
         m = metrics[f"max_breach_{w}"]
         lines.append(
-            f"| {w} | {m['n']} | {m['mean_real']*100:+.3f}% | "
-            f"{m['mean_rand']*100:+.3f}% | {m['mean_diff']*100:+.3f}pp | "
-            f"[{m['ci_lo']*100:+.3f}, {m['ci_hi']*100:+.3f}]pp | "
-            f"{m['cohen_d']:+.3f} | "
-            f"{'✅' if m['favors_gex'] else '❌'} |"
+            f"| {w} | {m['n']} | {fmt_pct(m['mean_real'])} | "
+            f"{fmt_pct(m['mean_rand'])} | {fmt_pp(m['mean_diff'])} | "
+            f"[{fmt_pp(m['ci_lo']).rstrip('pp')}, {fmt_pp(m['ci_hi'])}] | "
+            f"{fmt_d(m['cohen_d'])} | "
+            f"{'PASS' if m['favors_gex'] else 'FAIL'} |"
         )
     lines.append("")
     lines.append("### Bounce rate — HIGHER is better for GEX")
     lines.append("")
     lines.append("| Window | n | Rate real | Rate rand | Prop diff | 95% CI | Favors GEX? |")
     lines.append("|---|---|---|---|---|---|---|")
+    def fmt_rate(v: Any) -> str:
+        return f"{v*100:.1f}%" if v is not None and not (isinstance(v, float) and np.isnan(v)) else "n/a"
+    def fmt_pp_raw(v: Any) -> str:
+        return f"{v:+.2f}pp" if v is not None and not (isinstance(v, float) and np.isnan(v)) else "n/a"
+
     for w in ("30m", "60m"):
         m = metrics[f"bounce_{w}"]
         lines.append(
-            f"| {w} | {m['n']} | {m['rate_real']*100:.1f}% | "
-            f"{m['rate_rand']*100:.1f}% | {m['prop_diff_pp']:+.2f}pp | "
-            f"[{m['ci_lo_pp']:+.2f}, {m['ci_hi_pp']:+.2f}]pp | "
-            f"{'✅' if m['favors_gex'] else '❌'} |"
+            f"| {w} | {m['n']} | {fmt_rate(m['rate_real'])} | "
+            f"{fmt_rate(m['rate_rand'])} | {fmt_pp_raw(m['prop_diff_pp'])} | "
+            f"[{fmt_pp_raw(m['ci_lo_pp'])}, {fmt_pp_raw(m['ci_hi_pp'])}] | "
+            f"{'PASS' if m['favors_gex'] else 'FAIL'} |"
         )
     lines.append("")
     lines.append("## Decision per spec")
