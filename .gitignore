@@ -32,3 +32,8 @@ scripts/.*.db
 .gex_backfill_checkpoint.json
 gex_backfill.log
 paired_trades.db
+
+# May 2 — E-Trade paper execution layer (feature/etrade-paper-execution)
+.etrade_tokens.json
+paper_executions.db
+paper_executions.db-*
