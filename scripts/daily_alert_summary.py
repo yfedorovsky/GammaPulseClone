@@ -133,14 +133,52 @@ def st_summary(st_rows: list[dict]) -> dict:
 
 def regime_at_open(ticker: str, day: str) -> str:
     """Get tape regime classification using market-close timestamp on
-    the given day (so the classifier sees the full session)."""
+    the given day (so the classifier sees the full session).
+
+    Data-source priority:
+      1. Databento parquet cache (SPY/QQQ, ~127 days through 2026-05-01)
+      2. yfinance 1-min bars (~30 days only)
+    Returns "<no data>" when neither has bars for the day.
+    """
+    from datetime import datetime as _dt
+    from server.tape_regime import classify_tape_regime, classify_from_yfinance
+    eval_ts = int(_dt.fromisoformat(f"{day}T15:55:00").timestamp())
+
+    # Try Databento first (works for any historical day in cache)
     try:
-        from datetime import datetime as _dt
-        from server.tape_regime import classify_from_yfinance
-        # Use 15:55 as the eval timestamp (full-session snapshot)
-        ts = int(_dt.fromisoformat(f"{day}T15:55:00").timestamp())
-        result = classify_from_yfinance(ticker, ts)
-        return f"{result.regime} (open{result.open_to_spot_pct*100:+.2f}% / range {result.range_pct*100:.2f}%)"
+        from scripts.databento_loader import load_window
+        import pandas as pd
+        df = load_window(ticker, day, start_hhmm="09:30", end_hhmm="16:00",
+                         actions=["T"])
+        if not df.empty:
+            df["t"] = pd.to_datetime(df["ts_event"], utc=True) \
+                      .dt.tz_convert("America/New_York")
+            df["minute"] = df["t"].dt.floor("min")
+            g = df.groupby("minute").agg(
+                open=("price", "first"), high=("price", "max"),
+                low=("price", "min"), close=("price", "last"),
+            ).reset_index()
+            bars = [
+                {"ts": int(r["minute"].timestamp()),
+                 "open": float(r["open"]), "high": float(r["high"]),
+                 "low": float(r["low"]), "close": float(r["close"])}
+                for _, r in g.iterrows()
+            ]
+            result = classify_tape_regime(bars, eval_ts)
+            return (f"{result.regime} (open{result.open_to_spot_pct*100:+.2f}% / "
+                    f"range {result.range_pct*100:.2f}%) [databento]")
+    except (FileNotFoundError, ImportError):
+        pass
+    except Exception as e:
+        return f"<databento error: {type(e).__name__}: {e}>"
+
+    # Fall back to yfinance (only useful for very recent days)
+    try:
+        result = classify_from_yfinance(ticker, eval_ts)
+        if result.range_pct == 0 and result.open_to_spot_pct == 0:
+            return "<no historical bars available>"
+        return (f"{result.regime} (open{result.open_to_spot_pct*100:+.2f}% / "
+                f"range {result.range_pct*100:.2f}%) [yfinance]")
     except Exception as e:
         return f"<unavailable: {type(e).__name__}>"
 
@@ -183,9 +221,11 @@ def report(day: str) -> str:
                     f"- **{dir_}**: {info['max_cluster_within_90m']} alerts within "
                     f"a 90-min window. First fire {info['first_hhmm']}, "
                     f"last fire {info['last_hhmm']}. "
-                    f"Per the May 2 intrinsic-capture analysis, repeat alerts on "
-                    f"the same side within a tight window are usually momentum "
-                    f"chasers — first 1-2 alerts carry the signal, rest are noise."
+                    f"Momentum-chase risk — small-sample evidence (Apr 23 to "
+                    f"May 1, n=6 days) shows clusters on quiet drift days are "
+                    f"usually noise (May 1: 0-3 winners out of 11), but on chop "
+                    f"days they can have repeat winners (Apr 28: 2 winners out "
+                    f"of 4). Cross-reference with regime tag above."
                 )
         lines.append("")
 
