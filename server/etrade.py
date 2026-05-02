@@ -564,3 +564,61 @@ class ETradeClient:
             "PUT", f"/v1/accounts/{account_id_key}/orders/cancel",
             body=payload, content_type="application/json",
         )
+
+    # ── Convenience wrappers for exit-order placement ──────────────
+
+    async def place_close_limit(
+        self, account_id_key: str,
+        symbol: str, expiration_date: str, strike: float, call_or_put: str,
+        quantity: int, limit_price: float,
+        execute: bool = True,
+    ) -> dict[str, Any]:
+        """Place a SELL_CLOSE LIMIT order — used for TP exits."""
+        return await self.place_option_order(
+            account_id_key=account_id_key,
+            symbol=symbol, expiration_date=expiration_date,
+            strike=strike, call_or_put=call_or_put,
+            action="SELL_CLOSE",
+            quantity=quantity,
+            order_type="LIMIT",
+            limit_price=round(limit_price, 2),
+            time_in_force="DAY",
+            preview_only=not execute,
+        )
+
+    async def place_close_stop(
+        self, account_id_key: str,
+        symbol: str, expiration_date: str, strike: float, call_or_put: str,
+        quantity: int, stop_price: float,
+        execute: bool = True,
+    ) -> dict[str, Any]:
+        """Place a SELL_CLOSE STOP (market) order — used for stop-loss exits."""
+        return await self.place_option_order(
+            account_id_key=account_id_key,
+            symbol=symbol, expiration_date=expiration_date,
+            strike=strike, call_or_put=call_or_put,
+            action="SELL_CLOSE",
+            quantity=quantity,
+            order_type="STOP",
+            stop_price=round(stop_price, 2),
+            time_in_force="DAY",
+            preview_only=not execute,
+        )
+
+    async def place_close_market(
+        self, account_id_key: str,
+        symbol: str, expiration_date: str, strike: float, call_or_put: str,
+        quantity: int,
+        execute: bool = True,
+    ) -> dict[str, Any]:
+        """Place a SELL_CLOSE MARKET order — used for time-stop / EOD close."""
+        return await self.place_option_order(
+            account_id_key=account_id_key,
+            symbol=symbol, expiration_date=expiration_date,
+            strike=strike, call_or_put=call_or_put,
+            action="SELL_CLOSE",
+            quantity=quantity,
+            order_type="MARKET",
+            time_in_force="DAY",
+            preview_only=not execute,
+        )

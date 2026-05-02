@@ -148,6 +148,63 @@ After config + restart, you can ask Claude:
 | `et_open_positions_local` | Local DB view of open positions |
 | `et_renew_token` | Refresh OAuth token (within-day only) |
 
+## State machine (Phase 2.5 — May 2 evening)
+
+For each alert, the row in `paper_executions` traverses these states:
+
+```
+PENDING (entry order placed, awaiting fill)
+   ├── timeout > 60s → CANCELLED, exit_reason=NO_FILL
+   └── E-Trade reports filled → FILLED
+                                  ├── place TP (LIMIT SELL @ +50%)
+                                  └── place Stop (STOP SELL @ -30%)
+                                       ├── TP filled → CLOSED, exit_reason=TP, cancel Stop
+                                       ├── Stop filled → CLOSED, exit_reason=STOP, cancel TP
+                                       ├── time_stop reached (30min after fill) → cancel both, MARKET close, exit_reason=TIME_STOP
+                                       └── EOD reached (15:55 ET) → cancel both, MARKET close, exit_reason=EOD
+```
+
+The daemon polls every 15s and advances each row through the state
+machine. ALL state changes are reflected in `paper_executions.db` so
+the MCP can query current status.
+
+## ST auto-execution (Phase 2.5)
+
+ST qualified fires now auto-execute (was log-only in Phase 2):
+
+- **Strike**: ATM rounded to ticker grid (SPY/QQQ/IWM = $1, SPX = $5)
+- **Expiration**: today (0DTE thesis)
+- **Right**: CALL for BULLISH, PUT for BEARISH
+- **Limit price**: queried from E-Trade option ask + buffer; falls back
+  to $0.50 if quote unavailable
+
+If no quote is available (sandbox limitation), the entry uses a $0.50
+fallback limit. This is intentional — better to have an order placed
+that doesn't fill than no order at all.
+
+## Reconciliation on restart (Phase 2.5)
+
+On daemon startup, `reconcile_on_startup` runs automatically (skip with
+`--skip-reconcile`). It:
+
+1. Pulls all OPEN/EXECUTED/CANCELLED orders from E-Trade
+2. For each PENDING row in our DB: cross-references order_id
+   - OPEN in E-Trade → keep PENDING
+   - EXECUTED → mark FILLED (TP/Stop will be placed on next loop)
+   - CANCELLED → mark CANCELLED
+   - Missing → assume cancelled by E-Trade
+3. For each FILLED row without exit_reason: check if TP/Stop filled
+   while we were down → mark CLOSED appropriately
+4. Detects orphaned E-Trade orders (open but not in our DB) and warns
+
+This means you can restart the daemon mid-day and it picks up exactly
+where it left off without losing positions or double-placing orders.
+
+To run reconciliation only (no continuous loop):
+```
+python -m server.etrade_executor --account-id YOUR_KEY --reconcile-only
+```
+
 ## What this does NOT do
 
 - Does NOT trade real money by default (sandbox is the default; flip
@@ -156,6 +213,8 @@ After config + restart, you can ask Claude:
   validation layer
 - Does NOT enter into `paired_trades.db` (the primary forward-window
   metric on main). Comparison happens post-Stage-3 per the spec doc.
+- Does NOT cancel orphaned E-Trade orders on its own (only warns) —
+  if you have orders from other strategies, they're left alone.
 
 ## Troubleshooting
 
