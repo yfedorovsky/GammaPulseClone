@@ -1,16 +1,70 @@
 # v2 Detector — Pre-committed design conditional on audit results
 
-**Status: speculative blueprint, not for implementation. Pre-commits the
-design space so when the seven audits return results we know exactly
-which branches to walk and which to abandon.**
+**Status as of May 1 2026: audits run, decision tree walked, RETIRE
+branch fired on Test #1 FAIL. Most of v2 is off the table. One
+exception (spread gate) shipped per Item 1 of the May 1 implementation
+list. See `FINAL_INTERPRETATION.md` for the synthesis.**
 
-The whole point of writing this *before* the data is in: prevent the
-"oh look at this number, let me build a gate around it" reflex that
-data-snooped the v1 thresholds. By specifying the decision tree first,
-we either build what we already pre-committed to or we don't build at
-all — no silent threshold tuning between data and code.
+**Why this doc still matters**: the pre-commitment discipline is the
+asset. The decision tree was written BEFORE audit data existed. When
+microstructure profile FAILed at d=0.49 (just under the d=0.5 medium-
+effect threshold), the temptation was to relax the bar. We did not.
+The spec was honored; the strategy framework gets retired in its
+microstructure-distinctiveness framing. The gates may still have
+P&L-only edge that doesn't surface in feature distributions — that's
+what the forward paper-trade window exists to test.
 
-## Decision tree
+## Audit results, applied to the tree
+
+| Test | Pre-committed threshold | Actual | Action |
+|---|---|---|---|
+| 1 — Microstructure profile | any feature \|d\| ≥ 0.5 | max d=0.49 (volume) | **FAIL → RETIRE branch** |
+| 2 — OFI predictive (Cont 2014) | R² ≥ 0.05 | R²=0.0002 (max across 6 cells) | **FAIL → no OFI gate** |
+| 3 — VIX1D regime | ≥2 features K-W p<0.05 | 12/16 features p<0.05 | **PASS → vol regime carries info** |
+| 4 — Background distributions | (no verdict — provides thresholds) | 96k obs, percentile tables built | **OK** |
+| 5 — Trade-size cohorts | best \|corr\| > 0.3 AND others < 0.15 | small +0.32, medium +0.23, large +0.07 | **MIXED — no cohort weighting** |
+| 6 — Spread regime | normal-vs-high diff ≥ 30pp | 77pp diff (normal +63%, high -14%) | **PASS → build spread gate** |
+| 7 — Lead-lag | peak corr at lag ≠ 0, diff > 0.05 | peak at lag 0 (+0.36) | **FAIL → keep same-second cross-confirm** |
+| Gate 8 — LR vs bar proxy | \|LR corr\| > 0.3 AND > bar by ≥ 0.1 | LR +0.30, bar +0.33 | **TIE/BAR_WINS → don't replace Gate 8** |
+
+Three INDEPENDENT v2 spending paths killed (Lee-Ready, OFI, intraday
+VIX1D). One PASS that justifies a single-line addition (spread gate).
+Rest is dormant.
+
+**Discipline note for future iterations**: Test #1's d=0.49 was
+borderline. We did NOT relax the d≥0.5 threshold. Per Perplexity:
+"Changing your mind after seeing 0.49 is textbook researcher degrees
+of freedom. If you relax the criterion now, you've just invalidated
+the one thing you're doing correctly: pre-specifying."
+
+If a future audit produces a similarly borderline result, the same
+discipline applies. The protocol survives only if we honor it
+exactly as written, not as we wish it had been written.
+
+## What shipped from this spec
+
+- **Spread preflight gate** (Item 1, May 1): static historical p90 lookup
+  per (ticker × TOD) from `background_distributions.md`. Live wiring
+  prerequisite (Tradier bid/ask extraction) documented in
+  `BACKLOG.md`. Gate logic itself is in `server/structural_turn.py`.
+
+- **Iron condor passive logging** (Item 3, May 1): `server/paired_trades.py`
+  extended to log ATM and OTM iron condor mid prices at fire time +
+  EOD settlement. Runs alongside the long-premium falsification at no
+  extra production risk. After forward window, compare credit-structure
+  vs long-premium EOD on the same fires (Perplexity-round-2 design).
+
+## What's NOT shipping from this spec (per audit verdicts)
+
+- Gate 5 NCP rebuild (no cohort weighting — Test #5 MIXED)
+- Gate 8 v2 (no Lee-Ready replacement — TIE/BAR_WINS)
+- New OFI gate (Test #2 FAIL, R²≈0)
+- New microprice gate (Test #1 FAIL drives the branch)
+- VIX1D-conditional position sizing (Test #3 PASS, but Test #1 RETIRE
+  branch trumps; revisit only after forward CI delivers)
+- Lead-lag-aware cross-confirm (Test #7 FAIL)
+
+## Decision tree (original)
 
 The seven audits and their pre-committed implications:
 

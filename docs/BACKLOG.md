@@ -17,6 +17,98 @@ so we have a record.
 
 ---
 
+## Live spread feed wiring (PREREQUISITE for the spread gate)
+
+**Why**: Test #6 (May 1 audit) showed a 77pp difference between fires
+during normal-spread vs high-spread conditions. Both ChatGPT and
+Perplexity-round-2 endorsed adding a static-historical-p90 spread gate
+for v1. Pre-committed thresholds are in [background_distributions.md]
+(research/background_distributions.md) per (ticker × TOD bucket).
+
+**The gate logic itself is implemented** in `server/structural_turn.py`
+as `_gate_spread_regime`. It accepts `spread_30m_mean` as input and
+compares to the static p90 lookup. Fires that occur during the gate's
+unavailability (e.g., before the 30-min window has accrued data) are
+allowed through.
+
+**Blocker**: the live worker pulls 1-min OHLCV from yfinance — no
+bid/ask. To populate `spread_30m_mean` per ticker per minute, we need:
+
+1. Extend `server/tradier.py`'s `quotes_full()` to extract `bid` and
+   `ask` fields from Tradier's `/markets/quotes` response (they're in
+   the JSON but not currently exposed).
+2. Add a periodic spread-tracker task in the live worker that fetches
+   bid/ask every ~30s for each watched ticker.
+3. Maintain a rolling 30-min spread window (deque per ticker).
+4. At fire time, compute mean spread of that window and pass to
+   `_gate_spread_regime`.
+
+**Effort**: ~2-3 hours. Once wired, the gate becomes active and starts
+filtering high-spread fires. Until then, the gate is dormant — fires
+proceed exactly as in the current frozen v1.
+
+**When to do**: not blocking the forward paper-trade window (which
+runs without the spread gate). Reasonable to wire up in week 2-3 of
+the 6-week forward window so the gate's behavior on FRESH fires can
+be measured separately from the in-sample Test #6 finding.
+
+---
+
+## GEX boundary-behavior audit (separate from credit-spread variant)
+
+**Why**: ChatGPT-round-2 proposed testing the spatial hypothesis
+("do GEX levels actually contain price?") independently from any
+strategy variant. Cleaner than going straight to credit-spread MVP.
+
+**What to build**: for each cached fire-day in our existing 6-month
+Databento window, record per-fire:
+- spot at fire
+- nearest GEX level (king / floor / ceiling)
+- distance to level
+- 30-min max breach beyond level
+- 60-min max breach beyond level
+- EOD close relative to level
+- whether level reclaimed
+- whether level acted as boundary
+
+Compare: do GEX levels contain price BETTER than random ATM-rounded
+levels? If yes → boundary hypothesis is real, credit-spread variant
+worth pursuing. If no → boundaries are just price points, the
+"spatial reframe" idea was wrong.
+
+**Effort**: ~1-2 hours. Reuses Databento cache + paired_trades
+infrastructure. Standalone audit, doesn't touch production.
+
+**When to do**: after forward window delivers a verdict. If forward
+v1 retires, this becomes the next research direction.
+
+---
+
+## GEX-as-spatial-boundary credit-spread strategy variant
+
+**Why**: Gemini-round-1 reframe — use GEX levels as price boundaries
+to fade structural liquidity, NOT as timing triggers for long-premium
+directional bets. Gemini-round-2 proposed a lightweight MVP: append
+two columns (ATM iron condor mid, OTM iron condor mid at fire time +
+EOD settlement) to the forward paired-trades log.
+
+**Status**: MVP wired into `server/paired_trades.py` per Item 3 of the
+May 1 implementation list. Iron condor mid prices logged passively
+alongside the long-premium falsification. After forward window
+completes, compare credit-structure EOD vs long-premium EOD on the
+same fires.
+
+**Conditions to pivot to full variant**: BOTH must hold:
+1. GEX boundary-behavior audit passes (above)
+2. Iron condor MVP shows credit-structure wins on DIFFERENT days
+   than long-premium (Perplexity-round-2 framing — if same days, just
+   reinventing the regime filter; if different days, real pivot)
+
+**Effort if pivoting**: 16-25 hours (separate strategy, own
+falsification protocol, own forward window).
+
+---
+
 ## Tape Regime Classifier
 
 **Why**: The Apr 29 workflow rule (0DTE Engine alert → wait for Structural
