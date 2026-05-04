@@ -497,10 +497,17 @@ def _extract_fill_price(order: dict[str, Any]) -> float | None:
     return None
 
 
+# Module-level state for rate-limiting error logs (every 15min instead of 15s)
+_LAST_ORDER_ERR_TS = 0
+_ORDER_ERR_LOG_INTERVAL_SEC = 15 * 60
+
+
 async def manage_open_positions(
     client: ETradeClient, account_id_key: str,
 ) -> None:
     """Drive each open paper_executions row through its state machine."""
+    global _LAST_ORDER_ERR_TS
+
     # Fetch executed + open orders ONCE per cycle
     try:
         executed = await client.list_orders(account_id_key, status="EXECUTED")
@@ -508,7 +515,14 @@ async def manage_open_positions(
             str((o.get("orderId") or o.get("OrderId"))): o for o in executed
         }
     except Exception as e:
-        print(f"  [exec] failed to list executed orders: {e}", flush=True)
+        # Rate-limit: only log this error once per 15min so we don't spam
+        # the terminal every 15s. E-Trade sandbox /orders endpoint is
+        # famously flaky and often 500s on no-history accounts.
+        now_ts = int(time.time())
+        if now_ts - _LAST_ORDER_ERR_TS > _ORDER_ERR_LOG_INTERVAL_SEC:
+            print(f"  [exec] failed to list executed orders: {e} "
+                  f"(suppressing repeat errors for 15min)", flush=True)
+            _LAST_ORDER_ERR_TS = now_ts
         executed_by_id = {}
 
     now = int(time.time())

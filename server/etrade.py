@@ -543,12 +543,37 @@ class ETradeClient:
         }
 
     async def list_orders(self, account_id_key: str,
-                          status: str = "OPEN") -> list[dict[str, Any]]:
-        """List orders by status (OPEN / EXECUTED / CANCELLED / etc)."""
-        data = await self._request(
-            "GET", f"/v1/accounts/{account_id_key}/orders",
-            params={"status": status},
-        )
+                          status: str = "OPEN",
+                          days_back: int = 7) -> list[dict[str, Any]]:
+        """List orders by status (OPEN / EXECUTED / CANCELLED / etc).
+
+        E-Trade sandbox is finicky about this endpoint — it commonly
+        returns 500 with code=100 on accounts with no order history,
+        or when fromDate/toDate are missing. We always pass count + a
+        date window to maximize compatibility.
+        """
+        from datetime import datetime as _dt, timedelta as _td
+        end = _dt.now()
+        start = end - _td(days=days_back)
+        params = {
+            "status": status,
+            "count": 100,
+            "fromDate": start.strftime("%m%d%Y"),
+            "toDate": end.strftime("%m%d%Y"),
+        }
+        try:
+            data = await self._request(
+                "GET", f"/v1/accounts/{account_id_key}/orders",
+                params=params,
+            )
+        except RuntimeError as e:
+            # E-Trade sandbox returns 500 on empty-order-history accounts;
+            # gracefully treat as "no orders" rather than propagating.
+            msg = str(e)
+            if "500" in msg and ("not currently available" in msg.lower()
+                                 or "code>100<" in msg.lower()):
+                return []
+            raise
         orders_resp = (data or {}).get("OrdersResponse", {})
         orders = orders_resp.get("Order") or []
         if isinstance(orders, dict):
