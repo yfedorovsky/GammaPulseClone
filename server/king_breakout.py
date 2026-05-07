@@ -439,6 +439,179 @@ def load_recent(
 # ── Snapshot source adapter ───────────────────────────────────────
 
 
+# ── Live detection loop (added 2026-05-06) ───────────────────────
+#
+# Polls the worker's in-memory cache for spot-crosses-king-from-below
+# events on each scan cycle. Sibling to king_migration.run_..._live_loop
+# but triggers on the breakout pattern (spot through stable king) instead
+# of the migration pattern (king itself jumping).
+#
+# Missed DELL 2026-05-06 9:40 AM cross of king $220 ($216 → $222.20)
+# because the breakout detector was backfill-only.
+#
+# Design:
+#  - Per-ticker FULL prior state cached (not just spot/king — we need
+#    the prior pos_gex/neg_gex/net_delta/signal for the `before` Snapshot,
+#    otherwise gates that compare before vs after collapse to identity).
+#    See king_migration live-loop bug 2026-05-06 for the cautionary tale.
+#  - On each tick: build current Snapshot, compare spot/king to prior.
+#    If prev.spot < prev.king and cur.spot >= cur.king → qualify gates.
+#  - Persist regardless; Telegram-fire only if qualified + cooldown elapsed.
+
+import asyncio
+
+
+_live_last_state: dict[str, Snapshot] = {}  # ticker -> last full Snapshot
+_live_last_fired: dict[str, int] = {}       # ticker -> ts of last Telegram fire
+LIVE_FIRE_COOLDOWN_SEC = 60 * 60  # 1 hour per ticker
+
+
+def _snapshot_from_cache_state(ticker: str, state: dict, ts: int) -> Snapshot | None:
+    spot = state.get("actual_spot") or state.get("_spot")
+    king = state.get("king")
+    if not spot or not king:
+        return None
+    return Snapshot(
+        ticker=ticker, ts=ts,
+        spot=spot, king=king,
+        floor=state.get("floor"), ceiling=state.get("ceiling"),
+        pos_gex=state.get("pos_gex"), neg_gex=state.get("neg_gex"),
+        net_delta=state.get("net_delta"), signal=state.get("signal") or "",
+    )
+
+
+def _stable_duration_from_history(
+    history: list[Snapshot], current_king: float, now_ts: int
+) -> int:
+    """Walk backward through prior snapshots; return seconds the king has
+    held its current value. Cache history is short (one prior snap), so
+    fall back to the in-memory tracking. Returns 0 if unknown."""
+    if not history:
+        return 0
+    for snap in reversed(history):
+        if snap.king != current_king:
+            return now_ts - snap.ts
+    return now_ts - history[0].ts
+
+
+_live_king_history: dict[str, list[tuple[int, float]]] = {}  # ticker -> [(ts, king),...]
+_LIVE_KING_HISTORY_LIMIT = 50  # ~25 minutes at 30s ticks
+
+
+async def _send_king_breakout_telegram(ev: BreakoutEvent) -> None:
+    from .alert_gates import should_send_alert
+    ok, reason = should_send_alert()
+    if not ok:
+        print(f"[KING_BRK] gated ({reason}) — {ev.ticker} ${ev.after.spot:.2f} through ${ev.after.king:.0f}")
+        return
+    try:
+        from .telegram import send
+    except ImportError:
+        return
+    text = (
+        f"🚀 KING BREAKOUT: {ev.ticker}\n"
+        f"Spot ${ev.before.spot:.2f} → ${ev.after.spot:.2f} through king ${ev.after.king:.0f}\n"
+        f"Pos/Neg: {ev.after.ratio:.2f}  |  Net Δ: {(ev.after.net_delta or 0)/1e6:.1f}M\n"
+        f"King stable {ev.king_stable_sec//3600}h{(ev.king_stable_sec%3600)//60}m\n"
+        f"\n"
+        f"Play: buy ${ev.after.king:.0f} call, 5-10 DTE, "
+        f"stop on spot < ${ev.after.king * 0.99:.2f}"
+    )
+    try:
+        await send(text, ticker=ev.ticker)
+    except Exception as e:
+        print(f"[KING_BRK] telegram failed: {e}")
+
+
+async def _check_ticker_live(ticker: str, state: dict) -> None:
+    now_ts = int(time.time())
+    cur = _snapshot_from_cache_state(ticker, state, now_ts)
+    if cur is None:
+        return
+
+    # Track king history for stability calc (cheap, bounded).
+    hist = _live_king_history.setdefault(ticker, [])
+    if not hist or hist[-1][1] != cur.king:
+        hist.append((cur.ts, cur.king))
+        if len(hist) > _LIVE_KING_HISTORY_LIMIT:
+            del hist[: len(hist) - _LIVE_KING_HISTORY_LIMIT]
+
+    prev = _live_last_state.get(ticker)
+    _live_last_state[ticker] = cur
+
+    if prev is None:
+        return
+    if prev.spot is None or prev.king is None or cur.spot is None or cur.king is None:
+        return
+
+    # Detect crossing: prev below king, cur at or above king.
+    if not (prev.spot < prev.king and cur.spot >= cur.king):
+        return
+
+    # King-stability lookup. Find the earliest entry in history that has
+    # the same king as `cur` and isn't followed by a different king.
+    stable_sec = 0
+    for ts, k in hist:
+        if k == cur.king:
+            stable_sec = cur.ts - ts
+            break
+
+    ev = _qualify_gates(prev, cur, stable_sec)
+
+    try:
+        persist_event(ev)
+    except Exception as e:
+        print(f"[KING_BRK] persist error {ticker}: {e}")
+
+    if ev.qualified:
+        last_fire = _live_last_fired.get(ticker, 0)
+        if now_ts - last_fire >= LIVE_FIRE_COOLDOWN_SEC:
+            _live_last_fired[ticker] = now_ts
+            print(
+                f"[KING_BRK] QUALIFIED {ticker}  "
+                f"spot ${prev.spot:.2f}->${cur.spot:.2f} king ${cur.king:.0f} "
+                f"ratio {cur.ratio:.2f} stable {stable_sec//60}m"
+            )
+            asyncio.create_task(_send_king_breakout_telegram(ev))
+
+
+async def run_king_breakout_live_loop(stop_event) -> None:
+    """Background task — poll cache every 30s for spot-through-king events.
+
+    Integration: started from main.py lifespan alongside king_migration.
+    """
+    from .cache import cache
+
+    print("[KING_BRK] live loop starting — interval=30s")
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=60.0)
+        return
+    except asyncio.TimeoutError:
+        pass
+
+    while not stop_event.is_set():
+        try:
+            snapshot = await cache.snapshot()
+            for ticker, state in snapshot.items():
+                try:
+                    await _check_ticker_live(ticker, state)
+                except Exception as e:
+                    print(f"[KING_BRK] {ticker} check error: {e}")
+        except Exception as e:
+            print(f"[KING_BRK] loop error: {e}")
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=30.0)
+            break
+        except asyncio.TimeoutError:
+            pass
+
+    print("[KING_BRK] live loop stopped")
+
+
+# ── Snapshot source adapter ───────────────────────────────────────
+
+
 def load_snapshots_from_db(
     snapshot_db_path: str, ticker: str, since_ts: int = 0,
 ) -> list[Snapshot]:
