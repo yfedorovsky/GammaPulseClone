@@ -21,9 +21,9 @@ squeeze as dealers must chase spot higher.
 ## The 5-gate qualifier
 
   1. signal == MAGNET UP (call wall target above spot)
-  2. king migrated upward by ≥ MIN_MIGRATION_PTS since last snapshot
-  3. pos/neg GEX ratio ≥ RATIO_GATE before migration (mature structure)
-  4. new floor ≥ old king (floor-floor leapfrog confirms real migration)
+  2. king migrated upward by >= MIN_MIGRATION_PTS since last snapshot
+  3. pos/neg GEX ratio >= RATIO_GATE before migration (mature structure)
+  4. new floor >= old king (floor-floor leapfrog confirms real migration)
   5. net dealer delta growing (dealers increasingly short → forced chase)
 
 ## Intended use
@@ -51,7 +51,7 @@ MIN_MIGRATION_PTS = 5
 
 # Minimum pos/neg GEX ratio before migration. Below this the structure
 # is too immature to trust the call-side accumulation (could be transient).
-# Was 4.0 empirically — all 5 ARM migrations had pre-ratio ≥ 2.85.
+# Was 4.0 empirically — all 5 ARM migrations had pre-ratio >= 2.85.
 # Using 2.5 to catch the weekend-reset case (Mir roll #2 was 2.85 → 5.36).
 RATIO_GATE = 2.5
 
@@ -60,6 +60,11 @@ RATIO_GATE = 2.5
 # prior stable snapshot, not 24h ago. 4 hours captures overnight and
 # pre-market while excluding cross-day baseline drift.
 PREV_LOOKBACK_SEC = 4 * 3600
+
+# De-migration (DOWN) threshold — bearish gamma unwind. Spec: drop is
+# "significant" when >= 1 strike spacing OR >= 2% of spot. We take the
+# smaller of the two so either condition satisfies the test.
+DOWN_DROP_PCT = 0.02
 
 # Storage
 KING_MIGRATION_DB_PATH = os.environ.get("KING_MIGRATION_DB_PATH", "./king_migrations.db")
@@ -90,11 +95,13 @@ CREATE TABLE IF NOT EXISTS king_migrations (
   gate_net_delta_growing INTEGER,
   qualified INTEGER NOT NULL,
   qualified_reasons TEXT,
+  migration_type TEXT NOT NULL DEFAULT 'UP',
   UNIQUE(ticker, migration_ts)
 );
 CREATE INDEX IF NOT EXISTS idx_kmig_ts ON king_migrations(migration_ts);
 CREATE INDEX IF NOT EXISTS idx_kmig_ticker ON king_migrations(ticker, migration_ts);
 CREATE INDEX IF NOT EXISTS idx_kmig_qualified ON king_migrations(qualified, migration_ts);
+CREATE INDEX IF NOT EXISTS idx_kmig_type ON king_migrations(migration_type, migration_ts);
 """
 
 
@@ -124,13 +131,20 @@ class Snapshot:
 
 @dataclass
 class MigrationEvent:
-    """One qualifying or non-qualifying king migration."""
+    """One qualifying or non-qualifying king migration.
+
+    `migration_type` is 'UP' (institutional gamma climb) or 'DOWN'
+    (gamma unwind / king retreat). UP events run the 5-gate qualifier;
+    DOWN events qualify on a single magnitude check (gate_migration_min).
+    """
     ticker: str
     migration_ts: int
     before: Snapshot
     after: Snapshot
+    migration_type: str = "UP"  # 'UP' | 'DOWN'
 
-    # Gate outcomes (True if passed)
+    # Gate outcomes (True if passed). UP uses all five; DOWN uses only
+    # gate_migration_min and leaves the rest False/N-A.
     gate_signal_magnet_up: bool = False
     gate_migration_min: bool = False
     gate_ratio: bool = False
@@ -140,6 +154,8 @@ class MigrationEvent:
 
     @property
     def qualified(self) -> bool:
+        if self.migration_type == "DOWN":
+            return self.gate_migration_min
         return all([
             self.gate_signal_magnet_up,
             self.gate_migration_min,
@@ -179,10 +195,51 @@ class MigrationEvent:
             "gate_net_delta_growing": int(self.gate_net_delta_growing),
             "qualified": int(self.qualified),
             "qualified_reasons": " | ".join(self.reasons),
+            "migration_type": self.migration_type,
         }
 
 
 # ── Core detection ────────────────────────────────────────────────
+
+
+def _down_threshold(ticker: str, spot: float | None) -> float:
+    """Magnitude (in dollars) a king drop must clear to count as a
+    de-migration. Spec: >= 1 strike spacing OR >= 2% of spot — we use the
+    smaller so either condition satisfies."""
+    s = float(spot or 0)
+    try:
+        from .root_config import get_strike_step
+        step = get_strike_step(ticker, s) if s > 0 else 1.0
+    except Exception:
+        step = 1.0
+    pct_floor = DOWN_DROP_PCT * s if s > 0 else step
+    return min(step, pct_floor) if pct_floor > 0 else step
+
+
+def _qualify_gates_down(before: Snapshot, after: Snapshot) -> MigrationEvent:
+    """De-migration qualifier — single magnitude gate. A DOWN event
+    is recorded whenever king retreats by >= 1 strike spacing OR >= 2%
+    of spot. Other gate columns stay False/0 for downstream analysis."""
+    ev = MigrationEvent(
+        ticker=after.ticker,
+        migration_ts=after.ts,
+        before=before,
+        after=after,
+        migration_type="DOWN",
+    )
+    drop = -ev.delta_pts  # positive number for retreat magnitude
+    threshold = _down_threshold(after.ticker, after.spot)
+    ev.gate_migration_min = drop >= threshold
+    pct = (drop / after.spot * 100.0) if (after.spot or 0) > 0 else 0.0
+    if ev.gate_migration_min:
+        ev.reasons.append(
+            f"retreat -${drop:.2f} ({pct:.1f}%) >= threshold ${threshold:.2f}"
+        )
+    else:
+        ev.reasons.append(
+            f"retreat -${drop:.2f} ({pct:.1f}%) below threshold ${threshold:.2f}"
+        )
+    return ev
 
 
 def _qualify_gates(before: Snapshot, after: Snapshot) -> MigrationEvent:
@@ -192,6 +249,7 @@ def _qualify_gates(before: Snapshot, after: Snapshot) -> MigrationEvent:
         migration_ts=after.ts,
         before=before,
         after=after,
+        migration_type="UP",
     )
 
     # 1. Signal == MAGNET UP on the after-snapshot (the new magnet is active)
@@ -199,7 +257,7 @@ def _qualify_gates(before: Snapshot, after: Snapshot) -> MigrationEvent:
     if not ev.gate_signal_magnet_up:
         ev.reasons.append(f"signal={after.signal} not MAGNET UP")
 
-    # 2. King jump ≥ MIN_MIGRATION_PTS
+    # 2. King jump >= MIN_MIGRATION_PTS
     dp = ev.delta_pts
     ev.gate_migration_min = dp >= MIN_MIGRATION_PTS
     if not ev.gate_migration_min:
@@ -220,7 +278,7 @@ def _qualify_gates(before: Snapshot, after: Snapshot) -> MigrationEvent:
     # at $155 (didn't leapfrog) — rejected. 4/20 11:26: floor went $160→$170
     # (leapfrog). This is the key "real migration" confirmation.
     #
-    # Relaxed threshold: new_floor ≥ old_king - 5 (tolerates step-floor by
+    # Relaxed threshold: new_floor >= old_king - 5 (tolerates step-floor by
     # one level). Strict equality (new_floor >= old_king) is too strict:
     # ARM 4/22 10:18 had old_king=$180, new_floor=$180 — exactly meets.
     # ARM 4/20 11:26 had old_king=$170, new_floor=$170 — also exactly meets.
@@ -256,7 +314,7 @@ def detect_migrations_for_ticker(
     """Scan a time-ordered list of snapshots for king jumps.
 
     Algorithm: walk forward. For each row, compare king to prior row's king.
-    If it moved upward ≥ MIN_MIGRATION_PTS AND prior row was within
+    If it moved upward >= MIN_MIGRATION_PTS AND prior row was within
     PREV_LOOKBACK_SEC, qualify the event via all 5 gates.
 
     Returns all migration events (qualified + non-qualified) for inspection.
@@ -269,9 +327,11 @@ def detect_migrations_for_ticker(
             continue
         if (cur.ts - prev.ts) > PREV_LOOKBACK_SEC:
             continue
-        if cur.king - prev.king < MIN_MIGRATION_PTS:
-            continue
-        events.append(_qualify_gates(prev, cur))
+        delta = cur.king - prev.king
+        if delta >= MIN_MIGRATION_PTS:
+            events.append(_qualify_gates(prev, cur))
+        elif delta < 0 and -delta >= _down_threshold(ticker, cur.spot):
+            events.append(_qualify_gates_down(prev, cur))
     return events
 
 
@@ -287,6 +347,18 @@ def _ensure_schema() -> None:
         return
     conn = sqlite3.connect(KING_MIGRATION_DB_PATH)
     try:
+        # Migrate first so the executescript's idx_kmig_type CREATE INDEX
+        # below sees migration_type on pre-existing tables.
+        table_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='king_migrations'"
+        ).fetchone()
+        if table_exists:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(king_migrations)")}
+            if "migration_type" not in cols:
+                conn.execute(
+                    "ALTER TABLE king_migrations "
+                    "ADD COLUMN migration_type TEXT NOT NULL DEFAULT 'UP'"
+                )
         conn.executescript(KING_MIGRATION_SCHEMA)
         conn.commit()
     finally:
@@ -310,7 +382,7 @@ def persist_event(ev: MigrationEvent) -> None:
               net_delta_before, net_delta_after,
               gate_signal_magnet_up, gate_migration_min, gate_ratio,
               gate_floor_leapfrog, gate_net_delta_growing,
-              qualified, qualified_reasons
+              qualified, qualified_reasons, migration_type
             ) VALUES (
               ?, ?, ?,
               ?, ?, ?,
@@ -319,7 +391,7 @@ def persist_event(ev: MigrationEvent) -> None:
               ?, ?,
               ?, ?, ?,
               ?, ?,
-              ?, ?
+              ?, ?, ?
             )
             """,
             (
@@ -333,6 +405,7 @@ def persist_event(ev: MigrationEvent) -> None:
                 row["gate_ratio"], row["gate_floor_leapfrog"],
                 row["gate_net_delta_growing"],
                 row["qualified"], row["qualified_reasons"],
+                row["migration_type"],
             ),
         )
         conn.commit()
@@ -431,8 +504,9 @@ import asyncio
 # are rare and a missed one isn't catastrophic). Persistence via sqlite
 # means any fired events survive.
 _live_last_king: dict[str, tuple[float, int]] = {}  # ticker -> (king, ts)
-_live_last_fired: dict[str, int] = {}  # ticker -> ts of last Telegram fire
-LIVE_FIRE_COOLDOWN_SEC = 60 * 60  # 1 hour per ticker
+_live_last_fired: dict[str, int] = {}  # ticker -> ts of last UP fire
+_live_last_fired_down: dict[str, int] = {}  # ticker -> ts of last DOWN fire
+LIVE_FIRE_COOLDOWN_SEC = 60 * 60  # 1 hour per ticker (per direction)
 
 
 async def _send_king_migration_telegram(ev: "MigrationEvent") -> None:
@@ -456,6 +530,32 @@ async def _send_king_migration_telegram(ev: "MigrationEvent") -> None:
         f"\n"
         f"Play: buy ${ev.after.king:.0f} call, 5-10 DTE, stop on spot < ${ev.after.floor or 0:.0f}\n"
         f"Pattern docs: new king = new magnet target"
+    )
+    try:
+        await send(text, ticker=ev.ticker)
+    except Exception as e:
+        print(f"[KING_MIG] telegram failed: {e}")
+
+
+async def _send_king_demigration_telegram(ev: "MigrationEvent") -> None:
+    """Push a king de-migration (retreat) Telegram alert — bearish unwind."""
+    from .alert_gates import should_send_alert
+    ok, reason = should_send_alert()
+    if not ok:
+        print(f"[KING_MIG] gated ({reason}) — DOWN {ev.ticker} ${ev.before.king:.0f}->${ev.after.king:.0f}")
+        return
+    try:
+        from .telegram import send
+    except ImportError:
+        return
+    drop = -ev.delta_pts
+    pct = (drop / ev.before.king * 100.0) if (ev.before.king or 0) > 0 else 0.0
+    text = (
+        f"🔻 KING RETREAT: {ev.ticker} king moved "
+        f"${ev.before.king:.0f} → ${ev.after.king:.0f} (-{pct:.1f}%) — bearish gamma unwind\n"
+        f"Spot: ${ev.after.spot:.2f}  |  Floor: ${ev.before.floor or 0:.0f} → ${ev.after.floor or 0:.0f}\n"
+        f"Pos/Neg: {ev.before.ratio:.2f} → {ev.after.ratio:.2f}\n"
+        f"Net Δ: {(ev.before.net_delta or 0)/1e6:.1f}M → {(ev.after.net_delta or 0)/1e6:.1f}M"
     )
     try:
         await send(text, ticker=ev.ticker)
@@ -491,13 +591,20 @@ async def _check_ticker_live(ticker: str, state: dict) -> None:
         _live_last_king[ticker] = (king, now_ts)
         return
 
-    # King changed. Only care about upward migrations meeting the jump.
+    # Classify direction. UP requires the existing >= MIN_MIGRATION_PTS
+    # jump. DOWN requires retreat >= min(strike_step, 2% spot).
     delta_pts = king - last_king
-    if delta_pts < MIN_MIGRATION_PTS:
+    direction: str | None = None
+    if delta_pts >= MIN_MIGRATION_PTS:
+        direction = "UP"
+    elif delta_pts < 0 and -delta_pts >= _down_threshold(ticker, spot):
+        direction = "DOWN"
+
+    if direction is None:
         _live_last_king[ticker] = (king, now_ts)
         return
 
-    # Build Snapshot pair and qualify
+    # Build Snapshot pair and qualify per direction
     before = Snapshot(
         ticker=ticker, ts=last_ts, spot=spot, king=last_king,
         floor=floor, ceiling=ceiling, pos_gex=pos_gex, neg_gex=neg_gex,
@@ -508,7 +615,7 @@ async def _check_ticker_live(ticker: str, state: dict) -> None:
         floor=floor, ceiling=ceiling, pos_gex=pos_gex, neg_gex=neg_gex,
         net_delta=net_delta, signal=signal,
     )
-    ev = _qualify_gates(before, after)
+    ev = _qualify_gates(before, after) if direction == "UP" else _qualify_gates_down(before, after)
 
     # Persist regardless (qualified or not — useful for analysis)
     try:
@@ -516,17 +623,21 @@ async def _check_ticker_live(ticker: str, state: dict) -> None:
     except Exception as e:
         print(f"[KING_MIG] persist error {ticker}: {e}")
 
-    # Fire only on qualified + cooldown elapsed
+    # Fire only on qualified + cooldown elapsed (separate cooldown per direction)
     if ev.qualified:
-        last_fire = _live_last_fired.get(ticker, 0)
+        cooldown_map = _live_last_fired if direction == "UP" else _live_last_fired_down
+        last_fire = cooldown_map.get(ticker, 0)
         if now_ts - last_fire >= LIVE_FIRE_COOLDOWN_SEC:
-            _live_last_fired[ticker] = now_ts
+            cooldown_map[ticker] = now_ts
             print(
-                f"[KING_MIG] QUALIFIED {ticker}  "
+                f"[KING_MIG] QUALIFIED {direction} {ticker}  "
                 f"${last_king:.0f}->${king:.0f} spot=${spot:.2f} "
                 f"ratio={before.ratio:.2f}->{after.ratio:.2f}"
             )
-            asyncio.create_task(_send_king_migration_telegram(ev))
+            if direction == "UP":
+                asyncio.create_task(_send_king_migration_telegram(ev))
+            else:
+                asyncio.create_task(_send_king_demigration_telegram(ev))
 
     _live_last_king[ticker] = (king, now_ts)
 
