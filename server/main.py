@@ -59,6 +59,7 @@ _net_flow_alert_task: asyncio.Task | None = None
 _net_flow_fast_task: asyncio.Task | None = None
 _zero_dte_task: asyncio.Task | None = None
 _king_mig_task: asyncio.Task | None = None
+_king_brk_task: asyncio.Task | None = None
 _floor_mig_task: asyncio.Task | None = None
 _structural_turn_task: asyncio.Task | None = None
 
@@ -139,9 +140,15 @@ async def lifespan(app: FastAPI):
     # King migration live detector — fires Telegram when +King jumps
     # (structural runner signal, added 2026-04-24 after missing Mir's
     # ARM 250C migration at 9:35 AM when detector was backfill-only).
-    global _king_mig_task
+    global _king_mig_task, _king_brk_task
     from .king_migration import run_king_migration_live_loop
     _king_mig_task = asyncio.create_task(run_king_migration_live_loop(_stop))
+    # King breakout live detector — fires Telegram when spot crosses a
+    # stable +King from below (the OTHER half of the runner trigger,
+    # missed DELL 2026-05-06 9:40 ET cross of $220 because detector was
+    # backfill-only).
+    from .king_breakout import run_king_breakout_live_loop
+    _king_brk_task = asyncio.create_task(run_king_breakout_live_loop(_stop))
     # Floor migration + Structural Turn detectors (Apr 28 — shadow mode).
     # Catches the QQQ 13:30 floor-reclaim pattern + 5-gate structural-turn
     # synthesis that today's audit identified as the trade of the day.
@@ -179,7 +186,7 @@ async def lifespan(app: FastAPI):
         _stop.set()
         await streamer.stop()
         await db.stop()  # Drain write queue before shutdown
-        all_tasks = [_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task, _priority_task, _net_flow_task, _net_flow_alert_task, _net_flow_fast_task, _zero_dte_task, _king_mig_task, _floor_mig_task, _structural_turn_task]
+        all_tasks = [_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task, _priority_task, _net_flow_task, _net_flow_alert_task, _net_flow_fast_task, _zero_dte_task, _king_mig_task, _king_brk_task, _floor_mig_task, _structural_turn_task]
         for task in all_tasks:
             if task:
                 try:
