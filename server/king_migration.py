@@ -292,17 +292,30 @@ def _qualify_gates(before: Snapshot, after: Snapshot) -> MigrationEvent:
     else:
         ev.reasons.append(f"floor-leapfrog ${new_floor:.0f}")
 
-    # 5. Net delta growing — dealers getting shorter = forced chase
+    # 5. Net delta growing — dealers getting shorter = forced chase.
     # Both must be positive AND after > before. Zero or negative = no signal.
+    #
+    # Mature-structure bypass (added 2026-05-06 after missing DELL $220→$240
+    # at 13:17 ET): when before.ratio ≥ 5, the call wall is already so
+    # one-sided that demanding strictly-growing dealer delta is overkill —
+    # the migration alone is the trigger. Without this bypass, DELL's
+    # pre_ratio 11.63 + floor-leapfrog migration was rejected.
     nd_b = before.net_delta or 0
     nd_a = after.net_delta or 0
-    ev.gate_net_delta_growing = nd_a > nd_b and nd_a > 0
-    if not ev.gate_net_delta_growing:
+    if before.ratio >= 5.0 and nd_a > 0:
+        ev.gate_net_delta_growing = True
         ev.reasons.append(
-            f"net_delta {nd_b/1e6:.1f}M→{nd_a/1e6:.1f}M not growing"
+            f"net_delta {nd_b/1e6:.1f}M→{nd_a/1e6:.1f}M "
+            f"(bypass: pre-ratio {before.ratio:.1f} ≥ 5)"
         )
     else:
-        ev.reasons.append(f"net_delta {nd_b/1e6:.1f}M→{nd_a/1e6:.1f}M (+{(nd_a-nd_b)/1e6:.1f}M)")
+        ev.gate_net_delta_growing = nd_a > nd_b and nd_a > 0
+        if not ev.gate_net_delta_growing:
+            ev.reasons.append(
+                f"net_delta {nd_b/1e6:.1f}M→{nd_a/1e6:.1f}M not growing"
+            )
+        else:
+            ev.reasons.append(f"net_delta {nd_b/1e6:.1f}M→{nd_a/1e6:.1f}M (+{(nd_a-nd_b)/1e6:.1f}M)")
 
     return ev
 
@@ -503,7 +516,13 @@ import asyncio
 # Module-scope state — resets on process restart (acceptable; migrations
 # are rare and a missed one isn't catastrophic). Persistence via sqlite
 # means any fired events survive.
-_live_last_king: dict[str, tuple[float, int]] = {}  # ticker -> (king, ts)
+#
+# 2026-05-06: was tracking only the prior (king, ts). The `before` Snapshot
+# was then built using the CURRENT spot/ratio/net_delta with the prior king,
+# so before == after for every gate that compared the two. DELL $220→$240
+# migration showed `net_delta 11.9M→11.9M not growing` because both values
+# were the same cache read. Fixed by storing the full prior Snapshot.
+_live_last_state: dict[str, "Snapshot"] = {}  # ticker -> last full Snapshot
 _live_last_fired: dict[str, int] = {}  # ticker -> ts of last UP fire
 _live_last_fired_down: dict[str, int] = {}  # ticker -> ts of last DOWN fire
 LIVE_FIRE_COOLDOWN_SEC = 60 * 60  # 1 hour per ticker (per direction)
@@ -564,36 +583,35 @@ async def _send_king_demigration_telegram(ev: "MigrationEvent") -> None:
 
 
 async def _check_ticker_live(ticker: str, state: dict) -> None:
-    """Build Snapshot from cache state, compare to last-seen king, fire
-    if migration qualifies. Called per-ticker from the live loop."""
+    """Build Snapshot from cache state, compare to last-seen full Snapshot,
+    fire if migration qualifies. Called per-ticker from the live loop."""
     spot = state.get("actual_spot") or state.get("_spot") or 0
     king = state.get("king") or 0
-    floor = state.get("floor") or 0
-    ceiling = state.get("ceiling") or 0
-    pos_gex = state.get("pos_gex") or 0
-    neg_gex = state.get("neg_gex") or 0
-    net_delta = state.get("net_delta") or 0
-    signal = state.get("signal") or ""
-
     if not spot or not king:
         return
 
     now_ts = int(time.time())
-    last_king, last_ts = _live_last_king.get(ticker, (None, 0))
+    cur = Snapshot(
+        ticker=ticker, ts=now_ts,
+        spot=spot, king=king,
+        floor=state.get("floor") or 0,
+        ceiling=state.get("ceiling") or 0,
+        pos_gex=state.get("pos_gex") or 0,
+        neg_gex=state.get("neg_gex") or 0,
+        net_delta=state.get("net_delta") or 0,
+        signal=state.get("signal") or "",
+    )
 
-    # Update last-seen (but don't fire yet)
-    if last_king is None:
-        _live_last_king[ticker] = (king, now_ts)
-        return
+    prev = _live_last_state.get(ticker)
+    # Always update last-seen so the *next* tick has a true prior snapshot.
+    _live_last_state[ticker] = cur
 
-    # No change? Nothing to do.
-    if king == last_king:
-        _live_last_king[ticker] = (king, now_ts)
+    if prev is None or prev.king is None:
         return
 
     # Classify direction. UP requires the existing >= MIN_MIGRATION_PTS
     # jump. DOWN requires retreat >= min(strike_step, 2% spot).
-    delta_pts = king - last_king
+    delta_pts = king - prev.king
     direction: str | None = None
     if delta_pts >= MIN_MIGRATION_PTS:
         direction = "UP"
@@ -601,21 +619,9 @@ async def _check_ticker_live(ticker: str, state: dict) -> None:
         direction = "DOWN"
 
     if direction is None:
-        _live_last_king[ticker] = (king, now_ts)
         return
 
-    # Build Snapshot pair and qualify per direction
-    before = Snapshot(
-        ticker=ticker, ts=last_ts, spot=spot, king=last_king,
-        floor=floor, ceiling=ceiling, pos_gex=pos_gex, neg_gex=neg_gex,
-        net_delta=net_delta, signal=signal,
-    )
-    after = Snapshot(
-        ticker=ticker, ts=now_ts, spot=spot, king=king,
-        floor=floor, ceiling=ceiling, pos_gex=pos_gex, neg_gex=neg_gex,
-        net_delta=net_delta, signal=signal,
-    )
-    ev = _qualify_gates(before, after) if direction == "UP" else _qualify_gates_down(before, after)
+    ev = _qualify_gates(prev, cur) if direction == "UP" else _qualify_gates_down(prev, cur)
 
     # Persist regardless (qualified or not — useful for analysis)
     try:
@@ -631,15 +637,13 @@ async def _check_ticker_live(ticker: str, state: dict) -> None:
             cooldown_map[ticker] = now_ts
             print(
                 f"[KING_MIG] QUALIFIED {direction} {ticker}  "
-                f"${last_king:.0f}->${king:.0f} spot=${spot:.2f} "
-                f"ratio={before.ratio:.2f}->{after.ratio:.2f}"
+                f"${prev.king:.0f}->${king:.0f} spot=${spot:.2f} "
+                f"ratio={prev.ratio:.2f}->{cur.ratio:.2f}"
             )
             if direction == "UP":
                 asyncio.create_task(_send_king_migration_telegram(ev))
             else:
                 asyncio.create_task(_send_king_demigration_telegram(ev))
-
-    _live_last_king[ticker] = (king, now_ts)
 
 
 async def run_king_migration_live_loop(stop_event) -> None:
