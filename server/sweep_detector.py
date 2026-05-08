@@ -328,21 +328,28 @@ TIER2_MAX_RADIUS = 20
 #   - Rank 31-100 get REDUCED coverage (±FLOW_REDUCED_COVERAGE_PCT, near-term only)
 #   - Long-tail (rank 101+) get MINIMAL coverage (0DTE/1DTE only, ±FLOW_MIN_COVERAGE_PCT)
 #
-# Target ~13,500 with 1,500 headroom for intra-session expansion.
+# Target ~7,000 — the actual Theta Standard tier streaming cap is between
+# 7,250 (pre-fix prod baseline that worked) and 13,500 (May 8 budget bump
+# that caused MAX_STREAMS_REACHED storms during Phase 2 expansion). My
+# earlier estimate of 25K Standard-tier capacity was wrong; the live worker
+# observed real rejections at id 8559+ on the 13,500-target plan. Keeping
+# tier prioritization (the actual win) while pulling the cap back to a
+# safe value Theta will accept.
 
-SUBSCRIPTION_BUDGET = 15_000        # hard ceiling (Theta Standard tier)
-SUBSCRIPTION_TARGET = 13_500        # target — leaves 1,500 headroom for expansion
-SUBSCRIPTION_MAX_PLANNED = 14_000   # stop adding new tiers above this on startup
+SUBSCRIPTION_BUDGET = 7_500         # hard ceiling — empirically below Theta cap
+SUBSCRIPTION_TARGET = 7_000         # target — 500 headroom for intra-session expansion
+SUBSCRIPTION_MAX_PLANNED = 7_000    # stop adding new tiers above this on startup
 
-# Per-tier soft budgets. Without these, MVP + Tier2 alone consume the whole
-# 14K cap and the flow-weighted tier never runs — exactly the May 8 INTC bug
-# we're fixing. Hard mathematical sums: MVP+Tier2+flow ≤ MAX_PLANNED.
+# Per-tier soft budgets. Compress agent 2's 5-tier prio scheme into a tighter
+# envelope. flow_tail dropped (it was 0 anyway in practice). flow_top kept
+# at material size so AAPL-deal-style insider flow on rank-11 names like
+# INTC/QCOM/RBLX/MSTR/COIN actually has subscription coverage.
 TIER_BUDGETS = {
-    "mvp": 7_500,
-    "tier2": 2_500,
-    "flow_top": 2_500,    # rank 1-30 gap-fillers (QCOM, RBLX, WFC, etc.)
-    "flow_mid": 1_000,    # rank 31-100
-    "flow_tail": 500,     # rank 101+ (0DTE/1DTE only)
+    "mvp": 4_000,
+    "tier2": 1_500,
+    "flow_top": 1_000,    # rank 1-30 gap-fillers (QCOM, RBLX, WFC, etc.)
+    "flow_mid": 500,      # rank 31-100
+    "flow_tail": 0,       # dropped — was 500 cap, never hit it in practice
 }
 
 FLOW_FULL_COVERAGE_PCT = 0.05       # ±5% of spot for top-30 tickers
