@@ -133,6 +133,93 @@ async def maybe_alert_new_entrants(
         await _fire_alert(r, meta, snapshot.get(ticker) or {})
 
 
+# ── Conviction read ───────────────────────────────────────────────────
+# Plain-English translation of (RVOL, today_gain%, EXTENDED) into a
+# single-line bullishness/skepticism marker shown above the contract
+# ladder. Motivated by May 8 2026 alerts where AMD (+9.78%, RVOL 0.77x)
+# looked stronger than DDOG (+4.85%, RVOL 3.07x) on first read but was
+# actually weaker — RVOL <1 on a +10% day is short cover, not demand.
+#
+# Tuple values: (level, emoji, message)
+#   level: 'HIGH' | 'MEDIUM' | 'LOW' | 'NEUTRAL' — also drives the
+#          AGGRESSIVE-tier suppression below.
+
+def _conviction_read(
+    rvol: float, gain_pct: float, has_extended: bool
+) -> tuple[str, str, str]:
+    """Classify the (volume, move size, extension) trifecta into a
+    plain-English conviction read.
+
+    Rules tuned against three May 8 2026 reference alerts:
+      DDOG (+4.85%, RVOL 3.07x, EXTENDED) → HIGH
+      QCOM (+7.58%, RVOL 2.11x, EXTENDED) → MEDIUM
+      AMD  (+9.78%, RVOL 0.77x, EXTENDED) → LOW (suspicious)
+    """
+    # LOW (suspicious) — large move on weak volume = short cover, not demand
+    if rvol < 1.0 and gain_pct >= 5.0:
+        return (
+            "LOW",
+            "⚠️",
+            f"LOW: large +{gain_pct:.1f}% move on RVOL {rvol:.2f}x "
+            "— likely short cover, not demand",
+        )
+    # LOW (chase risk) — extended + already big move (chasing risk)
+    if has_extended and gain_pct >= 8.0:
+        return (
+            "LOW",
+            "⚠️",
+            f"LOW: extended +{gain_pct:.1f}% — chase risk, wait for pullback",
+        )
+    # HIGH — strong volume confirmation with modest gain. Note: we don't
+    # require `not EXTENDED` because a stock can be "extended from base"
+    # AND still have the cleanest signal if volume is overwhelming and the
+    # day's gain is small (DDOG May 8: RVOL 3.07x + only +4.85% = HIGH
+    # even though tagged EXTENDED).
+    if rvol >= 2.5 and gain_pct <= 6.0:
+        return (
+            "HIGH",
+            "✅",
+            f"HIGH: strong volume (RVOL {rvol:.2f}x) + modest extension "
+            "— cleanest signal",
+        )
+    # MEDIUM — volume confirms but stretched. Require gain >= 2.5% so we
+    # don't flag a tiny +1% move with mild RVOL as "MEDIUM setup" — those
+    # are noise, not setups.
+    if rvol >= 1.5 and 2.5 <= gain_pct <= 8.0:
+        return (
+            "MEDIUM",
+            "✓",
+            f"MEDIUM: RVOL {rvol:.2f}x confirms but stretched "
+            "— wait for pullback to base",
+        )
+    return ("NEUTRAL", "·", f"NEUTRAL: RVOL {rvol:.2f}x · +{gain_pct:.2f}%")
+
+
+def _suppress_aggressive_tier(ladder_block: str) -> str:
+    """Drop the AGGRESSIVE line from a contract-ladder block when the
+    conviction read is LOW. Rationale: when our own RVOL+extension signal
+    says 'low conviction breakout', recommending the highest-leverage
+    short-DTE contract in the same alert is contradictory. The CORE and
+    SAFE tiers stay — they survive a 1-2 day pullback that the
+    AGGRESSIVE 5-7 DTE 35Δ contract would not."""
+    if not ladder_block:
+        return ladder_block
+    lines = ladder_block.split("\n")
+    out: list[str] = []
+    suppressed = False
+    for line in lines:
+        # The formatter writes "  AGGRESSIVE: $TICKER $STRIKEC ..." — match
+        # on the leading "  AGGRESSIVE:" so we don't accidentally eat user
+        # text that mentions the word.
+        if line.lstrip().startswith("AGGRESSIVE:"):
+            suppressed = True
+            continue
+        out.append(line)
+    if suppressed:
+        out.append("  [AGGRESSIVE tier hidden — RVOL<1.5 with EXTENDED tag]")
+    return "\n".join(out)
+
+
 async def _fire_alert(
     r: dict[str, Any], meta: dict[str, Any], state: dict[str, Any]
 ) -> None:
@@ -170,6 +257,7 @@ async def _fire_alert(
 
     # Tag emojis for visual parseability
     tag_line = ""
+    has_extended = "EXTENDED" in (tags or [])
     if tags:
         tag_emojis = {
             "LEADER": "👑", "TOP_SECTOR": "🏆", "FIRST_PULLBACK": "🎯",
@@ -179,6 +267,18 @@ async def _fire_alert(
         tag_line = "Tags: " + " ".join(
             f"{tag_emojis.get(t, '•')} {t}" for t in tags
         ) + "\n"
+
+    # Plain-English conviction read — reads RVOL+gain+extended as a single
+    # signal. Drives the AGGRESSIVE-tier suppression below when LOW.
+    level, emoji, conv_msg = _conviction_read(
+        float(rvol), float(gain_pct), has_extended,
+    )
+    conviction_line = f"{emoji} {conv_msg}\n"
+
+    # Suppress AGGRESSIVE contract tier when conviction is LOW. Rationale
+    # documented in _suppress_aggressive_tier docstring.
+    if level == "LOW":
+        ladder_block = _suppress_aggressive_tier(ladder_block)
 
     # Build the alert
     rank_str = f"#{rank} " if rank is not None else ""
@@ -194,6 +294,7 @@ async def _fire_alert(
         f"SwingScore: {score:.1f} | RTS: {rts:.0f} | RVOL: {rvol:.2f}x\n"
         f"Today: {gain_pct:+.2f}% | ADR: {adr:.1f}%{dist_str}\n"
         f"{tag_line}"
+        f"{conviction_line}"
     )
 
     # Context: SPY regime
