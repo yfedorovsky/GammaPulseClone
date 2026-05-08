@@ -514,7 +514,15 @@ class SweepDetector:
         )
 
         if rollup.total_notional >= _telegram_threshold(rollup.ticker):
-            asyncio.create_task(self._send_telegram(rollup))
+            # Route sweep Telegram emission through the flow_alert_filter
+            # chain when level != OFF so multi-leg sweep clusters collapse
+            # into a single summary instead of N back-to-back ISO SWEEP
+            # messages (e.g. AMD 9:39 was 18 sweep prints in 1 minute).
+            from .flow_alert_filter import _active_level
+            if _active_level() == "OFF":
+                asyncio.create_task(self._send_telegram(rollup))
+            else:
+                asyncio.create_task(self._send_telegram_filtered(rollup))
 
     async def _send_telegram(self, rollup: SweepRollup) -> None:
         """Telegram push for high-notional sweeps. Uses the existing
@@ -546,6 +554,82 @@ class SweepDetector:
             await send(text, ticker=rollup.ticker)
         except Exception as e:
             print(f"[SWEEP] telegram send failed: {e}")
+
+    async def _send_telegram_filtered(self, rollup: SweepRollup) -> None:
+        """Filter-gated variant. Builds a synthetic alert dict from the
+        rollup, runs it through ``flow_alert_filter`` so cluster collapse
+        and hourly throttle apply, and emits whatever the filter approves.
+
+        Sweeps always have ``is_sweep=1`` so they bypass the LOW-conviction
+        floor — the practical effect is that a burst of 18 same-ticker
+        sweep prints inside 60s collapses to one CLUSTER FLOW summary."""
+        from .alert_gates import should_send_alert
+        ok, reason = should_send_alert(expiration=rollup.expiration)
+        if not ok:
+            print(
+                f"[SWEEP] telegram gated ({reason}) — "
+                f"{rollup.ticker} {rollup.strike}{rollup.option_type[0].upper()}"
+            )
+            return
+
+        try:
+            from .telegram import send
+            from .flow_alert_filter import (
+                get_filter, format_cluster_summary, format_hot_flow_summary,
+            )
+            from .macro_regime import cached_macro_regime_tag
+        except ImportError:
+            return
+
+        sentiment = (
+            "BULLISH" if rollup.sweep_side == "BUY"
+            else "BEARISH" if rollup.sweep_side == "SELL"
+            else "NEUTRAL"
+        )
+        try:
+            regime = cached_macro_regime_tag()
+        except Exception:
+            regime = "NONE"
+
+        synthetic = {
+            "ts": int(time.time()),
+            "ticker": rollup.ticker,
+            "strike": rollup.strike,
+            "expiration": rollup.expiration,
+            "option_type": rollup.option_type,
+            "side": rollup.sweep_side,
+            "sentiment": sentiment,
+            "conviction": "SWEEP",
+            "is_sweep": 1,
+            "notional": rollup.total_notional,
+            "volume": rollup.total_contracts,
+            "macro_regime_tag": regime,
+            # Used by format_flow_alert when this fires as a single
+            "spot": None,
+            "vol_oi": None,
+            "iv": None,
+            "delta": None,
+            "last": rollup.avg_price,
+            "bid": None,
+            "ask": None,
+            "oi": None,
+            "_sweep_rollup": rollup,  # so single-emission can render the rich format
+        }
+
+        f = get_filter()
+        for decision, payload in f.process(synthetic):
+            if decision == "FIRE":
+                # Single sweep — use the existing rich SWEEP message
+                await self._send_telegram(rollup)
+            elif decision == "FIRE_SUMMARY":
+                if payload.get("kind") == "CLUSTER":
+                    text = format_cluster_summary(payload)
+                else:
+                    text = format_hot_flow_summary(payload)
+                try:
+                    await send(text, ticker=payload.get("ticker", ""))
+                except Exception as e:
+                    print(f"[SWEEP] cluster telegram send failed: {e}")
 
     async def consume(self, stop_event: asyncio.Event) -> None:
         """Main consumer loop. Read trades off the stream, rollup, flush."""

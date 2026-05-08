@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     discord_enabled: bool = False    # Off by default, opt-in
     anthropic_api_key: str = ""      # For Claude Haiku signal parsing
 
+    # Flow alert filter (May 6 2026 spam-reduction project)
+    # OFF   — legacy gate (HIGH/$5M/OTM/max 2 per cycle), no spam reduction
+    # LIGHT — drop LOW unless sweep/$5M; drop NEUTRAL+HARD; per-ticker 5/hr cap
+    # FULL  — LIGHT + multi-leg cluster collapser (≥3 same-ticker in 60s → 1 summary)
+    # Backtested on May 6 data: 1,267 → ~270 alerts (-78%) at FULL.
+    # Read fresh by `flow_alert_filter._level()` so .env edits take effect at
+    # the next 30s scan cycle without restart.
+    flow_alert_filter_level: str = "LIGHT"
+
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
