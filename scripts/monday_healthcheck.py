@@ -88,6 +88,22 @@ def check_env_credentials() -> None:
 
 async def check_etrade(account_id_key: str | None) -> None:
     section("E-Trade integration")
+    # Branch-aware: server.etrade only exists on feature/etrade-paper-execution.
+    # On main, skip the entire check with a SKIP marker so it doesn't show as
+    # a hard FAIL — the branch warning at the top already explains why.
+    import subprocess
+    try:
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, cwd=str(ROOT),
+        ).stdout.strip()
+    except Exception:
+        branch = ""
+    if branch != "feature/etrade-paper-execution":
+        _print("INFO", "etrade module import",
+               f"skipped — not on feature/etrade-paper-execution (current: {branch or 'unknown'})")
+        return
+
     try:
         from server.etrade import (
             ETradeClient, get_cached_token, _is_sandbox, _base_url,
@@ -207,7 +223,7 @@ def check_tape_regime() -> None:
     try:
         r = classify_tape_regime(bars, 1000000 + 60*60)
         _print("PASS", "tape_regime classify",
-               f"synthetic test → {r.regime}")
+               f"synthetic test -> {r.regime}")
     except Exception as e:
         _print("FAIL", "tape_regime classify",
                f"{type(e).__name__}: {e}")
@@ -296,16 +312,29 @@ def check_paper_executions() -> None:
 
 def check_db_freshness() -> None:
     section("Production DB freshness (last writes)")
+    # flow_alerts lives INSIDE snapshots.db (see server/flow_alerts.py using
+    # settings.snapshot_db) — a standalone flow_alerts.db file in the repo
+    # is a 0-byte phantom from an old auto-create. Use ::table syntax to
+    # check a non-default table inside a shared DB.
     dbs = {
         "snapshots.db": "snapshots",
         "structural_turns.db": "structural_turns",
         "zero_dte_alerts.db": "zero_dte_alerts",
-        "flow_alerts.db": "flow_alerts",
+        "snapshots.db::flow_alerts": "flow_alerts",
     }
     for db_file, table in dbs.items():
-        path = ROOT / db_file
+        # Allow "<file>::<override_table>" so multiple tables in one DB can
+        # be freshness-checked independently. Falls back to the {file: table}
+        # mapping for the simple case.
+        if "::" in db_file:
+            file_part, _ = db_file.split("::", 1)
+            path = ROOT / file_part
+            label = f"{file_part}::{table}"
+        else:
+            path = ROOT / db_file
+            label = db_file
         if not path.exists():
-            _print("WARN", db_file, "not present")
+            _print("WARN", label, "not present")
             continue
         try:
             conn = sqlite3.connect(str(path))
@@ -318,7 +347,7 @@ def check_db_freshness() -> None:
                 if ts_col is None:
                     cur = conn.execute(f"SELECT COUNT(*) FROM {table}")
                     n = cur.fetchone()[0]
-                    _print("INFO", db_file, f"{n} rows (no timestamp col)")
+                    _print("INFO", label, f"{n} rows (no timestamp col)")
                     continue
                 cur = conn.execute(f"SELECT MAX({ts_col}), COUNT(*) FROM {table}")
                 row = cur.fetchone()
@@ -330,19 +359,19 @@ def check_db_freshness() -> None:
                     age_str = (f"{age_hr:.1f}h ago" if age_hr < 72
                                else f"{age_hr/24:.0f}d ago")
                     if age_hr > 72:
-                        _print("WARN", db_file,
+                        _print("WARN", label,
                                f"last write: {last_dt.strftime('%m-%d %H:%M')} "
                                f"({age_str}, {count} rows)")
                     else:
-                        _print("PASS", db_file,
+                        _print("PASS", label,
                                f"last write: {last_dt.strftime('%m-%d %H:%M')} "
                                f"({age_str}, {count} rows)")
                 else:
-                    _print("WARN", db_file, f"{count} rows but no max ts")
+                    _print("WARN", label, f"{count} rows but no max ts")
             finally:
                 conn.close()
         except Exception as e:
-            _print("WARN", db_file, f"{type(e).__name__}: {str(e)[:80]}")
+            _print("WARN", label, f"{type(e).__name__}: {str(e)[:80]}")
 
 
 # ── Check 10: Branch + git status ────────────────────────────────
