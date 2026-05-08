@@ -1,5 +1,17 @@
 """Before/after analysis on this week's alerts (Apr 28 - May 1).
 
+⚠️  Reads peak_pnl_pct / eod_pnl_pct from `zero_dte_alerts`, which were
+populated by the deprecated `backfill_alert_outcomes.py` and are
+contaminated (intrinsic-based, SPY×10 proxy for SPX). Findings from this
+script before May 4 2026 should be re-run by joining to
+`zero_dte_alerts_nbbo_outcomes` (built by
+`scripts/backfill_alert_outcomes_nbbo.py`) which is the canonical source.
+
+See `docs/research/EXIT_POLICY_NBBO_FINDING.md` for context on why the old
+columns are wrong.
+
+Original docstring:
+
 Compares baseline outcomes vs filtered outcomes under the new
 annotation-driven filter combinations. All filters are applied
 RETROSPECTIVELY using the columns we just shipped.

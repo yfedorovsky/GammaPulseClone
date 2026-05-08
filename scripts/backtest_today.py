@@ -1,5 +1,18 @@
 """End-of-day backtest for today's telegram alerts.
 
+⚠️  DEPRECATED for outcome computation as of May 4 2026.
+This script uses INTRINSIC value (max(spot-strike, 0)) and SPY×10 as
+SPX proxy. Both produce systematically wrong outcomes for 0DTE options
+that retain time premium even when OTM. See
+docs/research/EXIT_POLICY_NBBO_FINDING.md for context.
+
+Use instead:
+  python scripts/backfill_alert_outcomes_nbbo.py
+which pulls real OPRA NBBO via ThetaData and is the canonical source of
+historical option P&L.
+
+Original docstring kept for reference:
+
 Uses yfinance 1-min bars (Databento needs T+1 license window for
 same-day data — yfinance covers last ~7 days at minute granularity).
 

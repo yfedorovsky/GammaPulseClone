@@ -32,3 +32,13 @@ scripts/.*.db
 .gex_backfill_checkpoint.json
 gex_backfill.log
 paired_trades.db
+
+# May 7-8 session: research DBs (large binary, regenerate from scripts)
+unified_setup_backtest.db
+realistic_slippage_backtest.db
+ema_cross_backtest_6mo.db
+shadow_alerts.db
+paper_executions.db
+
+# OAuth token caches (sensitive)
+.etrade_tokens.json
