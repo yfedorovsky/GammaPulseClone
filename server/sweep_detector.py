@@ -303,11 +303,121 @@ TIER2_THEMATIC_ROOTS = [
 ]
 
 # Strike coverage target for Tier-2 thematic names — percentage-based so
-# $1-step stocks (MRVL, FSLR) get enough coverage for 15% OTM (UPSIDE_BET max).
-# Fixed-count radius (12) was too tight: MRVL ±$12 = 8% OTM → missed 165C @ 11.6% OTM.
-TIER2_OTM_COVERAGE_PCT = 0.15  # ±15% of spot
+# $1-step stocks (MRVL, FSLR) get enough coverage for high-OTM UPSIDE_BET reach.
+# Reduced from 15% → 10% on 2026-05-08: at 15% the high-priced equipment
+# names (AMAT/TSM/KLAC) hit the strike cap and consumed 5,700 specs of
+# budget alone, leaving nothing for the prior-day flow-weighted tiers.
+# 10% still covers the UPSIDE_BET reach for ~90% of historical Tier2 alerts.
+TIER2_OTM_COVERAGE_PCT = 0.10  # ±10% of spot
 # Cap to prevent runaway strike counts on very high-priced tickers
-TIER2_MAX_RADIUS = 30
+TIER2_MAX_RADIUS = 20
+
+
+# ── Budget + flow-weighted tier bands (added 2026-05-08) ──────────────
+#
+# Post-mortem on May 8 INTC miss: subscription plan used ~7,250 of the 15K
+# budget — under half. AAPL-INTC deal flow at 12:48 PM had $10M+ of bullish
+# institutional prints on INTC strikes the OPRA stream wasn't subscribed to.
+#
+# New strategy:
+#   - Always-include baseline = MVP_WATCHLIST_ROOTS + TIER2_THEMATIC_ROOTS
+#     (preserves the curated catalysts)
+#   - Plus: top-30 tickers by prior-day flow_alerts notional get FULL coverage
+#     (±FLOW_FULL_COVERAGE_PCT of spot, all near-term + monthly expirations)
+#   - Rank 31-100 get REDUCED coverage (±FLOW_REDUCED_COVERAGE_PCT, near-term only)
+#   - Long-tail (rank 101+) get MINIMAL coverage (0DTE/1DTE only, ±FLOW_MIN_COVERAGE_PCT)
+#
+# Target ~13,500 with 1,500 headroom for intra-session expansion.
+
+SUBSCRIPTION_BUDGET = 15_000        # hard ceiling (Theta Standard tier)
+SUBSCRIPTION_TARGET = 13_500        # target — leaves 1,500 headroom for expansion
+SUBSCRIPTION_MAX_PLANNED = 14_000   # stop adding new tiers above this on startup
+
+# Per-tier soft budgets. Without these, MVP + Tier2 alone consume the whole
+# 14K cap and the flow-weighted tier never runs — exactly the May 8 INTC bug
+# we're fixing. Hard mathematical sums: MVP+Tier2+flow ≤ MAX_PLANNED.
+TIER_BUDGETS = {
+    "mvp": 7_500,
+    "tier2": 2_500,
+    "flow_top": 2_500,    # rank 1-30 gap-fillers (QCOM, RBLX, WFC, etc.)
+    "flow_mid": 1_000,    # rank 31-100
+    "flow_tail": 500,     # rank 101+ (0DTE/1DTE only)
+}
+
+FLOW_FULL_COVERAGE_PCT = 0.05       # ±5% of spot for top-30 tickers
+FLOW_REDUCED_COVERAGE_PCT = 0.025   # ±2.5% for rank 31-100
+FLOW_MIN_COVERAGE_PCT = 0.015       # ±1.5% for long-tail (101+)
+
+# Min radius (in strikes) so very-high-step tickers (e.g. BRK.B/$5 step) still
+# get usable coverage even when percent-based math rounds to 1-2 strikes.
+FLOW_MIN_RADIUS = 5
+
+# Intra-session expansion: when a HIGH-conviction flow_alerts row > this
+# notional fires on a ticker that wasn't already top-30, auto-subscribe nearby
+# strikes within 60s.
+EXPANSION_NOTIONAL_THRESHOLD = 1_000_000  # $1M
+
+
+def _get_prior_day_flow_ranking() -> dict[str, float]:
+    """Query `flow_alerts` table for prior trading day's notional per ticker.
+
+    Returns {ticker: total_notional} ordered by notional desc. Empty dict if
+    DB unavailable or no flow yet (cold start, weekend before Monday open).
+
+    "Prior trading day" = the most recent calendar day (excluding today) that
+    had any flow_alerts rows. This handles weekends + holidays without
+    needing a market-calendar dependency.
+    """
+    try:
+        from .flow_alerts import _conn
+    except Exception:
+        return {}
+    try:
+        with _conn() as c:
+            # Find the most recent prior calendar day with any flow.
+            row = c.execute(
+                "SELECT MAX(date(ts, 'unixepoch')) AS d "
+                "FROM flow_alerts WHERE ts < strftime('%s', 'now', 'start of day')"
+            ).fetchone()
+            prior_day = row["d"] if row else None
+            if not prior_day:
+                return {}
+            rows = c.execute(
+                "SELECT UPPER(ticker) AS t, "
+                "       SUM(COALESCE(notional, sweep_notional, 0)) AS n "
+                "FROM flow_alerts "
+                "WHERE date(ts, 'unixepoch') = ? "
+                "GROUP BY UPPER(ticker) "
+                "ORDER BY n DESC",
+                (prior_day,),
+            ).fetchall()
+            return {r["t"]: float(r["n"] or 0.0) for r in rows if r["n"]}
+    except Exception as e:
+        print(f"[SWEEP] prior-day flow ranking query failed: {e}", flush=True)
+        return {}
+
+
+def _radius_pct_for_rank(rank: int | None) -> float | None:
+    """Map a flow rank to OTM-percent radius. None = skip (out of budget tier)."""
+    if rank is None:
+        return None
+    if rank <= 30:
+        return FLOW_FULL_COVERAGE_PCT
+    if rank <= 100:
+        return FLOW_REDUCED_COVERAGE_PCT
+    return FLOW_MIN_COVERAGE_PCT
+
+
+def _expirations_for_rank(rank: int | None,
+                          near_term: list[int],
+                          monthly: list[int]) -> list[int]:
+    """Pick which expirations a tier gets. Top-30 + MVP get all; mid get
+    near-term only; long-tail gets 0DTE/1DTE only."""
+    if rank is None or rank <= 30:
+        return near_term + monthly
+    if rank <= 100:
+        return near_term
+    return near_term[:2]  # 0DTE + 1DTE only
 
 
 async def _build_subscription_plan(
@@ -315,95 +425,151 @@ async def _build_subscription_plan(
 ) -> list[SubscribeSpec]:
     """Plan which contracts to subscribe to on startup.
 
-    Strike grid per root uses server.root_config.get_strike_step() so SPY
-    gets $1 steps (every strike) and SPX gets $5 steps (index-appropriate).
-    Radius widened to 40 strikes each side so the 2.5% OTM Golden-Flow rule
-    has headroom — on SPY at $660, radius 40 × $1 = $620-$700 (±6%), which
-    comfortably encloses the whole 2.5% zone where insider-pattern trades
-    cluster.
+    Tiering (rewritten 2026-05-08 after May 8 INTC miss):
+      1. MVP_WATCHLIST_ROOTS  — indexes + mega-caps, always full coverage
+      2. TIER2_THEMATIC_ROOTS — curated thematic catalysts, full coverage
+      3. Prior-day flow top-30  → ±5% spot, all near-term + monthly exps
+      4. Prior-day flow 31-100  → ±2.5% spot, near-term exps only
+      5. Long-tail (101+)       → ±1.5% spot, 0DTE/1DTE only
 
-    Budget check (all MVP roots at radius 40):
-      19 tickers × ~80 strikes × 2 rights × 3 exps ≈ 9,120 subs
-    Under the Standard-tier 15K-trade-stream cap with headroom.
+    Budget targets ~13,500 with 1,500-contract headroom for intra-session
+    expansion (sweep_detector.py expansion hook subscribes nearby strikes
+    when a >$1M flow_alert hits a low-coverage ticker).
     """
-    from .root_config import get_strike_step, is_index_root
+    from .root_config import get_strike_step
 
     snapshot = await cache.snapshot()
     specs: list[SubscribeSpec] = []
-    # Daily expirations (0DTE + 1-2 DTE index coverage) + monthly opex
-    # (catches TAIL flow 3-45 DTE on single names). Combined list ~5-7 dates;
-    # Theta silently ignores any that aren't listed for a given root.
-    expirations = _next_expirations(n=3) + _monthly_opex_expirations(n_monthlies=2)
+    seen_keys: set[str] = set()  # dedup across tiers
+    near_term = _next_expirations(n=3)
+    monthly = _monthly_opex_expirations(n_monthlies=2)
 
-    # Per-root strike radius. Equities get ±40 (covers ±6% at $1 step for SPY-sized
-    # names). Index products need wider radius in STRIKE count to cover same OTM %
-    # because their step is 5-25x larger. SPX/SPXW at ±200 × $5 = ±$1000 = ±14% at
-    # $7100 spot, which covers the full TAIL-FLOW OTM range (4-25%).
-    #
-    # Budget check:
-    #   Equities:  15 tickers × 80 strikes × 2 rights × 3 exps ≈ 7,200
-    #   SPX/SPXW:  2 roots × 400 strikes × 2 rights × 3 exps ≈ 4,800
-    #   NDX/RUT:   2 roots × 80 strikes × 2 rights × 3 exps ≈ 960
-    #   Total ≈ 12,960 / 15,000 cap
-    RADIUS_EQUITY = 40
-    RADIUS_INDEX = 200  # wider strike count for $5+ step index products
+    # Index roots: 99th percentile of index sweeps in the past week sits inside
+    # ±5% of spot (queried 2026-05-08; SPX p99=4.9%, NDX p99=2.8%, QQQ p99=5.2%).
+    # Previous ±14% was massive overkill — burned ~6K specs on never-traded
+    # strikes and starved the flow-weighted tiers. ±6% covers p99 with margin.
+    # Index products also skip monthly opex: their weekly-daily expiration grid
+    # already covers what would be opex week.
+    INDEX_ROOTS = {"SPX", "SPXW", "NDX", "RUT", "VIX"}
+    INDEX_OTM_PCT = 0.06
 
-    # Count subscriptions per tier for logging + budget enforcement
-    tier_counts: dict[str, int] = {"mvp": 0, "tier2": 0}
+    # Per-tier counts for the log line (so the operator sees where budget went).
+    tier_counts: dict[str, int] = {
+        "mvp": 0, "tier2": 0, "flow_top": 0, "flow_mid": 0, "flow_tail": 0,
+    }
 
-    def _subscribe_root(root: str, radius: int, tier_label: str) -> None:
+    def _subscribe_root(root: str, otm_pct: float, expirations: list[int],
+                        tier_label: str, max_radius: int | None = None) -> int:
+        """Subscribe `root` at percent-of-spot radius for given expirations.
+        Returns count added (0 if root not in cache or budget exhausted).
+        Honors both the global SUBSCRIPTION_MAX_PLANNED hard cap and the
+        per-tier soft budget in TIER_BUDGETS so a chunky tier (Tier2 has
+        50+ names) can't starve a downstream tier."""
         state = snapshot.get(root) or {}
         spot = state.get("actual_spot") or state.get("_spot") or 0
         if not spot:
-            return
+            return 0
         step = get_strike_step(root, spot)
+        # How many strike steps cover otm_pct of spot? Use FLOOR + 1 so we
+        # always include the boundary strike. max_radius caps it so that
+        # high-priced single names (AMAT/TSM at 15% OTM) don't blow past the
+        # plan's per-tier budget allocation.
+        radius = max(FLOW_MIN_RADIUS, int((spot * otm_pct) / step) + 1)
+        if max_radius is not None:
+            radius = min(radius, max_radius)
         atm = round(spot / step) * step
         strikes = [atm + i * step for i in range(-radius, radius + 1)]
+        tier_budget = TIER_BUDGETS.get(tier_label, SUBSCRIPTION_MAX_PLANNED)
+        tier_so_far = tier_counts.get(tier_label, 0)
         added = 0
         for exp in expirations:
             for k in strikes:
                 for right in ("C", "P"):
-                    specs.append(SubscribeSpec(
+                    spec = SubscribeSpec(
                         root=root,
                         expiration=exp,
                         strike_1000ths=int(k * 1000),
                         right=right,
-                    ))
+                    )
+                    if spec.key in seen_keys:
+                        continue
+                    seen_keys.add(spec.key)
+                    specs.append(spec)
                     added += 1
-        tier_counts[tier_label] = tier_counts.get(tier_label, 0) + added
+                    if (
+                        len(specs) >= SUBSCRIPTION_MAX_PLANNED
+                        or (tier_so_far + added) >= tier_budget
+                    ):
+                        tier_counts[tier_label] = tier_so_far + added
+                        return added
+        tier_counts[tier_label] = tier_so_far + added
+        return added
 
-    # MVP tier: indexes + mega-caps (wide strike radius)
+    # 1+2: curated baselines.
+    # - Index products (SPX/NDX/RUT/SPXW/VIX): tight OTM, daily exps only
+    # - Equity MVP: full ±5% OTM with both daily + monthly
+    # - Tier2 thematic: 15% OTM (preserves UPSIDE_BET reach) but daily-only —
+    #   monthly chain expansion was the budget-killer in pre-shipped tests.
+    all_exps = near_term + monthly
     for root in MVP_WATCHLIST_ROOTS:
-        radius = RADIUS_INDEX if root in ("SPX", "SPXW") else RADIUS_EQUITY
-        _subscribe_root(root, radius, "mvp")
-
-    # Tier-2 thematic: percentage-based radius so $1-step names (MRVL, FSLR)
-    # get real 15% OTM coverage instead of just 8%. Capped to prevent runaway.
+        if len(specs) >= SUBSCRIPTION_MAX_PLANNED:
+            break
+        if tier_counts.get("mvp", 0) >= TIER_BUDGETS["mvp"]:
+            break
+        if root in INDEX_ROOTS:
+            _subscribe_root(root, INDEX_OTM_PCT, near_term, "mvp")
+        else:
+            _subscribe_root(root, FLOW_FULL_COVERAGE_PCT, all_exps, "mvp")
     for root in TIER2_THEMATIC_ROOTS:
-        state = snapshot.get(root) or {}
-        spot_t2 = state.get("actual_spot") or state.get("_spot") or 0
-        if not spot_t2:
-            continue
-        step_t2 = get_strike_step(root, spot_t2)
-        # How many steps does 15% of spot represent?
-        radius_t2 = min(
-            TIER2_MAX_RADIUS,
-            max(12, int((spot_t2 * TIER2_OTM_COVERAGE_PCT) / step_t2) + 1),
-        )
-        _subscribe_root(root, radius_t2, "tier2")
+        if len(specs) >= SUBSCRIPTION_MAX_PLANNED:
+            break
+        if tier_counts.get("tier2", 0) >= TIER_BUDGETS["tier2"]:
+            break
+        _subscribe_root(root, TIER2_OTM_COVERAGE_PCT, near_term, "tier2",
+                        max_radius=TIER2_MAX_RADIUS)
 
-    # Safety check — warn if we're approaching the 15K Standard-tier cap
+    # 3+4+5: prior-day flow ranking
+    flow_ranking = _get_prior_day_flow_ranking()
+    if not flow_ranking:
+        print("[SWEEP] no prior-day flow data — skipping flow-weighted tier", flush=True)
+    else:
+        # Skip only roots that ACTUALLY received subscription specs above. A
+        # Tier2 ticker that got cut by the Tier2 budget still belongs in the
+        # flow tier (e.g. COIN/MSTR/ARM are heavy-flow Tier2 names that often
+        # land beyond the alphabetical Tier2 budget cutoff).
+        roots_subscribed_so_far = {s.root for s in specs}
+        ranked_tickers = [t for t in flow_ranking if t not in roots_subscribed_so_far]
+        for idx, ticker in enumerate(ranked_tickers):
+            if len(specs) >= SUBSCRIPTION_MAX_PLANNED:
+                break
+            rank = idx + 1
+            otm = _radius_pct_for_rank(rank)
+            if otm is None:
+                continue
+            exps = _expirations_for_rank(rank, near_term, monthly)
+            label = "flow_top" if rank <= 30 else ("flow_mid" if rank <= 100 else "flow_tail")
+            if tier_counts.get(label, 0) >= TIER_BUDGETS.get(label, SUBSCRIPTION_MAX_PLANNED):
+                # Tier exhausted — skip remaining tickers at this rank band.
+                # Don't break: a rank=120 long-tail ticker still belongs in
+                # flow_tail even if flow_top filled up.
+                continue
+            _subscribe_root(ticker, otm, exps, label)
+
     total = len(specs)
+    headroom = SUBSCRIPTION_BUDGET - total
     print(
         f"[SWEEP] subscription plan: {total} contracts "
-        f"(MVP={tier_counts['mvp']}, Tier2={tier_counts['tier2']}) "
-        f"— budget 15,000, {15000 - total} headroom",
+        f"(MVP={tier_counts['mvp']}, Tier2={tier_counts['tier2']}, "
+        f"flow_top={tier_counts['flow_top']}, flow_mid={tier_counts['flow_mid']}, "
+        f"flow_tail={tier_counts['flow_tail']}) "
+        f"— budget {SUBSCRIPTION_BUDGET}, {headroom} headroom "
+        f"(target {SUBSCRIPTION_TARGET})",
         flush=True,
     )
     if total > 14_500:
         print(
             f"[SWEEP] ⚠️ subscription count {total} near 15K cap — "
-            f"consider reducing RADIUS_TIER2 or pruning TIER2_THEMATIC_ROOTS",
+            f"flow_tail tier was truncated; consider reducing FLOW_MIN_COVERAGE_PCT",
             flush=True,
         )
 
@@ -768,7 +934,164 @@ async def run_sweep_detector(stop_event: asyncio.Event) -> None:
             except Exception as e:
                 print(f"[SWEEP] phase2 resubscribe error: {e}")
 
+    async def _expansion_hook() -> None:
+        """Intra-session subscription expansion (added 2026-05-08).
+
+        Polls flow_alerts every 60s for HIGH-conviction rows > $1M notional
+        on tickers with low coverage. Auto-subscribes nearby strikes (±2.5%
+        of spot) so the next sweep on the same name lands inside the OPRA
+        subscription. Bounded by remaining headroom under SUBSCRIPTION_BUDGET.
+
+        Background to May 8 INTC miss: the AAPL deal flow at 12:48 PM had
+        $10M+ of bullish prints across multiple strikes — only the first one
+        triggered a flow_alerts row in our subscribed coverage; the rest were
+        on strikes the OPRA stream hadn't been told to listen to.
+        """
+        from .flow_alerts import _conn
+        from .root_config import get_strike_step
+        last_seen_id = 0
+        # Remember which (ticker, exp) we already expanded this session so we
+        # don't re-spam Theta with the same strike grid every 60s when a
+        # ticker keeps producing alerts.
+        expanded: set[tuple[str, int]] = set()
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=60.0)
+                break
+            except asyncio.TimeoutError:
+                pass
+            try:
+                with _conn() as c:
+                    rows = c.execute(
+                        "SELECT id, UPPER(ticker) AS ticker, strike, expiration, "
+                        "       COALESCE(notional, sweep_notional, 0) AS n, spot "
+                        "FROM flow_alerts "
+                        "WHERE id > ? "
+                        "  AND COALESCE(notional, sweep_notional, 0) >= ? "
+                        "ORDER BY id ASC",
+                        (last_seen_id, EXPANSION_NOTIONAL_THRESHOLD),
+                    ).fetchall()
+            except Exception as e:
+                print(f"[SWEEP] expansion query failed: {e}", flush=True)
+                continue
+            if not rows:
+                continue
+            last_seen_id = rows[-1]["id"]
+            snap = await cache.snapshot()
+            added_total = 0
+            for row in rows:
+                ticker = row["ticker"]
+                if not ticker:
+                    continue
+                # Convert YYYYMMDD-or-string to int
+                try:
+                    exp_int = int(str(row["expiration"]).replace("-", ""))
+                except Exception:
+                    continue
+                key = (ticker, exp_int)
+                if key in expanded:
+                    continue
+                state = snap.get(ticker) or {}
+                spot = state.get("actual_spot") or state.get("_spot") or row["spot"] or 0
+                if not spot:
+                    continue
+                step = get_strike_step(ticker, spot)
+                radius = max(FLOW_MIN_RADIUS, int((spot * FLOW_REDUCED_COVERAGE_PCT) / step) + 1)
+                atm = round(spot / step) * step
+                strikes = [atm + i * step for i in range(-radius, radius + 1)]
+                added_for_key = 0
+                # Bound by remaining headroom — never exceed SUBSCRIPTION_BUDGET.
+                for k in strikes:
+                    for right in ("C", "P"):
+                        if stream.subscription_count >= SUBSCRIPTION_BUDGET:
+                            break
+                        spec = SubscribeSpec(
+                            root=ticker,
+                            expiration=exp_int,
+                            strike_1000ths=int(k * 1000),
+                            right=right,
+                        )
+                        try:
+                            ok = await stream.subscribe(spec)
+                            if ok:
+                                added_for_key += 1
+                        except Exception:
+                            pass
+                        await asyncio.sleep(0.003)
+                if added_for_key:
+                    expanded.add(key)
+                    added_total += added_for_key
+                    print(
+                        f"[SWEEP] expansion: {ticker} {exp_int} ${row['n']:,.0f} "
+                        f"alert → +{added_for_key} subs (now "
+                        f"{stream.subscription_count}/{SUBSCRIPTION_BUDGET})",
+                        flush=True,
+                    )
+
+    async def _coverage_diag() -> None:
+        """30-min heartbeat: print subscribed/in-chain ratio for the top-10
+        most-active tickers in the live subscription set.
+
+        Reads `_raw_contracts` from each ticker's cache state to count "strikes
+        in chain" and compares against this run's subscriptions for that root.
+        """
+        # Initial wait so the first plan has settled
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=600.0)
+            return
+        except asyncio.TimeoutError:
+            pass
+        while not stop_event.is_set():
+            try:
+                snap = await cache.snapshot()
+            except Exception:
+                snap = {}
+            # Group current subscriptions by root
+            per_root: dict[str, set[tuple[int, float, str]]] = {}
+            for spec in stream._subscriptions.values():
+                strike = spec.strike_1000ths / 1000.0
+                per_root.setdefault(spec.root, set()).add(
+                    (spec.expiration, strike, spec.right),
+                )
+            # Pick top-10 by subscription count (proxy for "most-active in plan")
+            top10 = sorted(per_root.items(), key=lambda kv: -len(kv[1]))[:10]
+            lines = []
+            for root, subs in top10:
+                state = snap.get(root) or {}
+                raw_by_exp = state.get("_raw_contracts") or {}
+                in_chain_keys: set[tuple[int, float, str]] = set()
+                for exp_str, chain in raw_by_exp.items():
+                    try:
+                        exp_int = int(str(exp_str).replace("-", ""))
+                    except Exception:
+                        continue
+                    for c in chain:
+                        s = c.get("strike")
+                        otype = (c.get("option_type") or "").lower()
+                        right = "C" if otype == "call" else ("P" if otype == "put" else None)
+                        if s is None or right is None:
+                            continue
+                        in_chain_keys.add((exp_int, float(s), right))
+                if in_chain_keys:
+                    overlap = len(subs & in_chain_keys)
+                    total_chain = len(in_chain_keys)
+                    lines.append(f"{root}: {overlap}/{total_chain} strikes")
+                else:
+                    lines.append(f"{root}: {len(subs)} subs (no chain cache)")
+            print(
+                f"[SWEEP] coverage: total_subs={stream.subscription_count}/{SUBSCRIPTION_BUDGET}  "
+                + " | ".join(lines),
+                flush=True,
+            )
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=1800.0)  # 30 min
+                break
+            except asyncio.TimeoutError:
+                continue
+
     subscribe_task = asyncio.create_task(_subscribe_trickle())
+    expansion_task = asyncio.create_task(_expansion_hook())
+    coverage_task = asyncio.create_task(_coverage_diag())
 
     # Launch the Golden Flow + UPSIDE_BET transition loops as sibling tasks.
     # Both run in parallel with the trade consumer, re-evaluating the shared
@@ -785,9 +1108,9 @@ async def run_sweep_detector(stop_event: asyncio.Event) -> None:
     try:
         await detector.consume(stop_event)
     finally:
-        for t in (golden_task, upside_bet_task, subscribe_task):
+        for t in (golden_task, upside_bet_task, subscribe_task, expansion_task, coverage_task):
             t.cancel()
-        for t in (golden_task, upside_bet_task, subscribe_task):
+        for t in (golden_task, upside_bet_task, subscribe_task, expansion_task, coverage_task):
             try:
                 await asyncio.wait_for(t, timeout=10)
             except (asyncio.TimeoutError, asyncio.CancelledError):
