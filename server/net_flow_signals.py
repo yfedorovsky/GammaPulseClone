@@ -556,12 +556,61 @@ async def _send_regime_telegram(
         print(f"[NET_FLOW_ALERT] telegram send failed: {e}")
 
 
+def _is_rth_now() -> bool:
+    """True only during regular trading hours (Mon–Fri, 9:30–16:00 ET).
+
+    Same gate pattern used by ``flow_alerts._scan_flow_from_cache``. Without
+    this, the alert loop fires the SAME stuck-state message every cooldown
+    cycle overnight (observed 2026-05-08: TSLA "FLOW LEADS UP" spam every
+    20 min from midnight to 4 AM, identical $405.89 spot, +$1.36M NCP). The
+    aggregator series doesn't decay after-hours — it just freezes at the
+    last RTH bar — so regime_summary keeps returning the same regime, and
+    the "cooldown elapsed → re-fire to remind user" branch keeps firing.
+    """
+    import datetime
+    now = datetime.datetime.now()
+    if now.weekday() >= 5:
+        return False
+    if now.hour < 9 or (now.hour == 9 and now.minute < 30):
+        return False
+    if now.hour > 16 or (now.hour == 16 and now.minute > 15):
+        return False
+    return True
+
+
+def _bar_is_fresh(latest: dict | None, max_age_seconds: int = 180) -> bool:
+    """True if the most recent aggregator bar is recent enough to act on.
+
+    Belt-and-suspenders gate alongside ``_is_rth_now()``: even during RTH,
+    if the data feed died and we're operating on stale bars, don't fire.
+    Default 3 min — net-flow uses 1-min bars, so 3 min stale = 3 missed
+    bars in a row (clear feed problem)."""
+    if not latest:
+        return False
+    ts = latest.get("ts") or latest.get("epoch") or latest.get("timestamp")
+    if ts is None:
+        return False
+    try:
+        ts = float(ts)
+    except (TypeError, ValueError):
+        return False
+    # Some series store ts in ms; normalize.
+    if ts > 1e12:
+        ts = ts / 1000.0
+    import time as _t
+    return (_t.time() - ts) <= max_age_seconds
+
+
 async def run_net_flow_alert_loop(stop_event: asyncio.Event) -> None:
     """Periodic regime scanner — re-evaluates every TRACKED_TICKERS ticker
     and fires Telegram alerts on qualifying transitions.
 
     Uses the same aggregator instance as the /api/net-flow endpoint, so
     UI and alerts stay in sync.
+
+    RTH-gated: skips entirely outside 9:30–16:00 ET Mon–Fri, AND requires
+    the aggregator's latest bar to be ≤3 min old. Without these gates the
+    loop fires identical stuck-state spam overnight (see _is_rth_now docstring).
     """
     # Lazy imports to avoid circular deps at module load
     from .net_flow import get_net_flow_aggregator, TRACKED_TICKERS
@@ -581,6 +630,14 @@ async def run_net_flow_alert_loop(stop_event: asyncio.Event) -> None:
             break
         except asyncio.TimeoutError:
             pass
+
+        # ── RTH gate: skip the entire scan outside market hours ──
+        # Cheaper than per-ticker gates and identical effect.
+        if not _is_rth_now():
+            cycles += 1
+            if cycles % 30 == 0:  # quiet heartbeat ~ every 15 min when AH
+                print("[net_flow_alerts] after-hours — skipping scan")
+            continue
 
         try:
             for ticker in TRACKED_TICKERS:
@@ -603,6 +660,13 @@ async def run_net_flow_alert_loop(stop_event: asyncio.Event) -> None:
 
                 snap = agg.snapshot(ticker)
                 latest = snap.get("latest")
+
+                # Belt-and-suspenders staleness check — even inside RTH,
+                # don't fire if the latest bar is too old (feed lag, queue
+                # stall, etc.). Returns silently so the cooldown clock isn't
+                # reset; we'll re-evaluate when fresh data arrives.
+                if not _bar_is_fresh(latest):
+                    continue
 
                 # Fire telegram asynchronously so scan loop doesn't block
                 asyncio.create_task(
