@@ -98,7 +98,40 @@ def _safe_regime_tag() -> str:
     except Exception:
         return "NONE"
 
-_seen: set[str] = set()
+# ── Dedup state ─────────────────────────────────────────────────────────
+# Pre-2026-05-08: Set was {ticker:strike:exp:type} — fired exactly ONCE per
+# strike per process lifetime. Catastrophic on flip days: INTC 5/15 120C
+# fired BEARISH at 10:16 AM (call sellers); when the AAPL-deal insider
+# flow flipped it BULLISH at 11:30 AM with $5M+ ASK sweeps, we silently
+# skipped because the strike was already in `_seen`. Two hours of insider
+# positioning never reached Telegram.
+#
+# Now: dict keyed by {ticker:strike:exp:type:sentiment_bucket} → last
+# fire timestamp. We re-fire when:
+#   (a) The same key exhausted its TTL (default 5 min), OR
+#   (b) The sentiment_bucket flipped (BULL/BEAR/NEUT) — which happens
+#       when smart-money rotates direction on a contract.
+# The bucket is derived from `sentiment` so a BEARISH-tagged strike
+# becoming BULLISH-tagged refires regardless of TTL.
+_DEDUP_TTL_SECONDS = 300
+_seen: dict[str, float] = {}
+
+
+def _dedup_key(ticker: str, strike: float, exp: str, otype: str, sentiment: str) -> str:
+    bucket = (sentiment or "NEUT")[:4].upper()  # BULL / BEAR / NEUT / MID
+    return f"{ticker}:{strike}:{exp}:{otype}:{bucket}"
+
+
+def _should_skip_dedup(key: str, now: float) -> bool:
+    """Returns True if we recently emitted this exact (strike, sentiment)
+    bucket — don't re-fire. Aged-out entries are pruned in place."""
+    last = _seen.get(key)
+    if last is None:
+        return False
+    if now - last >= _DEDUP_TTL_SECONDS:
+        # TTL expired — let it re-fire
+        return False
+    return True
 
 
 @contextmanager
@@ -459,12 +492,6 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
             otype = (opt.get("option_type") or "").lower()
             opt_exp = opt.get("expiration_date") or exp_date
 
-            # Dedup
-            key = f"{ticker}:{strike}:{opt_exp}:{otype}"
-            if key in _seen:
-                continue
-            _seen.add(key)
-
             bid = float(opt.get("bid") or 0)
             ask = float(opt.get("ask") or 0)
             last = float(opt.get("last") or 0)
@@ -475,6 +502,15 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
             side = _detect_side(bid, ask, last)
             sentiment = _detect_sentiment(otype, side)
             notional = vol * last * 100
+
+            # Dedup AFTER sentiment computed so the bucket is part of the
+            # key — catches the flip-day case (BEARISH on 5/15 120C at
+            # 10:16 AM, then BULLISH at 11:30 AM = re-fire).
+            now = time.time()
+            dkey = _dedup_key(ticker, strike, opt_exp, otype, sentiment)
+            if _should_skip_dedup(dkey, now):
+                continue
+            _seen[dkey] = now
 
             # Noise filters
             if notional < 250_000:
@@ -524,42 +560,96 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
 
 async def run_flow_scanner(stop_event: asyncio.Event) -> None:
     """Background loop scanning cached data every 30 seconds.
-    Zero API calls — uses the GEX worker's chain cache."""
+    Zero API calls — uses the GEX worker's chain cache.
+
+    Telegram emission is gated through ``flow_alert_filter`` (env-var
+    ``FLOW_ALERT_FILTER_LEVEL`` = OFF | LIGHT | FULL). The legacy hard-coded
+    gates (HIGH-only, $5M, OTM≥1%, max 2 per cycle) only run when level=OFF
+    so the old behavior remains available as a fallback.
+    """
     # Wait a bit for the first GEX cycle to populate the cache
     await asyncio.sleep(30)
+    from .flow_alert_filter import (
+        get_filter, _active_level,
+        format_cluster_summary, format_hot_flow_summary,
+    )
     while not stop_event.is_set():
         try:
             alerts = await _scan_flow_from_cache()
+            level = _active_level()
             if alerts:
                 tickers_hit = list(set(a["ticker"] for a in alerts))
                 print(
                     f"[FLOW] {len(alerts)} new alerts: "
                     f"{', '.join(tickers_hit[:10])}"
                 )
-                import datetime
-                today_str = datetime.date.today().isoformat()
                 from .telegram import send, format_flow_alert
-                for a in alerts[:2]:  # Max 2 per cycle
-                    if a.get("conviction") != "HIGH":  # HIGH only
-                        continue
-                    # Must be a clear directional signal (not MID/NEUTRAL)
-                    if a.get("side") == "MID":
-                        continue
-                    # Minimum $5M notional for all flow alerts
-                    if (a.get("notional", 0) or 0) < 5_000_000:
-                        continue
-                    # Strike must be OTM by at least 1% — skip already-ITM chases
-                    strike = a.get("strike", 0) or 0
-                    spot = a.get("spot", 0) or 0
-                    if strike and spot:
-                        is_call = (a.get("option_type") or "").lower() == "call"
-                        otm_pct = ((strike - spot) / spot * 100) if is_call else ((spot - strike) / spot * 100)
-                        if otm_pct < 1.0:
-                            continue  # ITM or barely OTM — premium already jacked
-                    await send(
-                        format_flow_alert(a),
-                        ticker=a.get("ticker", ""),
-                    )
+
+                if level == "OFF":
+                    # Legacy gate: HIGH/$5M/OTM/max 2 per cycle
+                    for a in alerts[:2]:
+                        if a.get("conviction") != "HIGH":
+                            continue
+                        if a.get("side") == "MID":
+                            continue
+                        if (a.get("notional", 0) or 0) < 5_000_000:
+                            continue
+                        strike = a.get("strike", 0) or 0
+                        spot = a.get("spot", 0) or 0
+                        if strike and spot:
+                            is_call = (a.get("option_type") or "").lower() == "call"
+                            otm_pct = (
+                                ((strike - spot) / spot * 100)
+                                if is_call
+                                else ((spot - strike) / spot * 100)
+                            )
+                            if otm_pct < 1.0:
+                                continue
+                        await send(
+                            format_flow_alert(a),
+                            ticker=a.get("ticker", ""),
+                        )
+                else:
+                    # New 4-rule filter (LIGHT or FULL)
+                    f = get_filter()
+                    fired_singles = 0
+                    fired_summaries = 0
+                    for a in alerts:
+                        for decision, payload in f.process(a):
+                            if decision == "FIRE":
+                                await send(
+                                    format_flow_alert(payload),
+                                    ticker=payload.get("ticker", ""),
+                                )
+                                fired_singles += 1
+                            elif decision == "FIRE_SUMMARY":
+                                if payload.get("kind") == "CLUSTER":
+                                    text = format_cluster_summary(payload)
+                                else:
+                                    text = format_hot_flow_summary(payload)
+                                await send(text, ticker=payload.get("ticker", ""))
+                                fired_summaries += 1
+                    if fired_singles or fired_summaries:
+                        print(
+                            f"[FLOW][{level}] fired {fired_singles} single + "
+                            f"{fired_summaries} summary"
+                        )
+
+            # Always flush expired cluster windows + hour buckets every cycle
+            if level != "OFF":
+                f = get_filter()
+                for decision, payload in f.flush():
+                    if decision == "FIRE":
+                        await send(
+                            format_flow_alert(payload),
+                            ticker=payload.get("ticker", ""),
+                        )
+                    elif decision == "FIRE_SUMMARY":
+                        if payload.get("kind") == "CLUSTER":
+                            text = format_cluster_summary(payload)
+                        else:
+                            text = format_hot_flow_summary(payload)
+                        await send(text, ticker=payload.get("ticker", ""))
         except Exception as e:
             print(f"[FLOW] scan error: {e}")
         try:
