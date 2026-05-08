@@ -46,6 +46,7 @@ from .live_flow_aggregator import (
     run_golden_transition_loop,
     run_upside_bet_transition_loop,
 )
+from .tick_side_tracker import get_tracker as get_tick_side_tracker
 from .thetadata import (
     EXCLUDE_CONDITIONS,
     NON_ISO_AUCTION_CONDITIONS,
@@ -427,6 +428,9 @@ class SweepDetector:
     ):
         self.stream = stream or get_stream()
         self.flow_aggregator = flow_aggregator  # optional — None = sweep-only mode
+        # Tick-level side tracker — module singleton so flow_alerts can read it
+        # without lifespan plumbing. Fed from the trade consume loop below.
+        self.tick_side_tracker = get_tick_side_tracker()
         # Rollup bucket: key = (ticker, strike, exp_str, otype), value = SweepRollup
         self._buckets: dict[tuple[str, float, str, str], SweepRollup] = {}
         # Stats counters
@@ -590,6 +594,21 @@ class SweepDetector:
                     f"{self.stream._out_queue.qsize() if hasattr(self.stream, '_out_queue') else '?'}",
                     flush=True,
                 )
+                # Keep tick-side tracker bounded + log audit-ready stats.
+                # fallback_rate is the dual-running signal we'll review weekly:
+                # high rate = many strikes have <50c/60s tick coverage.
+                try:
+                    self.tick_side_tracker.prune_all()
+                    ts = self.tick_side_tracker.stats()
+                    print(
+                        f"[TICK_SIDE] tracked={ts['tracked_contracts']} "
+                        f"trades={ts['trades_seen']} lookups={ts['lookups']} "
+                        f"fallback_rate={ts['fallback_rate']} "
+                        f"top_active={ts['top_active']}",
+                        flush=True,
+                    )
+                except Exception as e:
+                    print(f"[TICK_SIDE] heartbeat error: {e}")
 
         diag_task = asyncio.create_task(diag_heartbeat())
 
@@ -622,6 +641,15 @@ class SweepDetector:
                     continue
                 if trade.condition in NON_ISO_AUCTION_CONDITIONS:
                     continue
+
+                # FORK 0: feed the tick-side tracker. Cheap O(1) per trade.
+                # Provides flow_alerts.py with a 60s rolling ASK/BID/MID side
+                # so the snapshot-based _detect_side stops mislabeling strikes
+                # after big institutional prints (INTC 5/15 $120C, 2026-05-08).
+                try:
+                    self.tick_side_tracker.add_trade(trade)
+                except Exception as e:
+                    print(f"[SWEEP] tick_side_tracker error: {e}")
 
                 # FORK 1: every qualifying trade feeds the live flow aggregator
                 # (broader Golden Flow detection — catches non-ISO at-ask prints
