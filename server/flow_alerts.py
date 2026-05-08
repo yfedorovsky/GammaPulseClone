@@ -21,6 +21,7 @@ import httpx
 
 from .cache import cache
 from .config import get_settings
+from .tick_side_tracker import get_tracker as _get_tick_side_tracker
 
 
 ALERT_SCHEMA = """
@@ -508,7 +509,16 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
             iv = float(greeks.get("mid_iv") or greeks.get("smv_vol") or 0)
             delta = float(greeks.get("delta") or 0)
 
-            side = _detect_side(bid, ask, last)
+            # Prefer the tick-level 60s rolling ASK/BID tracker (fed by the
+            # OPRA stream in sweep_detector). Returns None when the contract
+            # has <50 contracts in the window — fall back to the snapshot
+            # detector so illiquid strikes don't lose alerts during rollout.
+            # Plan: audit fallback_rate after one week of dual-running.
+            side = _get_tick_side_tracker().latest_side(
+                ticker, strike, opt_exp, otype,
+            )
+            if side is None:
+                side = _detect_side(bid, ask, last)
             sentiment = _detect_sentiment(otype, side)
             notional = vol * last * 100
 
