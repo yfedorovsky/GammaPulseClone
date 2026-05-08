@@ -252,7 +252,9 @@ def _compute_conviction(alert: dict[str, Any], gex_info: dict[str, Any] | None =
     vol = alert.get("volume", 0) or 0
     notional = alert.get("notional", 0) or 0
     vol_oi = alert.get("vol_oi", 0) or 0
-    last_price = alert.get("last_price", 0) or 0
+    # Cache-scan alerts store the price under "last"; sweep alerts under "last_price".
+    # Read both so Tier A/B whale overrides actually fire on cache-scan flow.
+    last_price = alert.get("last_price") or alert.get("last") or 0
     expiration = alert.get("expiration", "") or ""
 
     # ── CHEAP-OPTION WHALE OVERRIDE (checked first, bypasses notional) ──
@@ -478,9 +480,16 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
         for opt in contracts:
             vol = int(opt.get("volume") or 0)
             oi = int(opt.get("open_interest") or 0)
-            if vol < 500 or oi < 1:
+            if vol < 500:
                 continue
-            vol_oi = round(vol / oi, 1)
+            # OI=0 is legitimate for strikes that carried over with no settled
+            # OI from the prior session — and is precisely where insider plays
+            # often appear (fresh strike, no public position, then a single
+            # whale prints). Treat OI=0 with meaningful vol as effectively
+            # infinite V/OI so it can clear the threshold check below.
+            # (Missed SPY 727P 5/7/26 +350% trade: vol=70,903 / oi=0 was
+            # silently skipped here all day.)
+            vol_oi = round(vol / oi, 1) if oi >= 1 else 999.0
             # Two paths to qualify:
             # 1. High V/OI ratio (unusual relative to open interest)
             # 2. Massive notional (>$5M) regardless of V/OI — catches big block trades
