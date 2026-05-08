@@ -1,20 +1,32 @@
-"""Backfill outcome columns on zero_dte_alerts.
+"""DEPRECATED — DO NOT USE — kept for audit trail only.
 
-For each alert, computes:
-  - peak_pnl_pct, peak_hhmm, mins_to_peak (peak intrinsic during window)
-  - eod_pnl_pct (intrinsic at 15:59)
-  - reached_itm (binary)
-  - mins_above_entry, mins_2x_entry (durability)
-  - outcome_category (WIN_BIG / WIN / MARGINAL / LOSS_BOUNCED / WIPEOUT)
-  - st_confirmation_within_90m (binary — workflow rule status)
+This script computes outcomes from INTRINSIC value (max(spot-strike, 0)) and
+uses SPY×10 as a proxy for SPX intraday. Both are wrong:
+  - Intrinsic ignores time premium; for OTM 0DTE options it returns 0
+    even when the option is trading $0.50-$2.00. This systematically
+    inflates wipeout counts.
+  - SPY×10 is not equal to SPX intraday; the basis drifts and produces
+    bogus "ITM excursions" that never happened on the real option.
 
-Uses Databento for SPY/QQQ outcomes. SPX falls back to SPY*10 proxy
-for spot path (since we don't have OPRA-level option data for SPX
-historically). Documented as approximate.
+The columns it populates on `zero_dte_alerts` (peak_pnl_pct, eod_pnl_pct,
+mins_above_entry, mins_2x_entry, outcome_category) are CONTAMINATED. They
+remain in the database for historical reference but should not be used
+for analysis.
 
-Run:
-  python scripts/backfill_alert_outcomes.py
+Use instead:
+  python scripts/backfill_alert_outcomes_nbbo.py
+
+That script pulls real OPRA NBBO via ThetaData and writes to a separate
+table `zero_dte_alerts_nbbo_outcomes`. See
+`docs/research/EXIT_POLICY_NBBO_FINDING.md` for the impact of the bug.
+
+This script will refuse to run unless --i-know-this-is-broken is passed.
 """
+import sys
+if "--i-know-this-is-broken" not in sys.argv:
+    print("DEPRECATED. Use scripts/backfill_alert_outcomes_nbbo.py instead.")
+    print("See module docstring for context.")
+    sys.exit(1)
 from __future__ import annotations
 
 import sqlite3
@@ -78,7 +90,9 @@ def compute_outcome(alert: dict) -> dict:
                 "outcome_category": "NO_DATA"}
 
     # Trade window: from fire minute to 15:59
-    sub = bars[bars["minute"].astype("int64") // 10**9 >= fire_ts].copy()
+    # Robust to datetime64[s, tz] vs datetime64[ns, tz] dtype variation.
+    minute_ts = bars["minute"].apply(lambda t: int(t.timestamp())).astype("int64")
+    sub = bars[minute_ts >= fire_ts].copy()
     if sub.empty:
         return {"peak_pnl_pct": None, "peak_hhmm": None, "mins_to_peak": None,
                 "eod_pnl_pct": None, "reached_itm": None,

@@ -392,10 +392,19 @@ async def compute_swing_watchlist(mode: str = "standard") -> tuple[list[dict], d
         if state.get("_ibd_sector_leader"):
             tags.append("SECTOR_LEADER")
 
+        # Compute today's gain from previous-day close.
+        # closes[-1] = today's last snapshot (≈ spot intraday). closes[-2] is
+        # yesterday's last snapshot, i.e. yesterday's close.
+        prev_close = closes[-2] if len(closes) >= 2 else 0
+        today_gain_pct = ((spot - prev_close) / prev_close * 100) \
+            if prev_close > 0 else 0.0
+
         results.append({
             "ticker": ticker,
             "swing_score": swing_score,
             "spot": round(spot, 2),
+            "prev_close": round(prev_close, 2) if prev_close else None,
+            "today_gain_pct": round(today_gain_pct, 2),
             "rts_score": rts_score,
             "rts_grade": rts_data.get("grade", ""),
             "ema21": round(ema21, 2),

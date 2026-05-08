@@ -182,7 +182,9 @@ async def _fire_alert(
 
     # Build the alert
     rank_str = f"#{rank} " if rank is not None else ""
-    dist_str = f" | {dist_high:+.1f}% from 52w high" if dist_high is not None else ""
+    # NB: dist_high is computed against `high_20d` in swing_scanner, NOT the
+    # 52-week high — keep label accurate.
+    dist_str = f" | {dist_high:+.1f}% from 20d high" if dist_high is not None else ""
 
     msg = (
         f"🔍 <b>NEW SWING WATCHLIST ENTRY {rank_str}</b>\n"

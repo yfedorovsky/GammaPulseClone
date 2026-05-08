@@ -180,6 +180,10 @@ MACRO_EVENTS: dict[str, str] = {
     "2026-03-06 08:30": "NFP",
     "2026-04-03 08:30": "NFP",
     "2026-05-01 08:30": "NFP",  # ← May 1 NFP! that explains the chase
+    # May 5-8 2026 macro week (added May 5)
+    "2026-05-05 07:00": "ISM_SERVICES",  # ISM Services PMI + JOLTS (red)
+    "2026-05-06 08:30": "QRA",  # Quarterly Refunding Announcement (Treasury)
+    "2026-05-07 05:30": "JOBLESS_CLAIMS",  # weekly claims (orange)
     "2026-06-05 08:30": "NFP",
     "2026-07-02 08:30": "NFP",  # July 4th week shifts
     "2026-08-07 08:30": "NFP",
