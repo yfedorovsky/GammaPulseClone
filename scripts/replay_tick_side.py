@@ -19,11 +19,19 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
+import sys
 from collections import deque
+from pathlib import Path
 from typing import Any
 
-from server.thetadata import ThetaDataClient, classify_side
-from server.tick_side_tracker import (
+# Make `from server.* import ...` work when invoked as
+# `python scripts/replay_tick_side.py` from the repo root.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from server.thetadata import ThetaDataClient, classify_side  # noqa: E402
+from server.tick_side_tracker import (  # noqa: E402
     DOMINANCE_RATIO,
     MIN_WINDOW_SIZE,
     WINDOW_SECONDS,
