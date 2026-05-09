@@ -59,6 +59,47 @@ def _evaluate(ask: int, bid: int, mid: int) -> str | None:
     return "MID"
 
 
+def _row_ms_of_day(r: dict[str, Any]) -> int:
+    """Extract ms-of-day from a ThetaData history row.
+
+    ThetaData v3 returns ISO-8601 strings under `trade_timestamp` / `timestamp`
+    (e.g. "2026-05-08T09:30:01.463"). Older v2-style returns integer ms-of-day
+    under `ms_of_day`. This helper handles both shapes so the same harness
+    works regardless of which API surface served the data.
+    """
+    raw = (
+        r.get("trade_timestamp")
+        or r.get("timestamp")
+        or r.get("ms_of_day")
+        or 0
+    )
+    if isinstance(raw, (int, float)):
+        return int(raw)
+    if isinstance(raw, str):
+        # Parse ISO 8601 — strip trailing Z if present, take time portion only.
+        s = raw.rstrip("Z")
+        if "T" in s:
+            s = s.split("T", 1)[1]
+        # s is now "HH:MM:SS[.ms]" (and maybe a tz suffix we've already stripped)
+        # Strip any tz offset like "+04:00" or "-05:00"
+        for sep in ("+", "-"):
+            idx = s.find(sep, 1)  # skip a leading sign if any
+            if idx > 0:
+                s = s[:idx]
+                break
+        try:
+            t = dt.time.fromisoformat(s)
+        except ValueError:
+            return 0
+        return (
+            t.hour * 3_600_000
+            + t.minute * 60_000
+            + t.second * 1000
+            + t.microsecond // 1000
+        )
+    return 0
+
+
 def replay(rows: list[dict[str, Any]], start_ms: int, end_ms: int) -> None:
     """Walk the trade_quote rows in time order, replaying the 60s window.
 
@@ -67,7 +108,7 @@ def replay(rows: list[dict[str, Any]], start_ms: int, end_ms: int) -> None:
     raw print count. Lets you eyeball mismatches against the legacy tagger.
     """
     # Sort defensively — historical CSV is usually in order, but don't rely.
-    rows.sort(key=lambda r: int(r.get("trade_timestamp") or r.get("ms_of_day") or 0))
+    rows.sort(key=_row_ms_of_day)
 
     window: deque[tuple[int, int, str]] = deque()
     ask_v = bid_v = mid_v = 0
@@ -104,7 +145,7 @@ def replay(rows: list[dict[str, Any]], start_ms: int, end_ms: int) -> None:
         )
 
     for r in rows:
-        ts_ms = int(r.get("trade_timestamp") or r.get("ms_of_day") or 0)
+        ts_ms = _row_ms_of_day(r)
         if ts_ms < start_ms:
             continue
         if ts_ms >= end_ms:
