@@ -381,13 +381,49 @@ def get_recent_flow(ticker: str, minutes: int = 30) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-def _detect_side(bid: float, ask: float, last: float) -> str:
+def _detect_side(
+    bid: float,
+    ask: float,
+    last: float,
+    *,
+    delta: float = 0.0,
+    vol: int = 0,
+    oi: int = 0,
+) -> str:
+    """Snapshot-based side classifier — fallback when tick tracker is thin.
+
+    Returns 'ASK' | 'BID' | 'MID'. The optional kwargs (delta/vol/oi) let
+    callers nudge the decision when `last` is stale on contracts with
+    obvious directional bias.
+
+    Improvements (Bug #2 fix, 2026-05-12):
+      1. Tightened mid threshold 0.2 -> 0.15 — late-day prints settling
+         "near mid" were over-classified as MID.
+      2. ITM bias: deep-ITM contracts (|delta| > 0.70) on a fresh-OI day
+         (vol >= oi, i.e. opening accumulation) get ASK by default — the
+         GLD 6/18 $380C / QCOM 6/18 $270C / MU 5/15 $760C class of trade.
+         Snapshot `last` for these contracts lags actual fills routinely.
+      3. Cheap-far-OTM bias: small-premium far-OTM (delta < 0.15) with
+         exploding V/OI (vol/oi >= 5) gets ASK — classic insider lotto
+         signature (SPY 5/7 $727P was a vol/oi=infinity miss; this is the
+         complement: when oi is non-zero but V/OI rich).
+    """
     if bid <= 0 and ask <= 0:
         return "MID"
     mid = (bid + ask) / 2
     spread = ask - bid if ask > bid else 0.01
     dist = abs(last - mid) / spread
-    if dist < 0.2:
+    if dist < 0.15:
+        # Last sits near mid — apply directional bias for contracts where
+        # mid-price prints are statistically rare (deep ITM, cheap far OTM
+        # with V/OI shock). Otherwise return MID.
+        adel = abs(delta or 0.0)
+        if adel >= 0.70 and oi > 0 and vol >= oi:
+            # Deep ITM with opening accumulation — institutional buy bias.
+            return "ASK"
+        if adel <= 0.15 and oi > 0 and (vol / max(oi, 1)) >= 5.0:
+            # Cheap far-OTM with V/OI shock — insider lotto bias.
+            return "ASK"
         return "MID"
     return "ASK" if last >= mid else "BID"
 
@@ -481,7 +517,17 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
         for opt in contracts:
             vol = int(opt.get("volume") or 0)
             oi = int(opt.get("open_interest") or 0)
-            if vol < 500:
+            # Volume floor: 500 contracts for normal contracts, 200 for
+            # high-notional/V-O-I-rich ones. Bumped 2026-05-12 after missing
+            # MU 9/18 $1030C ($2.5M notional, vol=307) — the trade had real
+            # institutional fingerprints (sweep, V/OI 2.6) but was under the
+            # 500-vol floor. Two-stage check preserves noise filter for
+            # cheap-name nonsense while opening the door to small-vol whale
+            # prints on expensive contracts.
+            est_notional_pre = vol * (float(opt.get("last") or 0)) * 100
+            if vol < 200:
+                continue
+            if vol < 500 and est_notional_pre < 1_000_000:
                 continue
             # OI=0 is legitimate for strikes that carried over with no settled
             # OI from the prior session — and is precisely where insider plays
@@ -491,11 +537,16 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
             # (Missed SPY 727P 5/7/26 +350% trade: vol=70,903 / oi=0 was
             # silently skipped here all day.)
             vol_oi = round(vol / oi, 1) if oi >= 1 else 999.0
-            # Two paths to qualify:
+            # Three paths to qualify:
             # 1. High V/OI ratio (unusual relative to open interest)
-            # 2. Massive notional (>$5M) regardless of V/OI — catches big block trades
+            # 2. Big notional ($2M+) — bumped down 5/12 from $5M to catch
+            #    MU 9/18 $1030C-class trades ($2.5M / V/OI 2.6 / vol 307)
+            # 3. Mid-V/OI ($1M+) — V/OI >=2.0 with $1M+ notional captures
+            #    real whale prints that don't quite reach the strict gate
             est_notional = vol * (float(opt.get("last") or 0)) * 100
-            if vol_oi < vol_oi_threshold and est_notional < 5_000_000:
+            if (vol_oi < vol_oi_threshold
+                    and est_notional < 2_000_000
+                    and not (vol_oi >= 2.0 and est_notional >= 1_000_000)):
                 continue
 
             strike = opt.get("strike", 0)
@@ -518,7 +569,10 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
                 ticker, strike, opt_exp, otype,
             )
             if side is None:
-                side = _detect_side(bid, ask, last)
+                # Pass delta/vol/oi so the snapshot fallback can apply
+                # directional bias on deep-ITM or V/OI-shock contracts
+                # (Bug #2 fix 2026-05-12).
+                side = _detect_side(bid, ask, last, delta=delta, vol=vol, oi=oi)
             sentiment = _detect_sentiment(otype, side)
             notional = vol * last * 100
 

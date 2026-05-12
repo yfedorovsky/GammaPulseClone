@@ -18,7 +18,14 @@ class Settings(BaseSettings):
     tradier_token: str = ""
     tradier_base_url: str = "https://sandbox.tradier.com/v1"
 
-    scan_interval_seconds: int = 120  # chain refresh every 2 minutes
+    # scan_interval_seconds: lowered 120 -> 60 (2026-05-12).
+    # Triggered by Bug #3 (close-window latency): FL0WG0D's 3:45 PM MU 9/18
+    # sweeps + 3:50 PM SLV ATM call buyer fired our alerts at 16:04-16:10
+    # ET (14-25 min late, post-close). 60s cycle + tighter close-window
+    # CHAIN_TTL (in worker.py) gets us to ≤2 min from print->Telegram.
+    # The chain cache TTL absorbs most of the API cost (cache hits on 2nd
+    # scan within the prior cache window).
+    scan_interval_seconds: int = 60   # was 120; bumped 2026-05-12
     stream_poll_seconds: int = 5      # spot poll fallback
 
     risk_free_rate: float = 0.045

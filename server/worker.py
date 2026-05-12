@@ -15,6 +15,7 @@ Flow per cycle:
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import time
 from collections import defaultdict
 from typing import Any
@@ -52,7 +53,50 @@ _exp_cache: dict[str, tuple[float, list[str]]] = {}  # ticker → (ts, [exps])
 _chain_cache: dict[str, tuple[float, list[dict]]] = {}  # "ticker:exp" → (ts, [contracts])
 
 EXP_TTL = 3600  # 1 hour — expirations rarely change
-CHAIN_TTL = 120  # 2 minutes — matches the scan cycle
+CHAIN_TTL = 120  # 2 minutes — matches the scan cycle (default)
+
+# Close-window boost (Bug #3 fix, 2026-05-12).
+# Between 15:30 and 16:15 ET, drop CHAIN_TTL to 45s so the worker re-fetches
+# chain data on every 60-second scan cycle. Captures late-day institutional
+# prints (FL0WG0D's 3:45 PM MU/SLV/GLD alerts were 14-25 min late under the
+# default 120s TTL — many cycles were cache-hits on stale data). The window
+# is bounded to a 45-min span so total API budget impact is small.
+CLOSE_WINDOW_CHAIN_TTL = 45  # seconds
+CLOSE_WINDOW_START = (15, 30)  # 15:30 ET
+CLOSE_WINDOW_END = (16, 15)    # 16:15 ET (matches alert RTH cutoff)
+
+
+def _in_close_window(now: _dt.datetime | None = None) -> bool:
+    """True if local time is in the 15:30-16:15 close-window boost band.
+
+    Assumes server clock is in Eastern Time, which matches the rest of the
+    codebase's RTH gating (see flow_alerts._is_rth_now). If you ever move
+    the server to a different TZ, gate this with a TZ-aware datetime.
+    """
+    now = now or _dt.datetime.now()
+    if now.weekday() >= 5:
+        return False  # weekends never boost
+    hm = (now.hour, now.minute)
+    return CLOSE_WINDOW_START <= hm < CLOSE_WINDOW_END
+
+
+def _effective_chain_ttl() -> int:
+    """Pick the active chain TTL based on time of day."""
+    return CLOSE_WINDOW_CHAIN_TTL if _in_close_window() else CHAIN_TTL
+
+# Smart expiration selector tiers (Bug #1 fix, 2026-05-12).
+# Triggered by MU 1/15/27 $1000P miss ($257M whale, fully outside chain due to
+# `exps[:max_exp]` cap). Prior behavior dropped LEAPs silently for any ticker
+# with more than `max_exp` listed expirations. New selector guarantees LEAP
+# coverage by tier rather than by raw count.
+NEAR_TERM_DAYS = 45     # always include all weeklies + near monthlies <= 45 DTE
+MID_TERM_MONTHLIES = 6  # next 6 monthly expirations after near-term band
+# LEAP threshold lowered 270 -> 200 days (2026-05-12). MU 2027-01-15 sits at
+# 248 DTE on 5/12/26 — under the old 270 threshold it was a "mid-term
+# monthly", and got bumped out of the bucket as the 7th monthly when the
+# chain included a (rare) November monthly. 200 DTE captures any monthly
+# in the 7-12 month band as a LEAP, guaranteeing inclusion.
+LEAP_THRESHOLD_DAYS = 200
 
 
 def _exp_fresh(ticker: str) -> list[str] | None:
@@ -67,9 +111,78 @@ def _chain_fresh(ticker: str, exp: str) -> list[dict] | None:
     key = f"{ticker}:{exp}"
     if key in _chain_cache:
         ts, contracts = _chain_cache[key]
-        if time.time() - ts < CHAIN_TTL:
+        # TTL adapts to close-window boost — see _effective_chain_ttl.
+        if time.time() - ts < _effective_chain_ttl():
             return contracts
     return None
+
+
+def _dte(exp: str, today: _dt.date | None = None) -> int:
+    """Calendar days from today to exp ('YYYY-MM-DD'). Returns 99999 on parse fail."""
+    try:
+        d = _dt.date.fromisoformat(exp)
+    except (ValueError, TypeError):
+        return 99999
+    base = today or _dt.date.today()
+    return (d - base).days
+
+
+def _is_third_friday(exp: str) -> bool:
+    """True if exp is the 3rd Friday of its month (standard monthly OPEX)."""
+    try:
+        d = _dt.date.fromisoformat(exp)
+    except (ValueError, TypeError):
+        return False
+    return d.weekday() == 4 and 15 <= d.day <= 21
+
+
+def _select_expirations(exps: list[str], max_exp: int) -> list[str]:
+    """Pick expirations to scan, guaranteeing LEAP coverage.
+
+    Selection tiers (in order, deduped, capped at 2*max_exp for safety):
+      1. All <= NEAR_TERM_DAYS DTE      (every weekly + near monthly)
+      2. Next MID_TERM_MONTHLIES monthly OPEX expirations after near-term
+      3. ALL >= LEAP_THRESHOLD_DAYS DTE (every LEAP)
+      4. Fill remaining slots up to max_exp with whatever's left, in DTE order
+
+    Returns expirations in chronological order. The 2*max_exp ceiling
+    prevents pathological cases (e.g., a symbol with 20+ LEAP expirations)
+    from blowing up the Tradier API budget. In practice, most equity LEAP
+    chains list 4-6 expirations (Jan/Jun cycles for 1-2 years out), so the
+    ceiling is rarely hit.
+    """
+    if not exps:
+        return []
+
+    near = [e for e in exps if _dte(e) <= NEAR_TERM_DAYS]
+    mid = [
+        e for e in exps
+        if NEAR_TERM_DAYS < _dte(e) < LEAP_THRESHOLD_DAYS and _is_third_friday(e)
+    ][:MID_TERM_MONTHLIES]
+    leaps = [e for e in exps if _dte(e) >= LEAP_THRESHOLD_DAYS]
+
+    # Dedup while preserving chronological order
+    seen: set[str] = set()
+    selected: list[str] = []
+    for bucket in (near, mid, leaps):
+        for e in bucket:
+            if e not in seen:
+                seen.add(e)
+                selected.append(e)
+
+    # If we still have budget, fill with whatever's left (e.g., extra non-OPEX
+    # mid-term expirations for symbols with rich chains).
+    if len(selected) < max_exp:
+        for e in exps:
+            if e not in seen and len(selected) < max_exp:
+                seen.add(e)
+                selected.append(e)
+
+    # Safety ceiling: even if all three buckets are huge, cap at 2*max_exp.
+    ceiling = max(max_exp, 2 * max_exp)
+    selected = selected[:ceiling]
+    selected.sort(key=_dte)
+    return selected
 
 
 async def _fetch_chain_cached(
@@ -84,7 +197,9 @@ async def _fetch_chain_cached(
 
     if not exps:
         return [], []
-    exps = exps[:max_exp]
+    # Smart selection: always include LEAPs (Bug #1 fix). Replaces the prior
+    # `exps[:max_exp]` slice that silently dropped any LEAPs past position 12.
+    exps = _select_expirations(exps, max_exp)
 
     # Chains: cached for 2 minutes per expiration
     all_contracts: list[dict[str, Any]] = []
@@ -153,8 +268,8 @@ def _compute_ivhv(iv: float | None, ticker: str) -> float | None:
 # ── Trend Day Detection ─────────────────────────────────────────────
 # Detects gap-and-go days where waiting for a pullback = missed entry.
 # Computed once per day per ticker (first worker cycle captures the open).
-
-import datetime as _dt
+# (datetime is imported as _dt at module top — needed earlier by
+# _select_expirations / _dte helpers for the LEAP coverage selector.)
 
 _gap_cache: dict[str, tuple[str, dict[str, Any]]] = {}  # ticker -> (date_str, result)
 
@@ -546,9 +661,12 @@ async def _scan_cycle(
     quotes = {sym: q["last"] for sym, q in quotes_full.items() if q.get("last")}
 
     # Process with concurrency control. Thanks to the chain cache, repeat
-    # cycles only fetch chains that expired from cache (2min TTL). First
-    # cycle is the most expensive; subsequent cycles are mostly cache hits.
-    sem = asyncio.Semaphore(4)
+    # cycles only fetch chains that expired from cache (TTL adapts to time
+    # of day — see _effective_chain_ttl). Bumped 4 -> 6 on 2026-05-12 so
+    # the per-cycle wall time stays under the 60s scan_interval target.
+    # First cycle is the most expensive; subsequent cycles are mostly cache
+    # hits except during the close-window boost (15:30-16:15 ET).
+    sem = asyncio.Semaphore(6)
     processed = 0
 
     # Greeks enrichment cadence: first cycle = all, then Tier 1 every cycle, Tier 2+3 alternate
@@ -571,9 +689,13 @@ async def _scan_cycle(
             return
         async with sem:
             try:
+                # max_exp is now a soft target (the selector adds LEAPs on
+                # top regardless). Tier-1/2: 14 mid-term slots; Tier-3: 8.
+                # Effective expirations scanned ≈ near-term band + monthlies
+                # + LEAPs, typically 12-22 per ticker.
                 state = await _compute_one(
                     tradier, t, spot,
-                        max_exp=12 if tier_of(t) <= 2 else 6,
+                        max_exp=14 if tier_of(t) <= 2 else 8,
                         greeks_client=_pick_greeks_client(t)
                 )
                 if state is None:
@@ -742,7 +864,7 @@ async def warmup_indexes() -> None:
                 try:
                     state = await _compute_one(
                         tradier, t, spot,
-                        max_exp=12,
+                        max_exp=14,  # LEAP-aware selector adds LEAPs on top
                         greeks_client=greeks_client,
                     )
                     if state is None:

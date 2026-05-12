@@ -157,6 +157,9 @@ TIER_3 = [
     # EVs & clean energy
     "FSLR", "ENPH", "SEDG", "RUN", "PLUG", "CHPT", "BLNK",
     "AMPX",  # Amprius Technologies — silicon anode batteries (Airbus, DoD, eVTOL)
+    "FCEL", "BE", "BLDP",  # fuel-cell trio (added 5/12 after FCEL 6/26 $19C
+                            # $1.3M sweep missed — Will Meade flagged but
+                            # FCEL wasn't in scanner universe at all)
     # Biotech / pharma
     "XBI", "MRNA", "BNTX", "NVAX", "BIIB", "ILMN", "ZTS", "SYK", "EW", "BSX", "BDX",
     "BAX", "RMD", "DXCM", "IDXX", "A",

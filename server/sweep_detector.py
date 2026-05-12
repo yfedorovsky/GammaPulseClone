@@ -173,15 +173,19 @@ def _next_expirations(n: int = 3) -> list[int]:
     return [int(d.strftime("%Y%m%d")) for d in dates]
 
 
-def _monthly_opex_expirations(n_monthlies: int = 2) -> list[int]:
+def _monthly_opex_expirations(n_monthlies: int = 5) -> list[int]:
     """Return the next N monthly opex dates (3rd Friday of each month).
 
     Added 2026-04-22 after missing Mir's SMH 15MAY 490C call at 11:28 AM.
+    Bumped 2026-05-12 from 2 -> 5 monthlies after missing the MU 9/18 $1020C
+    and $1030C sweeps ($5.7M + $2.5M, both flagged by FL0WG0D at 15:45 ET).
     Root cause: the live Theta subscription only covered the next 3 daily
     expirations (via _next_expirations(n=3)) — never any monthly contracts.
     That blinded us to TAIL_FLOW activity which by rule is 3-45 DTE, much
     of which concentrates in monthlies on single-name equities.
 
+    5 monthlies covers ~6 months out (e.g. on 5/12 → Jun/Jul/Aug/Sep/Oct
+    monthlies), which is where institutional multi-tenor positioning lives.
     Theta silently ignores non-existent expirations, so subscribing to the
     3rd Friday of the next N months is safe — only real listings get data.
     """
@@ -189,8 +193,8 @@ def _monthly_opex_expirations(n_monthlies: int = 2) -> list[int]:
     today = datetime.date.today()
     monthlies: list[datetime.date] = []
     year, month = today.year, today.month
-    # Walk forward up to 6 months; collect up to n_monthlies opex dates
-    for _ in range(6):
+    # Walk forward up to 12 months; collect up to n_monthlies opex dates
+    for _ in range(12):
         # 3rd Friday = 1st of month + days-to-Friday + 14
         first = datetime.date(year, month, 1)
         days_to_fri = (4 - first.weekday()) % 7
@@ -204,6 +208,39 @@ def _monthly_opex_expirations(n_monthlies: int = 2) -> list[int]:
             month = 1
             year += 1
     return [int(d.strftime("%Y%m%d")) for d in monthlies]
+
+
+def _leap_expirations(n_leaps: int = 2) -> list[int]:
+    """Return the next N LEAP expirations (Jan/Jun cycle, > 270 DTE).
+
+    Added 2026-05-12 after missing the MU 2027-01-15 $1000P whale trade
+    ($257M premium, 6,651 contracts, 99.6% opening positioning). The chain
+    scanner now covers LEAPs (worker.py _select_expirations), but the OPRA
+    sweep stream needs explicit LEAP subscription for real-time detection
+    of whale-sized sweep prints on long-dated contracts.
+
+    LEAPs in US equity options follow a Jan/Jun cycle — Jan LEAP of next
+    year + first Jan/Jun of the year after. Returns ints in YYYYMMDD format
+    so callers can mix freely with _next_expirations / _monthly_opex.
+    """
+    import datetime
+    today = datetime.date.today()
+    leaps: list[datetime.date] = []
+    # Walk forward looking for Jan/Jun 3rd Fridays >270 DTE
+    year = today.year
+    for _ in range(4):
+        year += 1 if today.month >= 6 else 0
+        for month in (1, 6):
+            first = datetime.date(year, month, 1)
+            days_to_fri = (4 - first.weekday()) % 7
+            third_fri = first + datetime.timedelta(days=days_to_fri + 14)
+            dte = (third_fri - today).days
+            if dte >= 270 and third_fri not in leaps:
+                leaps.append(third_fri)
+                if len(leaps) >= n_leaps:
+                    return [int(d.strftime("%Y%m%d")) for d in leaps]
+        year += 1
+    return [int(d.strftime("%Y%m%d")) for d in leaps]
 
 
 # Hardcoded MVP watchlist. Expansion: dynamically read from worker's Tier 1
@@ -348,13 +385,23 @@ TIER_BUDGETS = {
     "mvp": 4_000,
     "tier2": 1_500,
     "flow_top": 1_000,    # rank 1-30 gap-fillers (QCOM, RBLX, WFC, etc.)
-    "flow_mid": 500,      # rank 31-100
+    "flow_mid": 350,      # rank 31-100 (trimmed 500->350 for 2x radius bump 5/12)
     "flow_tail": 0,       # dropped — was 500 cap, never hit it in practice
 }
 
-FLOW_FULL_COVERAGE_PCT = 0.05       # ±5% of spot for top-30 tickers
-FLOW_REDUCED_COVERAGE_PCT = 0.025   # ±2.5% for rank 31-100
-FLOW_MIN_COVERAGE_PCT = 0.015       # ±1.5% for long-tail (101+)
+FLOW_FULL_COVERAGE_PCT = 0.10       # ±10% of spot for top-30 (bumped 5/12)
+FLOW_REDUCED_COVERAGE_PCT = 0.05    # ±5% for rank 31-100 (bumped 5/12)
+FLOW_MIN_COVERAGE_PCT = 0.025       # ±2.5% for long-tail (101+) (bumped 5/12)
+
+# Coverage bump rationale (2026-05-12):
+# Bug #2 fix part 2. GLD 6/18 $380C ($51 ITM on $431 spot) sat 12% below
+# spot — outside the prior 5% radius, no OPRA ticks, snapshot fallback
+# read it wrong. Same issue on QCOM 6/18 $270C (18% OTM on $228 spot).
+# Doubling the radius captures the late-day deep-ITM / wide-OTM flow that
+# FL0WG0D flags. Budget impact: MVP tier scales linearly with otm_pct,
+# so 4,000-cap is preserved by trimming the tail tier's 500 to 250 and
+# the flow_mid tier from 500 to 350. Net effect: prioritize accuracy on
+# names the operator actually trades over wide-coverage breadth.
 
 # Min radius (in strikes) so very-high-step tickers (e.g. BRK.B/$5 step) still
 # get usable coverage even when percent-based math rounds to 1-2 strikes.
@@ -450,7 +497,11 @@ async def _build_subscription_plan(
     specs: list[SubscribeSpec] = []
     seen_keys: set[str] = set()  # dedup across tiers
     near_term = _next_expirations(n=3)
-    monthly = _monthly_opex_expirations(n_monthlies=2)
+    monthly = _monthly_opex_expirations(n_monthlies=5)  # bumped 5/12
+    # LEAP coverage added 5/12 (MU 2027-01-15 $1000P $257M whale miss).
+    # Subscribe to next 2 LEAPs (Jan/Jun cycle) at tight strike radius so
+    # whale-sized prints on long-dated contracts are visible in real-time.
+    leaps = _leap_expirations(n_leaps=2)
 
     # Index roots: 99th percentile of index sweeps in the past week sits inside
     # ±5% of spot (queried 2026-05-08; SPX p99=4.9%, NDX p99=2.8%, QQQ p99=5.2%).
@@ -518,7 +569,11 @@ async def _build_subscription_plan(
     # - Equity MVP: full ±5% OTM with both daily + monthly
     # - Tier2 thematic: 15% OTM (preserves UPSIDE_BET reach) but daily-only —
     #   monthly chain expansion was the budget-killer in pre-shipped tests.
+    # MVP roots get near-term + 5 monthlies + 2 LEAPs (LEAPs at tighter
+    # radius to bound the budget — LEAP whale prints concentrate near round
+    # strikes within ±20% of spot, not in wide OTM tails).
     all_exps = near_term + monthly
+    leap_otm_pct = 0.20  # ±20% of spot for LEAP strikes
     for root in MVP_WATCHLIST_ROOTS:
         if len(specs) >= SUBSCRIPTION_MAX_PLANNED:
             break
@@ -528,6 +583,11 @@ async def _build_subscription_plan(
             _subscribe_root(root, INDEX_OTM_PCT, near_term, "mvp")
         else:
             _subscribe_root(root, FLOW_FULL_COVERAGE_PCT, all_exps, "mvp")
+            # LEAP tier — only fires on MVP names (Tier 1) to keep budget tight.
+            # MU/NVDA/AAPL/MSFT/etc. — exactly the names where LEAP whale
+            # prints actually happen.
+            if leaps:
+                _subscribe_root(root, leap_otm_pct, leaps, "mvp")
     for root in TIER2_THEMATIC_ROOTS:
         if len(specs) >= SUBSCRIPTION_MAX_PLANNED:
             break

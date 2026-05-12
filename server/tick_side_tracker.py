@@ -32,9 +32,23 @@ from typing import Deque
 from .thetadata import ThetaTrade
 
 
+# Window and threshold tuning (Bug #2 fix, 2026-05-12).
+#
+# Symptom: GLD 6/18 $380C tagged BID BEARISH all afternoon despite FL0WG0D
+# and Bullflow.io confirming massive ASK-side call buying. QCOM 6/18 $270C
+# tagged MID NEUTRAL despite 75% ASK fills. Both contracts had thin OPRA
+# bucket sizes (well under the 50-contract floor) so the snapshot fallback
+# took over — and snapshot side detection on late-day ITM/wide-spread
+# contracts is unreliable because `last` lags the quote.
+#
+# Fix:
+#   1. Lower MIN_WINDOW_SIZE 50 -> 20 so smaller-but-real buckets count.
+#   2. Soften DOMINANCE_RATIO 1.5 -> 1.3 so a 130:100 split still classifies.
+# The fallback_rate is logged in TickSideTracker.stats() — audit weekly to
+# confirm we didn't trade accuracy for noise.
 WINDOW_SECONDS = 60.0
-MIN_WINDOW_SIZE = 50
-DOMINANCE_RATIO = 1.5
+MIN_WINDOW_SIZE = 20  # was 50; relaxed 2026-05-12
+DOMINANCE_RATIO = 1.3  # was 1.5; relaxed 2026-05-12
 MAX_TRADES_PER_BUCKET = 200
 
 # (ticker_upper, strike_float, exp_str, right_lower)
