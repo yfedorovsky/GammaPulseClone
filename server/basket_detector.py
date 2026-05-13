@@ -159,7 +159,11 @@ async def detect_baskets() -> list[dict[str, Any]]:
             vol = int(opt.get("volume") or 0)
             oi = int(opt.get("open_interest") or 0)
             if tracker_side is None:
-                side = _detect_side(bid, ask, last, delta=delta, vol=vol, oi=oi)
+                est_notional = vol * last * 100 if last > 0 else 0
+                side = _detect_side(
+                    bid, ask, last,
+                    delta=delta, vol=vol, oi=oi, notional=est_notional,
+                )
             else:
                 side = tracker_side
             groups.setdefault((ticker, exp_date), []).append((opt, side, otype))

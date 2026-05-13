@@ -389,29 +389,51 @@ def _detect_side(
     delta: float = 0.0,
     vol: int = 0,
     oi: int = 0,
+    notional: float = 0.0,
 ) -> str:
     """Snapshot-based side classifier — fallback when tick tracker is thin.
 
-    Returns 'ASK' | 'BID' | 'MID'. The optional kwargs (delta/vol/oi) let
-    callers nudge the decision when `last` is stale on contracts with
-    obvious directional bias.
+    Returns 'ASK' | 'BID' | 'MID'. The optional kwargs (delta/vol/oi/notional)
+    let callers nudge the decision when `last` is stale.
 
-    Improvements (Bug #2 fix, 2026-05-12):
+    Improvements (Bug #2 layered fix, 2026-05-12):
       1. Tightened mid threshold 0.2 -> 0.15 — late-day prints settling
          "near mid" were over-classified as MID.
       2. ITM bias: deep-ITM contracts (|delta| > 0.70) on a fresh-OI day
          (vol >= oi, i.e. opening accumulation) get ASK by default — the
          GLD 6/18 $380C / QCOM 6/18 $270C / MU 5/15 $760C class of trade.
-         Snapshot `last` for these contracts lags actual fills routinely.
       3. Cheap-far-OTM bias: small-premium far-OTM (delta < 0.15) with
-         exploding V/OI (vol/oi >= 5) gets ASK — classic insider lotto
-         signature (SPY 5/7 $727P was a vol/oi=infinity miss; this is the
-         complement: when oi is non-zero but V/OI rich).
+         exploding V/OI (vol/oi >= 5) gets ASK — insider lotto signature.
+      4. STALE-LAST DETECTION (2026-05-12 evening): when `last` is strictly
+         outside the [bid, ask] band, the snapshot is provably stale (a
+         fresh trade can't print below bid or above ask). The default
+         logic would mis-classify (last < bid -> BID even though the
+         active institutional trade likely lifted offers). When this
+         happens on a high-notional deep-ITM contract, default to ASK
+         (institutional buying is the dominant case). The GLD 6/18 $380C
+         on 5/12 was the prototype: bid=$54.20, ask=$54.90, last=$54.05,
+         FL0WG0D confirmed bullish call buying, our scanner read BEARISH.
     """
     if bid <= 0 and ask <= 0:
         return "MID"
     mid = (bid + ask) / 2
     spread = ask - bid if ask > bid else 0.01
+
+    # Stale-last detection — gate (4) above
+    if (last > 0 and bid > 0 and ask > 0
+            and (last < bid or last > ask)):
+        # Snapshot is provably stale. Apply directional bias by
+        # underlying-likely-intent if the contract is institutionally-
+        # sized + directional-by-structure; else return MID rather than
+        # confidently mis-classify.
+        adel = abs(delta or 0.0)
+        if notional >= 5_000_000 and adel >= 0.70:
+            # Deep-ITM heavy notional with stale last: institutional buy
+            # is the dominant pattern (small offsetting prints below the
+            # bid are the residual that staled the `last`).
+            return "ASK"
+        return "MID"
+
     dist = abs(last - mid) / spread
     if dist < 0.15:
         # Last sits near mid — apply directional bias for contracts where
@@ -578,10 +600,14 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
                 ticker, strike, opt_exp, otype,
             )
             if side is None:
-                # Pass delta/vol/oi so the snapshot fallback can apply
-                # directional bias on deep-ITM or V/OI-shock contracts
-                # (Bug #2 fix 2026-05-12).
-                side = _detect_side(bid, ask, last, delta=delta, vol=vol, oi=oi)
+                # Pass delta/vol/oi/notional so the snapshot fallback can
+                # apply directional bias on deep-ITM, V/OI-shock, and
+                # stale-last contracts (Bug #2 layered fix 2026-05-12).
+                est_notional = vol * last * 100 if last > 0 else 0
+                side = _detect_side(
+                    bid, ask, last,
+                    delta=delta, vol=vol, oi=oi, notional=est_notional,
+                )
             sentiment = _detect_sentiment(otype, side)
             notional = vol * last * 100
 
