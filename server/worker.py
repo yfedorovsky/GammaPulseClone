@@ -914,17 +914,57 @@ async def _run_basket_detector() -> None:
 
     from .basket_detector import detect_baskets
     from .telegram import send as tg_send, format_basket_alert
+    from .earnings_calendar import get_next_er
 
     alerts = await detect_baskets()
     if not alerts:
         return
     print(f"[BASKET] fired {len(alerts)} basket alert(s)")
     for a in alerts:
+        # P0.7: hydrate earnings cache for this ticker before formatting
+        try:
+            await get_next_er(a.get("ticker", ""))
+        except Exception:
+            pass
         text = format_basket_alert(a)
         # priority=True so baskets bypass the global 3/10min rate limit
         # (they're rare-but-important by design). Per-ticker cooldown
         # still applies, plus the detector's own internal dedup.
         await tg_send(text, ticker=a.get("ticker", ""), priority=True)
+
+
+async def _run_spike_detector() -> None:
+    """Run the intraday spike detector and route alerts to Telegram.
+
+    P0.6 (2026-05-12). Called once per worker cycle from run_worker.
+    Detector itself is RTH-gated and self-dedups per 5-min bucket so a
+    burst that lasts multiple buckets gets one alert per bucket (not
+    one per cycle).
+    """
+    from .spike_detector import detect_spikes, format_spike_alert
+    from .telegram import send as tg_send
+    from .earnings_calendar import get_next_er, earnings_badge_sync
+
+    spikes = detect_spikes()
+    if not spikes:
+        return
+    print(f"[SPIKE] fired {len(spikes)} spike alert(s)")
+    for s in spikes:
+        # P0.7: hydrate earnings cache; append ER badge if within window.
+        try:
+            await get_next_er(s["ticker"])
+        except Exception:
+            pass
+        text = format_spike_alert(s)
+        try:
+            er = earnings_badge_sync(s["ticker"])
+            if er:
+                text = f"{text}\n{er}"
+        except Exception:
+            pass
+        # priority=True — spike alerts are time-sensitive (5-min bucket
+        # closed = signal is fresh-but-cooling within minutes).
+        await tg_send(text, ticker=s["ticker"], priority=True)
 
 
 async def run_worker(stop_event: asyncio.Event) -> None:
@@ -989,6 +1029,14 @@ async def run_worker(stop_event: asyncio.Event) -> None:
                     await maybe_fire_eod_leaderboard()
                 except Exception as lb_err:
                     print(f"[worker] leaderboard failed: {lb_err}")
+                # Intraday spike detector (P0.6, 2026-05-12). Fires when a
+                # ticker's 5-min flow bucket >= 10x today's baseline and
+                # >= $5M absolute. Catches Fidget-style "18x surge" alerts
+                # without needing tick-level OPRA. Self-dedups per bucket.
+                try:
+                    await _run_spike_detector()
+                except Exception as sd_err:
+                    print(f"[worker] spike_detector failed: {sd_err}")
             except Exception as e:  # noqa: BLE001
                 await cache.set_status(f"Cycle error: {e!r}")
             try:

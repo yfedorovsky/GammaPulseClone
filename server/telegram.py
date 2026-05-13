@@ -179,6 +179,17 @@ def format_flow_alert(alert: dict[str, Any]) -> str:
         action = f"🟡 NEUTRAL — {side}"
         trade = ""
 
+    # P0.7: earnings badge — read from sync cache (hydrated by
+    # flow_alerts._send_telegram before calling here, so cache is warm).
+    er_line = ""
+    try:
+        from .earnings_calendar import earnings_badge_sync
+        er = earnings_badge_sync(ticker)
+        if er:
+            er_line = f"\n{er}"
+    except Exception:
+        pass
+
     return (
         f"{emoji} <b>FLOW{conv_badge}</b>: {alert['ticker']}\n"
         f"<b>{action}</b>\n"
@@ -186,6 +197,7 @@ def format_flow_alert(alert: dict[str, Any]) -> str:
         f"Vol: {alert.get('volume', 0):,} | OI: {alert.get('oi', 0):,} | {alert.get('vol_oi', 0)}x\n"
         f"Notional: ${alert.get('notional', 0):,.0f} | Spot: ${alert.get('spot', 0):.2f}\n"
         f"{trade}"
+        f"{er_line}"
     )
 
 
@@ -333,11 +345,21 @@ def format_basket_alert(alert: dict[str, Any]) -> str:
     if extra > 0:
         strike_lines.append(f"  + {extra} more strike{'s' if extra != 1 else ''}")
 
+    # P0.7 earnings badge (sync cache read — assumed hydrated by caller).
+    er_line = ""
+    try:
+        from .earnings_calendar import earnings_badge_sync
+        er = earnings_badge_sync(ticker)
+        if er:
+            er_line = f"\n{er}"
+    except Exception:
+        pass
+
     return (
         f"{emoji} <b>BASKET</b> — {ticker} {exp} {otype}\n"
         f"<b>{n} strikes ${lo:g}–{hi:g}</b> | {side_label}\n"
         f"Aggregate: {vol:,} vol | ${notional:,.0f} premium\n"
-        f"Spot: ${spot:.2f}\n"
+        f"Spot: ${spot:.2f}{er_line}\n"
         f"Top strikes by notional:\n"
         + "\n".join(strike_lines)
     )

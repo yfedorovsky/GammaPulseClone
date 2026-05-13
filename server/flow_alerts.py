@@ -440,6 +440,15 @@ async def _send_telegram(alert: dict[str, Any]) -> None:
     s = get_settings()
     if not s.telegram_bot_token or not s.telegram_chat_id:
         return
+    # P0.7: hydrate the earnings cache for this ticker before formatting so
+    # the badge can append synchronously inside format_flow_alert. The
+    # earnings_calendar module caches for 24h so this is a no-op most of
+    # the time.
+    try:
+        from .earnings_calendar import get_next_er
+        await get_next_er(alert.get("ticker", ""))
+    except Exception:
+        pass
     emoji = (
         "🟢" if alert["sentiment"] == "BULLISH"
         else "🔴" if alert["sentiment"] == "BEARISH"
@@ -588,8 +597,18 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
             # Noise filters
             if notional < 250_000:
                 continue
+            # Deep-ITM exception (P0.5 / Bug #7 fix, 2026-05-12).
+            # Pre-fix: `abs(delta) > 0.95` always continued — assuming deep
+            # ITM = wide-spread noise. But TGT 5/15 $45C ($75 ITM on $120
+            # spot) printed 100 trades at $2.77M each in 7 seconds today =
+            # synthetic-stock accumulation. Fidget flagged it as the day's
+            # #1 TGT signal; we filtered it out. Allow ITM-equity-substitute
+            # trades through IF notional and vol both meet institutional
+            # thresholds (>= $1M and >= 100 vol). Otherwise still cull as
+            # the original wide-spread noise.
             if abs(delta) > 0.95:
-                continue
+                if not (notional >= 1_000_000 and vol >= 100):
+                    continue
             if iv > 2.0:
                 continue
 
