@@ -71,6 +71,8 @@ TIER_2 = [
     # Health
     "PFE", "MRK", "ABBV", "TMO", "ABT", "DHR", "MDT", "BMY", "AMGN", "GILD",
     "REGN", "VRTX", "ISRG", "ELV", "CI", "HUM", "CVS",
+    "CNC",  # Centene — added 5/12 after Cheddar's #2 bullish flow ($49.8M
+            # premium) missed by universe gap. Managed care, CMS exposure.
     # Consumer
     "MCD", "SBUX", "NKE", "LOW", "TGT", "TJX", "BKNG", "MAR", "F", "GM",
     "RIVN", "LCID", "CMG", "CAT", "DE", "BA", "LMT", "RTX", "NOC", "GD",

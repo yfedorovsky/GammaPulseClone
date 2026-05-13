@@ -979,6 +979,16 @@ async def run_worker(stop_event: asyncio.Event) -> None:
                     await _run_basket_detector()
                 except Exception as bd_err:
                     print(f"[worker] basket_detector failed: {bd_err}")
+                # End-of-day bullish-flow leaderboard digest. Self-gates to
+                # 16:00-16:15 ET and dedup'd via in-memory date stamp so it
+                # only fires once per trading day. Equivalent to Cheddar's
+                # daily Bullish Flow sidebar — top tickers by aggregate
+                # bullish premium (call-buy + put-write).
+                try:
+                    from .bullish_flow_leaderboard import maybe_fire_eod_leaderboard
+                    await maybe_fire_eod_leaderboard()
+                except Exception as lb_err:
+                    print(f"[worker] leaderboard failed: {lb_err}")
             except Exception as e:  # noqa: BLE001
                 await cache.set_status(f"Cycle error: {e!r}")
             try:
