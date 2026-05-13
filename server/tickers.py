@@ -99,6 +99,11 @@ TIER_3 = [
     # Photonics / Fiber / AI Infra (Mir's top themes 2026)
     # ANET promoted to TIER_1 Apr 21.
     "AAOI", "COHR", "GLW", "CIEN", "VRT", "AXTI", "LITE",
+    "NOK",  # Nokia — networking + telecom infra. Added 5/13 after
+            # 5/13 NOK 1/15/27 $27C LEAP whale ($1.69M premium, 13.5K
+            # contracts, peak 2,379/min at 11:36) AND NOK was #7
+            # most-traded options name today (499K contracts). Telecom
+            # exposure missing from universe.
     "VIAV",  # Apr 20 IBD add — Fiber Optics Group #1 (144% YTD)
     "LASR",  # nLIGHT — lasers/photonics, Group #6 Electronic-Parts leader
     # Semi Equipment (Mir's basket + Apr 20 IBD Group #3 expansion)
