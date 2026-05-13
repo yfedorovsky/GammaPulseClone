@@ -144,27 +144,32 @@ class SweepRollup:
 # ── Subscription planning ─────────────────────────────────────────────
 
 
-def _next_expirations(n: int = 3) -> list[int]:
+def _next_expirations(n: int = 10) -> list[int]:
     """Return the next N expiration dates as YYYYMMDD ints.
 
     Expanded 2026-04-22 to include Tuesday + Thursday so SPX/SPXW daily
-    expirations are captured on those days too (SPY/QQQ also have daily
-    expirations now as of ~2022, and index products have them daily).
+    expirations are captured on those days too.
 
-    Theta will silently ignore subscriptions to expirations that don't
-    exist for a given root, so over-subscribing weekdays is safe — the
-    benefit is never missing a 0DTE day on any product.
+    Default n bumped 3 -> 10 on 2026-05-13 (Bug #9 fix). The prior n=3 only
+    covered the next 3 weekdays, leaving second-week-out weekly
+    expirations in a coverage GAP between the daily-window and the
+    monthly-OPEX bucket. Concrete miss: INTC 5/22 $121C — 4,673
+    contracts, $3.16M premium, multi-exchange sweep cluster — never
+    surfaced because 5/22 is the 4th-Friday weekly (not a monthly) and
+    is 7+ trading days out (past the 3-day window). n=10 covers the next
+    full two weeks of weekday expirations, capturing every M/W/F daily-
+    expiry product + every Friday equity weekly without leaving a gap.
 
-    We still skip weekends because no US options trade Sat/Sun.
+    Theta silently ignores non-existent expirations, so over-subscribing
+    weekdays is safe — equities just won't have data on T/Th roots.
     """
     import datetime
     today = datetime.date.today()
     dates: list[datetime.date] = []
 
-    # Cover all weekdays in the next 14 calendar days. Daily-expiry index
-    # products (SPX, SPXW, QQQ, SPY) expire every weekday; M/W/F-only
-    # equities silently ignore T/Th subscriptions.
-    for d in range(0, 14):
+    # Cover all weekdays in the next 18 calendar days (gives n=10 a clean
+    # 2 weeks + a few extra days of headroom for holidays).
+    for d in range(0, 18):
         candidate = today + datetime.timedelta(days=d)
         if candidate.weekday() < 5:  # Mon-Fri
             dates.append(candidate)
@@ -738,6 +743,58 @@ class SweepDetector:
         except Exception as e:
             print(f"[SWEEP] insert failed: {e}")
             return
+
+        # Bug #9 layer 2 (2026-05-13): also synthesize a regular flow_alert
+        # row from this OPRA-confirmed sweep so callers that filter
+        # `is_sweep=0` (downstream tools, basket detector, leaderboard,
+        # spike detector — all use flow_alerts as their data source) still
+        # see institutional-grade activity that the Tradier chain scan
+        # missed. Defense-in-depth: when Tradier's chain volume lags OPRA
+        # tick stream, sweep_detector becomes the authoritative source.
+        #
+        # Direction inference from price walk: sweep executions that
+        # WALK PRICE DOWN ($X -> $X-Δ across the venue list) = seller
+        # hitting bids; UP = buyer lifting offers. This is the same
+        # heuristic the MU 1/15/27 $1000P forensic used yesterday.
+        try:
+            from .flow_alerts import insert_alert
+            # Price walk classification
+            if rollup.first_price > 0 and rollup.last_price > 0:
+                walk = rollup.last_price - rollup.first_price
+                walk_pct = walk / rollup.first_price
+                if walk_pct >= 0.005:        # walked UP >=0.5% = buyer
+                    side = "ASK"
+                elif walk_pct <= -0.005:     # walked DOWN >=0.5% = seller
+                    side = "BID"
+                else:
+                    side = "MID"
+            else:
+                side = "MID"
+            if rollup.option_type == "call":
+                sentiment = "BULLISH" if side == "ASK" else "BEARISH" if side == "BID" else "NEUTRAL"
+            else:
+                sentiment = "BULLISH" if side == "BID" else "BEARISH" if side == "ASK" else "NEUTRAL"
+            synthetic_alert = {
+                "ticker": rollup.ticker,
+                "strike": rollup.strike,
+                "expiration": rollup.expiration,
+                "option_type": rollup.option_type,
+                "volume": rollup.total_contracts,
+                "oi": payload.get("oi"),
+                "vol_oi": None,  # OI lookup is out-of-band; downstream computes
+                "last": rollup.last_price,
+                "bid": payload.get("bid"),
+                "ask": payload.get("ask"),
+                "side": side,
+                "sentiment": sentiment,
+                "iv": payload.get("iv"),
+                "delta": payload.get("delta"),
+                "notional": rollup.total_notional,
+                "spot": payload.get("spot"),
+            }
+            insert_alert(synthetic_alert, gex_info)
+        except Exception as e:
+            print(f"[SWEEP] synthetic flow_alert failed: {e}")
 
         # Log + Telegram
         from .live_flow_aggregator import _fmt_strike
