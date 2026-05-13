@@ -52,7 +52,9 @@ Decision = Literal["FIRE", "FIRE_SUMMARY", "DROP", "DEFER"]
 # ---- Config ----------------------------------------------------------------
 
 CLUSTER_WINDOW_SEC = 60
-CLUSTER_MIN_LEGS = 3
+CLUSTER_MIN_LEGS = 5            # was 3 — only orchestrated clusters fire
+CLUSTER_MIN_NOTIONAL = 10_000_000  # 2026-05-13: $10M aggregate floor
+CLUSTER_DIRECTIONAL_BIAS = True    # 2026-05-13: drop MIXED clusters
 LOW_NOTIONAL_FLOOR = 5_000_000
 HOURLY_CAP = 5
 
@@ -123,7 +125,10 @@ class ClusterCollapser:
 
             if len(items) >= self.min_legs:
                 summary = self._build_summary(ticker, items)
-                out.append(("FIRE_SUMMARY", summary))
+                if self._cluster_passes_gates(summary):
+                    out.append(("FIRE_SUMMARY", summary))
+                # else: silently drop — cluster was directionally mixed
+                # or below notional floor, not signal-worthy
             else:
                 for _, a in items:
                     out.append(("FIRE", a))
@@ -139,12 +144,33 @@ class ClusterCollapser:
                 continue
             if len(items) >= self.min_legs:
                 summary = self._build_summary(ticker, items)
-                out.append(("FIRE_SUMMARY", summary))
+                if self._cluster_passes_gates(summary):
+                    out.append(("FIRE_SUMMARY", summary))
             else:
                 for _, a in items:
                     out.append(("FIRE", a))
         self._buf.clear()
         return out
+
+    @staticmethod
+    def _cluster_passes_gates(summary: dict[str, Any]) -> bool:
+        """Post-build gates added 2026-05-13 to suppress noise clusters.
+
+        Two filters:
+          1. Notional floor — cluster's aggregate notional must be
+             institutional-grade. Sub-$10M clusters are usually MM activity
+             plus retail piggybacking, not orchestrated flow.
+          2. Directional clarity — drop pure-MIXED clusters (bull == bear).
+             A cluster that's directionally split provides no actionable
+             read; it's just an active 0DTE day. MIXED-BULL/MIXED-BEAR
+             (bull > bear or vice versa, but not 2x) still pass because
+             the lean is informative.
+        """
+        if (summary.get("total_notional") or 0) < CLUSTER_MIN_NOTIONAL:
+            return False
+        if CLUSTER_DIRECTIONAL_BIAS and summary.get("bias") == "MIXED":
+            return False
+        return True
 
     @staticmethod
     def _build_summary(
