@@ -148,6 +148,10 @@ TIER_3 = [
     "ENTG",  # Entegris — 63% YTD
     "PLAB",  # Photronics — 45% YTD
     "AEIS",  # Advanced Energy Industries — semi equipment power, Group #3
+    "NVTS",  # Navitas Semiconductor — GaN power ICs, AI-DC power infra.
+             # Added 5/13: Mir called 18JUN 20C @ $4 entry; buddy flagged
+             # it earlier same day. 7-day Mir backfill audit showed NVTS
+             # as one of only 2 universe gaps (HIMX was the other).
     # Space (SpaceX IPO catalyst)
     "ASTS", "RKLB",
     "SATS",  # EchoStar — spectrum/satellite/Boost Mobile, RS 93, liquid leader
