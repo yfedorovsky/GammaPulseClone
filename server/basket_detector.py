@@ -32,6 +32,7 @@ Basket-level fire criteria:
 """
 from __future__ import annotations
 
+import datetime as _dt
 import time
 from typing import Any
 
@@ -39,15 +40,21 @@ from .cache import cache
 
 
 # ── Tuning ────────────────────────────────────────────────────────────
-# Calibration revision 2026-05-13: first live run on a gap-up day showed
-# basket alerts dominating Telegram (17 candidates in 15 min, mostly
-# index products with 20+ strikes naturally hitting). Tightened to make
-# basket alerts mean "institutional concentration", not "active 0DTE day".
-MIN_STRIKES = 7             # was 5 — 7+ strikes filters routine index noise
-MIN_VOL_PER_STRIKE = 100    # under this, the strike doesn't count
-MIN_NOTIONAL_PER_STRIKE = 25_000
-ASK_BIAS_THRESHOLD = 0.55   # >= 55% of side reads "ASK" -> qualifying
-BASKET_MIN_NOTIONAL = 2_000_000  # was 500K — institutional-only floor
+# Calibration revision #2 2026-05-13 13:30: first calibration (7/$2M)
+# was still firing 12+ baskets in 3-min windows during gap-up tape and
+# burning per-ticker Telegram cooldowns that silenced SOE A-grade
+# signals. User: "consolidate or raise threshold". Doing both: tighter
+# qualification + per-ticker daily cap.
+MIN_STRIKES = 10            # was 7 — only orchestrated institutional ladders
+MIN_VOL_PER_STRIKE = 150    # was 100 — raise per-strike volume floor
+MIN_NOTIONAL_PER_STRIKE = 50_000   # was 25K — tighter strike-level floor
+ASK_BIAS_THRESHOLD = 0.65   # was 0.55 — clear directional, not mixed flow
+BASKET_MIN_NOTIONAL = 5_000_000    # was $2M — only whale-tier aggregate
+# Per-ticker daily cap: max 3 basket fires per (ticker, day) across all
+# (expiration, option_type, sentiment) sub-baskets. Prevents one active
+# name (MU, NVDA, etc.) from firing 5-10 baskets in a day and burning
+# the ticker's Telegram cooldown for the entire session.
+MAX_BASKETS_PER_TICKER_PER_DAY = 3
 
 # Index products generate basket noise by design — they have dozens of
 # liquid strikes per expiration and market-makers fill across the curve.
@@ -57,8 +64,28 @@ TICKER_BLOCKLIST = {"SPX", "SPXW", "NDX", "RUT", "VIX", "SPY", "QQQ", "IWM", "DI
 
 # Dedup state: (ticker, exp, otype, sentiment) -> (last_ts, last_count, last_notional)
 _basket_dedup: dict[tuple[str, str, str, str], tuple[float, int, float]] = {}
-DEDUP_WINDOW_SECONDS = 7200      # was 3600 — 2-hour window per (ticker, exp, type)
-GROWTH_REFIRE_THRESHOLD = 1.0    # was 0.5 — require basket to DOUBLE before re-firing
+DEDUP_WINDOW_SECONDS = 7200      # 2-hour window per (ticker, exp, type, sentiment)
+GROWTH_REFIRE_THRESHOLD = 1.0    # require basket to DOUBLE before re-firing
+
+# Per-ticker daily fire counter: (ticker, YYYY-MM-DD) -> fire_count.
+# Caps the total basket fires per ticker per day across ALL (exp, type,
+# sentiment) sub-baskets. Without this, a wide-flow name like MU could
+# fire CALL-BULL + CALL-BEAR + PUT-BULL + PUT-BEAR for 5/15 + 5/22 +
+# 6/18 = up to 12 baskets/day on one ticker.
+_basket_daily_count: dict[tuple[str, str], int] = {}
+
+
+def _today_str() -> str:
+    return _dt.date.today().isoformat()
+
+
+def _ticker_daily_count(ticker: str) -> int:
+    return _basket_daily_count.get((ticker, _today_str()), 0)
+
+
+def _bump_ticker_daily(ticker: str) -> None:
+    key = (ticker, _today_str())
+    _basket_daily_count[key] = _basket_daily_count.get(key, 0) + 1
 
 
 def _strike_is_qualifying(
@@ -184,7 +211,10 @@ async def detect_baskets() -> list[dict[str, Any]]:
 
     alerts: list[dict[str, Any]] = []
 
-    for (ticker, exp_date), opts in groups.items():
+    # Sort tickers so high-priority ones (in your portfolio or top-flow)
+    # get their basket fires processed before lower-priority tickers when
+    # the daily cap matters. For now, stable ordering by ticker name.
+    for (ticker, exp_date), opts in sorted(groups.items()):
         # Get spot for context
         spot = 0.0
         st = snapshot.get(ticker)
@@ -212,10 +242,16 @@ async def detect_baskets() -> list[dict[str, Any]]:
             if aggregate_notional < BASKET_MIN_NOTIONAL:
                 continue
 
+            # Per-ticker daily cap — prevent one wide-flow name from
+            # firing 5-10 baskets in a single session.
+            if _ticker_daily_count(ticker) >= MAX_BASKETS_PER_TICKER_PER_DAY:
+                continue
+
             key = (ticker, exp_date, otype, sentiment)
             if not _should_fire(key, len(basket_opts), aggregate_notional):
                 continue
             _record_fired(key, len(basket_opts), aggregate_notional)
+            _bump_ticker_daily(ticker)
 
             strike_summary = sorted(
                 [
@@ -251,3 +287,4 @@ async def detect_baskets() -> list[dict[str, Any]]:
 def reset_dedup_state() -> None:
     """Clear dedup state — only used in tests."""
     _basket_dedup.clear()
+    _basket_daily_count.clear()
