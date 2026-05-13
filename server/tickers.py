@@ -12,6 +12,35 @@ TIER_1 = [
     "USO",   # United States Oil Fund — Hormuz / OPEC / supply shocks
     "GLD",   # SPDR Gold Shares — safe-haven flows / real-rate regime
     "SLV",   # iShares Silver Trust — gold proxy + industrial demand beta
+    # Leveraged ETFs — institutional front-run vehicles (added 5/13).
+    # Buddy's hypothesis: NVDL flow yesterday signaled today's Trump-China-
+    # NVDA-CEO news before it broke. Levered ETFs let funds front-run a
+    # catalyst without showing in single-name flow optics.
+    "NVDL",  # 2x NVDA long — the canonical NVDA front-run signal
+    "TSLL",  # 1.5x TSLA long — TSLA proxy without single-name attention
+    "SOXL",  # 3x semis long — semi-thesis amplifier
+    "SOXS",  # 3x semis short — semi hedge tracker
+    "TQQQ",  # 3x QQQ long
+    "SQQQ",  # 3x QQQ short — broad-tech hedge tracker
+    "SPXL",  # 3x SPY long
+    "SPXU",  # 3x SPY short
+    "TECL",  # 3x tech sector long
+    "MSTU",  # 2x MSTR long — crypto/BTC proxy via MSTR
+    # Sector SPDRs (only SMH was covered; rest were gaps per 5/13 audit)
+    "XLK",   # Tech sector
+    "XLF",   # Financials
+    "XLE",   # Energy
+    "XLV",   # Healthcare
+    "XLY",   # Consumer discretionary
+    "XLP",   # Consumer staples
+    "XLI",   # Industrials
+    "XLU",   # Utilities
+    "XLB",   # Materials
+    "XLRE",  # Real estate
+    "XLC",   # Communications
+    "KRE",   # Regional banks (financials sub-sector)
+    # VIX/vol ETPs — flow signal for vol regime shifts
+    "VXX",   # VIX short-term futures ETN
     # Mega caps
     "AAPL", "MSFT", "NVDA", "GOOGL", "GOOG", "META", "AMZN", "TSLA",
     "AVGO", "LLY", "UNH", "V", "JPM", "XOM", "JNJ", "PG", "MA", "HD",
