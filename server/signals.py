@@ -2345,10 +2345,20 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
         if should_push and not sig.get("_suppress_telegram"):
             try:
                 from .telegram import send, format_soe_signal
+                # SOE A/A+ are the highest-conviction signals the engine
+                # produces. Use force=True for A+ to bypass ALL rate
+                # limits AND ticker cooldown — these can't be drowned by
+                # basket/flow/spike alerts firing on the same ticker.
+                # A grade uses force=True too because per-ticker cooldown
+                # (1 hour) was silently swallowing every A signal today
+                # whenever any other detector fired on the same ticker
+                # first (Bug #11 fix, 2026-05-13).
+                _grade = sig.get("grade", "")
                 await send(
                     format_soe_signal(sig),
                     ticker=ticker,
-                    priority=(sig["grade"] == "A+"),
+                    priority=(_grade == "A+"),
+                    force=(_grade in ("A", "A+")),
                 )
             except Exception:
                 pass
