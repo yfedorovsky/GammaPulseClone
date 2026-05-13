@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Clean restart of GammaPulse backend + Theta Terminal in the right order.
 
@@ -73,7 +73,12 @@ param(
     [int]$ThetaRestPort = 25503,
     [switch]$SkipTheta = $false,
     [int]$WaitForBackendStop = 8,
-    [int]$WaitForThetaReady = 60
+    [int]$WaitForThetaReady = 60,
+    # Bug #10 fix (May 13 2026): restore Mac Mini bridge architecture by
+    # launching the Discord listener as a separate process. Default true so
+    # the standalone path is canonical. Pass -SkipDiscord to opt out.
+    [switch]$SkipDiscord = $false,
+    [string]$RepoRoot = "C:\Dev\GammaPulse"
 )
 
 $ErrorActionPreference = "Stop"
@@ -128,9 +133,10 @@ if ($backendConn) {
 }
 
 if ($SkipTheta) {
-    Write-Good "Skipping Theta restart (SkipTheta=true). You can now restart backend."
-    return
+    Write-Good "Skipping Theta steps (SkipTheta=true). Will still relaunch Discord listener."
 }
+
+if (-not $SkipTheta) {
 
 # ── Step 2: Stop Theta Terminal ───────────────────────────────────────
 
@@ -179,7 +185,7 @@ if ($stillBound) {
 Write-Step "Step 4/5: relaunching Theta Terminal..."
 if (-not (Test-Path $ThetaJar)) {
     Write-Bad "  ThetaJar not found at: $ThetaJar"
-    Write-Bad "  Pass -ThetaJar <path> or copy the jar to that location."
+    Write-Bad "  Pass -ThetaJar [path] or copy the jar to that location."
     exit 1
 }
 
@@ -234,20 +240,73 @@ while ((Get-Date) -lt $deadline) {
 }
 if (-not $ready) {
     Write-Bad "  Theta REST didn't come online in ${WaitForThetaReady}s"
-    Write-Bad "  Open Theta Terminal manually, complete login, then restart backend."
-    exit 1
+    Write-Bad "  Open Theta Terminal manually (e.g. java -jar ThetaTerminalv3.jar)"
+    Write-Bad "  in its own cmd window. Continuing to Discord launch anyway —"
+    Write-Bad "  Discord doesn't depend on Theta. Restart backend AFTER Theta is up."
+} else {
+    Write-Good "  Theta REST is responding"
 }
-Write-Good "  Theta REST is responding"
+
+}  # end of `if (-not $SkipTheta)` — Steps 2-5
+
+# ── Step 6: Launch Discord listener as standalone process ─────────────
+#
+# Bug #10 (May 13 2026): mir_signal_cache hadn't received a row since
+# 2026-05-12 13:09 because the embedded FastAPI task path quietly failed.
+# Restore the original Mac Mini bridge architecture by running the listener
+# as its own process. It connects to Discord, parses Mir signals, and writes
+# directly to snapshots.db — fully independent of the backend.
+
+if ($SkipDiscord) {
+    Write-Step "Step 6/6: skipping Discord listener launch (SkipDiscord=true)"
+} else {
+    Write-Step "Step 6/6: launching Discord listener as separate process..."
+
+    # Kill any existing Discord listener process before relaunch. Match on
+    # command line so we don't nuke unrelated python processes.
+    $existing = Get-WmiObject Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match "server\.discord_listener" }
+    if ($existing) {
+        foreach ($p in $existing) {
+            Write-Step "  killing existing Discord listener PID=$($p.ProcessId)"
+            Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Seconds 1
+    }
+
+    $venvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+    if (-not (Test-Path $venvPython)) {
+        Write-Warn "  venv python not found at: $venvPython"
+        Write-Warn "  skipping Discord launch — fix the venv path or pass -SkipDiscord"
+    } else {
+        # Detached cmd window with /k so it stays open on crash for diagnostics.
+        # Activates venv then runs the listener as a module so relative imports work.
+        $cmdArgs = "/k cd /d `"$RepoRoot`" && `"$venvPython`" -m server.discord_listener"
+        $proc = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs `
+            -WindowStyle Normal -PassThru -ErrorAction Continue
+        if ($proc) {
+            Write-Good "  Discord listener launched (PID=$($proc.Id))"
+            Write-Step "  watch its window for '[DISCORD] Connected as ...' and check"
+            Write-Step "  mir_signal_cache for a fresh row after any Mir post."
+        } else {
+            Write-Bad "  failed to launch Discord listener"
+        }
+    }
+}
 
 # ── Done ──────────────────────────────────────────────────────────────
 
 Write-Host ""
 Write-Good "==============================================================="
-Write-Good "  Theta Terminal is up. Now start the backend:"
+Write-Good "  Theta Terminal + Discord listener are up. Now start the backend:"
 Write-Good ""
 Write-Good "    cd C:\Dev\GammaPulse"
 Write-Good "    uvicorn server.main:app --host 0.0.0.0 --port 8000"
 Write-Good ""
 Write-Good "  Watch for [SWEEP] subscription plan and confirm NO"
 Write-Good "  MAX_STREAMS_REACHED messages in the first 30 seconds."
+Write-Good ""
+Write-Good "  Verify Discord: check the new cmd window for '[DISCORD]"
+Write-Good "  Connected as ...'. mir_signal_cache should get a fresh row"
+Write-Good "  within ~30s of any TraderMir post."
 Write-Good "==============================================================="

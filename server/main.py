@@ -168,12 +168,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         _glw_primer_task = None
         print(f"[STARTUP] glw_primer task NOT started: {e}")
-    # Discord listener: opt-in via DISCORD_ENABLED=true in .env
+    # Discord listener: opt-in via DISCORD_ENABLED=true in .env.
+    # Bug #10 fix (May 13 2026): the embedded task path silently degraded for
+    # weeks (mir_signal_cache last write 2026-05-12 13:09 despite live Mir
+    # posts). Canonical path is now a standalone process launched by
+    # clean_restart.ps1: `python -m server.discord_listener`. Set
+    # DISCORD_EMBEDDED=true to fall back to in-process mode for debugging.
     _discord_task = None
     s = get_settings()
-    if s.discord_enabled and s.discord_token:
+    if s.discord_enabled and s.discord_token and getattr(s, "discord_embedded", False):
         from .discord_listener import run_discord_listener
         _discord_task = asyncio.create_task(run_discord_listener(_stop))
+        print("[STARTUP] Discord listener running EMBEDDED (DISCORD_EMBEDDED=true)")
+    elif s.discord_enabled and s.discord_token:
+        print("[STARTUP] Discord listener skipped — run standalone via `python -m server.discord_listener`")
     # ThetaData ISO sweep detector (consumes OPRA condition=95 prints via WebSocket)
     _sweep_task = None
     if s.thetadata_sweep_enabled:
@@ -516,7 +524,9 @@ async def ws_prices(websocket: WebSocket):
 @app.get("/api/alerts")
 async def alerts(since: int = 0, limit: int = 100, ticker: str = ""):
     """Get timestamped flow alerts. Use ?since=<epoch> for polling."""
-    rows = get_flow_alerts(since_ts=since, limit=limit, ticker=ticker or None)
+    rows = await asyncio.to_thread(
+        get_flow_alerts, since_ts=since, limit=limit, ticker=ticker or None,
+    )
     return {"alerts": rows, "count": len(rows)}
 
 
@@ -529,9 +539,15 @@ async def sweeps(
     Sweeps are OPRA condition code 95/126/128 — orders routed across multiple
     exchanges simultaneously, indicating urgency + conviction. Highest-hit-rate
     flow category per UW-style analysis.
+
+    NOTE: get_sweep_alerts is a synchronous SQLite call. Running it inline in
+    an async endpoint blocks the FastAPI event loop, which (under heavy write
+    contention from the live worker writing flow_alerts) cascades into 30-60s
+    response times and frontend "Loading..." deadlocks. Offload to a thread.
     """
-    rows = get_sweep_alerts(
-        since_ts=since, limit=limit, ticker=ticker or None, min_notional=min_notional
+    rows = await asyncio.to_thread(
+        get_sweep_alerts,
+        since_ts=since, limit=limit, ticker=ticker or None, min_notional=min_notional,
     )
     return {"sweeps": rows, "count": len(rows)}
 
@@ -585,7 +601,9 @@ async def flow_tail(
 
     Clusters of 2+ per ticker per day = strong signal.
     """
-    rows = get_tail_flow(since_date=since_date or None, ticker=ticker or None, limit=limit)
+    rows = await asyncio.to_thread(
+        get_tail_flow, since_date=since_date or None, ticker=ticker or None, limit=limit,
+    )
     return {"tail": rows, "count": len(rows), "rules": TAIL_FLOW_RULES}
 
 
@@ -606,7 +624,9 @@ async def flow_golden(
     The 3/23 example: $1.49M prem, 76% bought, V/OI 10.2x, 1% OTM, 1DTE.
     Fires 15 min before market-moving headlines.
     """
-    rows = get_golden_flow(since_date=since_date or None, ticker=ticker or None, limit=limit)
+    rows = await asyncio.to_thread(
+        get_golden_flow, since_date=since_date or None, ticker=ticker or None, limit=limit,
+    )
     return {
         "golden": rows, "count": len(rows),
         "rules": GOLDEN_FLOW_RULES,
@@ -632,7 +652,11 @@ async def flow_daily(
       min_oi: minimum open interest
       side: 'ALL' | 'BUY' | 'SELL' | 'NEUTRAL' (dominant-side filter)
     """
-    rows = get_flow_daily(
+    # Sync SQLite call → offload to threadpool so it doesn't block the event
+    # loop (same fix as /api/sweeps — under WAL write contention this can
+    # take 30-60s otherwise, with cascading "stuck on Loading" frontend bug).
+    rows = await asyncio.to_thread(
+        get_flow_daily,
         since_date=since_date or None,
         ticker=ticker or None,
         min_notional=min_notional,

@@ -889,3 +889,29 @@ async def run_discord_listener(stop_event: asyncio.Event) -> None:
                     await asyncio.wait_for(stop_event.wait(), timeout=30)
                 except asyncio.TimeoutError:
                     pass
+
+
+# ── Standalone-process entrypoint ─────────────────────────────────────────────
+# Restores the Mac Mini bridge architecture: run as `python -m server.discord_listener`
+# in its own process so embedded-task failures inside FastAPI can't silently
+# kill Mir signal ingestion. See docs/research/RESUME_BRIEF_BUGS_10_P1_P2.md.
+if __name__ == "__main__":
+    import signal as _signal
+
+    _stop = asyncio.Event()
+
+    def _handle_sigterm(*_a: Any) -> None:  # noqa: ANN401
+        print("[DISCORD] Signal received — shutting down")
+        _stop.set()
+
+    try:
+        _signal.signal(_signal.SIGINT, _handle_sigterm)
+        _signal.signal(_signal.SIGTERM, _handle_sigterm)
+    except (AttributeError, ValueError):
+        # Windows lacks SIGTERM, and signal.signal only works on the main thread.
+        pass
+
+    try:
+        asyncio.run(run_discord_listener(_stop))
+    except KeyboardInterrupt:
+        print("[DISCORD] KeyboardInterrupt — exiting")

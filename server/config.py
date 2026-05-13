@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     # Discord listener — ported from Mac Mini bridge
     discord_token: str = ""          # User token (discord.py-self)
     discord_enabled: bool = False    # Off by default, opt-in
+    # Bug #10 fix (May 13 2026): embedded FastAPI task silently failed for
+    # weeks (mir_signal_cache last write 2026-05-12 13:09 despite live Mir
+    # posts). Default False so the standalone `python -m server.discord_listener`
+    # process is canonical. Set DISCORD_EMBEDDED=true ONLY to fall back to
+    # the in-process model for debugging.
+    discord_embedded: bool = False
     anthropic_api_key: str = ""      # For Claude Haiku signal parsing
 
     # Flow alert filter (May 6 2026 spam-reduction project)
