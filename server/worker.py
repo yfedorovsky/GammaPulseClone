@@ -967,6 +967,36 @@ async def _run_spike_detector() -> None:
         await tg_send(text, ticker=s["ticker"], priority=True)
 
 
+async def _run_lotto_detector() -> None:
+    """Surface cheap-OTM short-dated ASK-dominant accumulation patterns
+    that are accelerating across scan cycles. Fires once per (ticker,
+    strike, exp) per 90min so the operator gets the freshest crystallized
+    pattern, not repeated noise."""
+    from .lotto_ladder_detector import detect_lotto_ladders, format_lotto_alert
+    from .telegram import send as tg_send
+    from .earnings_calendar import get_next_er, earnings_badge_sync
+
+    alerts = detect_lotto_ladders()
+    if not alerts:
+        return
+    print(f"[LOTTO] fired {len(alerts)} lotto-ladder alert(s)")
+    for a in alerts:
+        try:
+            await get_next_er(a["ticker"])
+        except Exception:
+            pass
+        text = format_lotto_alert(a)
+        try:
+            er = earnings_badge_sync(a["ticker"])
+            if er:
+                text = f"{text}\n{er}"
+        except Exception:
+            pass
+        # priority=True — these are by design the highest-leverage signals
+        # the scanner produces; bypass global rate limit.
+        await tg_send(text, ticker=a["ticker"], priority=True)
+
+
 async def run_worker(stop_event: asyncio.Event) -> None:
     settings = get_settings()
     tradier = TradierClient()
@@ -1037,6 +1067,17 @@ async def run_worker(stop_event: asyncio.Event) -> None:
                     await _run_spike_detector()
                 except Exception as sd_err:
                     print(f"[worker] spike_detector failed: {sd_err}")
+                # Lotto-ladder detector (2026-05-13). Surfaces cheap-OTM
+                # short-dated ASK-dominant accumulation that's accelerating
+                # across scan cycles — the NVDA 5/15 $220C / FCEL 19C
+                # archetype that goes 5-25x on next-day catalyst. The
+                # existing flow_alerts catches these contracts but buries
+                # them in 5000+ alerts/hour; this detector elevates ONLY
+                # the cheap-OTM-pre-rip signature.
+                try:
+                    await _run_lotto_detector()
+                except Exception as ll_err:
+                    print(f"[worker] lotto_detector failed: {ll_err}")
             except Exception as e:  # noqa: BLE001
                 await cache.set_status(f"Cycle error: {e!r}")
             try:
