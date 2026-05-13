@@ -196,11 +196,23 @@ def format_spike_alert(spike: dict) -> str:
     baseline = spike["baseline"]
     ratio = spike["ratio"]
     contracts = spike["contract_count"]
+
+    # P0.8 tag taxonomy (WHALE / PREM $XM / EXTREME / MAJOR / STRONG)
+    tag_line = ""
+    try:
+        from .alert_tags import tags_for_spike, format_tags
+        tags = tags_for_spike(spike)
+        if tags:
+            tag_line = f"\n{format_tags(tags)}"
+    except Exception:
+        pass
+
     return (
         f"⚡ <b>SPIKE</b> — {ticker} @ {bucket_time} ET\n"
         f"<b>{ratio:.0f}× day baseline</b>\n"
         f"Bucket: ${notional/1_000_000:.1f}M premium, {contracts} contracts\n"
-        f"Baseline: ${baseline/1_000_000:.2f}M / 5min\n"
+        f"Baseline: ${baseline/1_000_000:.2f}M / 5min"
+        f"{tag_line}\n"
         f"<i>Check the ticker — institutional concentration just hit</i>"
     )
 

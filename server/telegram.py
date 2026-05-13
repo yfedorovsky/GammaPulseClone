@@ -190,6 +190,16 @@ def format_flow_alert(alert: dict[str, Any]) -> str:
     except Exception:
         pass
 
+    # P0.8: Fidget-style tag taxonomy (WHALE / PREM $XM / LEAPS / etc).
+    tag_line = ""
+    try:
+        from .alert_tags import tags_for_flow_alert, format_tags
+        tags = tags_for_flow_alert(alert)
+        if tags:
+            tag_line = f"\n{format_tags(tags)}"
+    except Exception:
+        pass
+
     return (
         f"{emoji} <b>FLOW{conv_badge}</b>: {alert['ticker']}\n"
         f"<b>{action}</b>\n"
@@ -197,6 +207,7 @@ def format_flow_alert(alert: dict[str, Any]) -> str:
         f"Vol: {alert.get('volume', 0):,} | OI: {alert.get('oi', 0):,} | {alert.get('vol_oi', 0)}x\n"
         f"Notional: ${alert.get('notional', 0):,.0f} | Spot: ${alert.get('spot', 0):.2f}\n"
         f"{trade}"
+        f"{tag_line}"
         f"{er_line}"
     )
 
@@ -355,11 +366,21 @@ def format_basket_alert(alert: dict[str, Any]) -> str:
     except Exception:
         pass
 
+    # P0.8 tag taxonomy
+    tag_line = ""
+    try:
+        from .alert_tags import tags_for_basket, format_tags
+        tags = tags_for_basket(alert)
+        if tags:
+            tag_line = f"\n{format_tags(tags)}"
+    except Exception:
+        pass
+
     return (
         f"{emoji} <b>BASKET</b> — {ticker} {exp} {otype}\n"
         f"<b>{n} strikes ${lo:g}–{hi:g}</b> | {side_label}\n"
         f"Aggregate: {vol:,} vol | ${notional:,.0f} premium\n"
-        f"Spot: ${spot:.2f}{er_line}\n"
+        f"Spot: ${spot:.2f}{er_line}{tag_line}\n"
         f"Top strikes by notional:\n"
         + "\n".join(strike_lines)
     )
