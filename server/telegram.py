@@ -286,6 +286,63 @@ def format_soe_signal(sig: dict[str, Any]) -> str:
     return "\n".join(l for l in lines if l is not None)
 
 
+def format_basket_alert(alert: dict[str, Any]) -> str:
+    """Format a multi-strike basket alert for Telegram (Bug #6 2026-05-12).
+
+    Example output:
+      🟢 BASKET — MU 2026-05-15 CALL
+      12 strikes 800–1000 | ASK-dominant
+      Aggregate: 18,432 vol | $3.5M premium
+      Spot: $766.28
+      Strikes:
+        $800C: 1,247 vol @ $20.49  ($2.56M)
+        $850C: 612 vol @ $9.73  ($595K)
+        ... (10 more)
+    """
+    ticker = alert.get("ticker", "?")
+    exp = alert.get("expiration", "?")
+    otype = alert.get("option_type", "").upper()
+    sentiment = alert.get("sentiment", "NEUTRAL")
+    emoji = "🟢" if sentiment == "BULLISH" else "🔴" if sentiment == "BEARISH" else "🟡"
+    side_label = "ASK-dominant" if (
+        (otype == "CALL" and sentiment == "BULLISH")
+        or (otype == "PUT" and sentiment == "BEARISH")
+    ) else "BID-dominant"
+
+    n = alert.get("strike_count", 0)
+    lo = alert.get("strike_low", 0)
+    hi = alert.get("strike_high", 0)
+    vol = alert.get("aggregate_vol", 0)
+    notional = alert.get("aggregate_notional", 0)
+    spot = alert.get("spot", 0)
+
+    strikes = alert.get("strikes", []) or []
+    # Sort by notional desc and show top 6
+    top_strikes = sorted(strikes, key=lambda x: -x.get("notional", 0))[:6]
+    strike_lines = []
+    for s in top_strikes:
+        strike_lines.append(
+            f"  ${int(s['strike']) if s['strike'].is_integer() else s['strike']}{otype[0]}: "
+            f"{s['vol']:,} @ ${s['last']:.2f}  (${s['notional']/1_000_000:.2f}M)"
+            if s.get('notional', 0) >= 1_000_000
+            else
+            f"  ${int(s['strike']) if s['strike'].is_integer() else s['strike']}{otype[0]}: "
+            f"{s['vol']:,} @ ${s['last']:.2f}  (${s['notional']/1_000:.0f}K)"
+        )
+    extra = len(strikes) - len(top_strikes)
+    if extra > 0:
+        strike_lines.append(f"  + {extra} more strike{'s' if extra != 1 else ''}")
+
+    return (
+        f"{emoji} <b>BASKET</b> — {ticker} {exp} {otype}\n"
+        f"<b>{n} strikes ${lo:g}–{hi:g}</b> | {side_label}\n"
+        f"Aggregate: {vol:,} vol | ${notional:,.0f} premium\n"
+        f"Spot: ${spot:.2f}\n"
+        f"Top strikes by notional:\n"
+        + "\n".join(strike_lines)
+    )
+
+
 def format_exit_signal(signal: dict[str, Any]) -> str:
     sig_type = signal.get("signal_type", "?")
     ticker = signal.get("ticker", "?")

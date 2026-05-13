@@ -892,6 +892,41 @@ async def warmup_indexes() -> None:
                 pass
 
 
+async def _run_basket_detector() -> None:
+    """Run the multi-strike basket detector and route alerts to Telegram.
+
+    Bug #6 (2026-05-12). Called once per worker cycle from run_worker.
+    Detector itself is RTH-gated via the per-strike volume floor (no vol
+    outside hours), so we don't need a separate clock check here, but we
+    DO want to swallow any per-cycle exception so a basket detector bug
+    can't kill the cycle.
+    """
+    import datetime as __dt
+    # Belt-and-suspenders RTH gate. Mirror flow_alerts._is_rth_now logic
+    # so off-hours scans don't fire baskets on stale cache.
+    now = __dt.datetime.now()
+    if now.weekday() >= 5:
+        return
+    if now.hour < 9 or (now.hour == 9 and now.minute < 30):
+        return
+    if now.hour > 16 or (now.hour == 16 and now.minute > 15):
+        return
+
+    from .basket_detector import detect_baskets
+    from .telegram import send as tg_send, format_basket_alert
+
+    alerts = await detect_baskets()
+    if not alerts:
+        return
+    print(f"[BASKET] fired {len(alerts)} basket alert(s)")
+    for a in alerts:
+        text = format_basket_alert(a)
+        # priority=True so baskets bypass the global 3/10min rate limit
+        # (they're rare-but-important by design). Per-ticker cooldown
+        # still applies, plus the detector's own internal dedup.
+        await tg_send(text, ticker=a.get("ticker", ""), priority=True)
+
+
 async def run_worker(stop_event: asyncio.Event) -> None:
     settings = get_settings()
     tradier = TradierClient()
@@ -934,6 +969,16 @@ async def run_worker(stop_event: asyncio.Event) -> None:
                         await compute_swing_watchlist(mode="standard")
                     except Exception as sa_err:
                         print(f"[worker] swing_scanner refresh failed: {sa_err}")
+                # Multi-strike basket detector — Bug #6 fix (2026-05-12).
+                # Catches OTM-ladder accumulation patterns (e.g., MU 5/15
+                # call buying across 12 strikes 800-1000 that no single-
+                # strike alert can see). Self-dedups per (ticker, exp,
+                # type, sentiment) on a 60-min rolling window. RTH-gated
+                # inside the detector itself.
+                try:
+                    await _run_basket_detector()
+                except Exception as bd_err:
+                    print(f"[worker] basket_detector failed: {bd_err}")
             except Exception as e:  # noqa: BLE001
                 await cache.set_status(f"Cycle error: {e!r}")
             try:
