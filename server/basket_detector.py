@@ -39,16 +39,26 @@ from .cache import cache
 
 
 # ── Tuning ────────────────────────────────────────────────────────────
-MIN_STRIKES = 5             # need at least 5 ASK-dominant strikes
+# Calibration revision 2026-05-13: first live run on a gap-up day showed
+# basket alerts dominating Telegram (17 candidates in 15 min, mostly
+# index products with 20+ strikes naturally hitting). Tightened to make
+# basket alerts mean "institutional concentration", not "active 0DTE day".
+MIN_STRIKES = 7             # was 5 — 7+ strikes filters routine index noise
 MIN_VOL_PER_STRIKE = 100    # under this, the strike doesn't count
 MIN_NOTIONAL_PER_STRIKE = 25_000
 ASK_BIAS_THRESHOLD = 0.55   # >= 55% of side reads "ASK" -> qualifying
-BASKET_MIN_NOTIONAL = 500_000  # aggregate floor
+BASKET_MIN_NOTIONAL = 2_000_000  # was 500K — institutional-only floor
+
+# Index products generate basket noise by design — they have dozens of
+# liquid strikes per expiration and market-makers fill across the curve.
+# Skip them entirely; their institutional positioning surfaces through
+# the GEX wall + flow_alerts paths instead.
+TICKER_BLOCKLIST = {"SPX", "SPXW", "NDX", "RUT", "VIX", "SPY", "QQQ", "IWM", "DIA"}
 
 # Dedup state: (ticker, exp, otype, sentiment) -> (last_ts, last_count, last_notional)
 _basket_dedup: dict[tuple[str, str, str, str], tuple[float, int, float]] = {}
-DEDUP_WINDOW_SECONDS = 3600
-GROWTH_REFIRE_THRESHOLD = 0.5  # 50% growth in count OR notional re-fires
+DEDUP_WINDOW_SECONDS = 7200      # was 3600 — 2-hour window per (ticker, exp, type)
+GROWTH_REFIRE_THRESHOLD = 1.0    # was 0.5 — require basket to DOUBLE before re-firing
 
 
 def _strike_is_qualifying(
@@ -140,6 +150,10 @@ async def detect_baskets() -> list[dict[str, Any]]:
         if ":" not in cache_key:
             continue
         ticker, exp_date = cache_key.split(":", 1)
+        # Skip index products — too noisy for the basket-as-conviction
+        # signal (dozens of liquid strikes per expiration by design).
+        if ticker in TICKER_BLOCKLIST:
+            continue
         for opt in contracts:
             otype = (opt.get("option_type") or "").lower()
             if otype not in ("call", "put"):
