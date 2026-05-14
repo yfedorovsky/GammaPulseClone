@@ -93,7 +93,9 @@ TIER_2 = [
     "XMAG",  # Roundhill Magnificent Seven ex-mag-7 (large-cap minus FAANG)
     "RSP",   # Invesco S&P 500 Equal Weight ETF
     # Financials
-    "WFC", "C", "GS", "MS", "SCHW", "AXP", "BLK", "SPGI", "BRK.B", "ICE",
+    # BRK/B uses Tradier's slash convention (not BRK.B); the dot form returns
+    # no quotes/expirations. Confirmed 5/13 via probe (P1 closing audit).
+    "WFC", "C", "GS", "MS", "SCHW", "AXP", "BLK", "SPGI", "BRK/B", "ICE",
     "CME", "PNC", "USB", "COF", "TFC",
     # Energy
     "CVX", "COP", "SLB", "OXY", "EOG", "MPC", "PSX", "VLO", "HAL",
@@ -107,15 +109,21 @@ TIER_2 = [
     "RIVN", "LCID", "CMG", "CAT", "DE", "BA", "LMT", "RTX", "NOC", "GD",
     "HON", "GE", "UPS", "FDX", "UNP", "CSX", "NSC", "LUV", "DAL", "UAL", "AAL",
     # Retail / consumer
-    "WBA", "KR", "DG", "DLTR", "BBY", "ROST", "BURL", "M", "KSS", "JWN",
+    # JWN removed 5/13 (P1 audit): Nordstrom taken private Dec 2024, only LEAP
+    # remaining — effectively no options coverage.
+    "WBA", "KR", "DG", "DLTR", "BBY", "ROST", "BURL", "M", "KSS",
     # Industrials & materials
-    "LIN", "APD", "SHW", "ECL", "NUE", "FCX", "X", "CLF", "AA",
+    # X removed 5/13 (P1 audit): US Steel acquired by Nippon Steel Jun 2025;
+    # Tradier still returns stale expirations but no real liquidity.
+    "LIN", "APD", "SHW", "ECL", "NUE", "FCX", "CLF", "AA",
     # Paper / packaging cyclicals (added 2026-04-22 after IP bear miss)
     # Classic cyclical shorts that we had zero coverage on. Mid-caps,
     # liquid options chains, trade well in risk-off tapes.
     "IP",    # International Paper — Discord friend flagged as bear today
     "PKG",   # Packaging Corp of America — direct IP peer
-    "WRK",   # Smurfit WestRock — post-merger container mega-cap
+    # WRK removed 5/13 (P1 audit): WestRock merged with Smurfit Kappa
+    # July 2024 to form SW (Smurfit Westrock plc). WRK ticker dead; SW
+    # is the live ticker — add SW separately if needed.
     # Real estate / REITs
     "PLD", "AMT", "EQIX", "CCI", "PSA", "O", "SPG", "WELL", "DLR",
     # Utilities
@@ -124,7 +132,10 @@ TIER_2 = [
 
 TIER_3 = [
     # China ADRs
-    "BABA", "PDD", "JD", "BIDU", "NIO", "XPEV", "LI", "TCEHY", "BILI", "TME",
+    # TCEHY removed 5/13 (P1 audit): Tencent OTC ADR has zero listed US options
+    # (sanctions / OFAC overhang pulled MM liquidity); stock quotes fine but
+    # expirations() returns 0 dates. No options = nothing to scan.
+    "BABA", "PDD", "JD", "BIDU", "NIO", "XPEV", "LI", "BILI", "TME",
     # Photonics / Fiber / AI Infra (Mir's top themes 2026)
     # ANET promoted to TIER_1 Apr 21.
     "AAOI", "COHR", "GLW", "CIEN", "VRT", "AXTI", "LITE",
@@ -207,7 +218,9 @@ TIER_3 = [
     "MARA", "RIOT", "MSTR", "CLSK", "HUT", "BITF",
     "CIFR",  # Cipher Mining — BTC miner pivoted to AI hosting (Fluidstack/Google deal)
     # Speculatives / meme
-    "GME", "AMC", "RDDT", "BB", "SOFI", "WISH", "CLOV", "PTON", "BYND", "FUBO",
+    # WISH removed 5/13 (P1 audit): ContextLogic delisted from NASDAQ 2023;
+    # no options chain on Tradier.
+    "GME", "AMC", "RDDT", "BB", "SOFI", "CLOV", "PTON", "BYND", "FUBO",
     # Cyclicals / other
     "F", "GM", "CAT", "DE", "PCAR", "CMI", "ITW", "ROK", "DOV", "EMR",
     "ETN", "PH", "ROP", "AME", "FTV", "IR", "OTIS", "CARR",
