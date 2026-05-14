@@ -511,9 +511,16 @@ async def _compute_one(
                     # Spot-consistency check: Theta's underlying vs Tradier spot.
                     # Threshold adapts to market hours:
                     #  - During RTH (9:30-16:00 ET): 0.3% — catches 0DTE staleness
-                    #  - After hours / weekends: 2.0% — Theta's CTA/UTP feed is
-                    #    15-min delayed for NYSE-listed names and both feeds'
-                    #    "last print" times drift in sparse AH liquidity.
+                    #  - After hours / weekends: 10% — Theta's CTA/UTP feed is
+                    #    15-min delayed for NYSE-listed names AND its reference
+                    #    `underlying_price` field has been observed returning
+                    #    wrong values for newly-tracked ETFs (e.g. XLP showed
+                    #    $218 vs Tradier $84 on 2026-05-13 — clearly bogus, not
+                    #    a feed-lag artifact). The old 2.0% AH threshold
+                    #    spam-flagged the legit 4-6% leveraged-ETF AH lag.
+                    #    10% is loose enough to silence that noise while still
+                    #    catching outright wrongness (>10% divergence is never
+                    #    feed-timing; it means Theta's reference data is bad).
                     t_spot = get_theta_spot(ticker)
                     if t_spot and spot:
                         import datetime as _dt
@@ -524,7 +531,7 @@ async def _compute_one(
                             and (now.hour, now.minute) >= (9, 30)
                             and now.hour < 16
                         )
-                        threshold = 0.003 if in_rth else 0.02
+                        threshold = 0.003 if in_rth else 0.10
                         pct_diff = abs(t_spot - spot) / spot
                         if pct_diff > threshold:
                             print(f"[GEX_STALE_SPOT] {ticker}: Tradier=${spot:.2f} Theta=${t_spot:.2f} ({pct_diff*100:.1f}% divergence)")
