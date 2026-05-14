@@ -189,6 +189,19 @@ async def _fetch_chain_cached(
     tradier: TradierClient, ticker: str, max_exp: int = 12
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Fetch chain with aggressive caching. Only hits API for stale data."""
+    # P2 (5/13): hot tickers (had a $1M+ alert in the last 30 min) get
+    # +4 expirations of coverage so secondary/leg prints further out on
+    # the curve don't slip through the default cap. The chain cache TTL
+    # (120s normal / 45s close-window) is already aggressive enough that
+    # we don't need to bust it — newly-listed strikes will appear within
+    # one cycle of CBOE adding them.
+    try:
+        from .hot_chain import is_hot, HOT_CHAIN_MAX_EXP_BUMP
+        if is_hot(ticker):
+            max_exp = max_exp + HOT_CHAIN_MAX_EXP_BUMP
+    except Exception:
+        pass
+
     # Expirations: cached for 1 hour
     exps = _exp_fresh(ticker)
     if exps is None:

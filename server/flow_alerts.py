@@ -582,6 +582,32 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
         if not spot:
             continue
 
+        # P2 (5/13): if this ticker is currently hot (had a $1M+ alert in
+        # the last 30 min), lower the gates so adjacent strikes riding the
+        # same whale wave clear the threshold. Reads from hot_chain module
+        # once per ticker, not per contract.
+        try:
+            from .hot_chain import (
+                is_hot,
+                HOT_VOL_FLOOR,
+                HOT_NOTIONAL_FLOOR_LOW,
+                HOT_NOTIONAL_FLOOR_HIGH,
+            )
+            _ticker_hot = is_hot(ticker)
+        except Exception:
+            _ticker_hot = False
+            HOT_VOL_FLOOR = 100
+            HOT_NOTIONAL_FLOOR_LOW = 500_000
+            HOT_NOTIONAL_FLOOR_HIGH = 1_000_000
+
+        # Default gates (post-5/12 Bug #5 fix): vol>=200, vol<500 needs
+        # est_notional >= $1M, V/OI fallback path needs >= $2M.
+        # Hot-ticker gates: vol>=100, vol<500 needs >=$500K, V/OI fallback
+        # path needs >=$1M.
+        vol_floor = HOT_VOL_FLOOR if _ticker_hot else 200
+        notional_floor_low = HOT_NOTIONAL_FLOOR_LOW if _ticker_hot else 1_000_000
+        notional_floor_high = HOT_NOTIONAL_FLOOR_HIGH if _ticker_hot else 2_000_000
+
         for opt in contracts:
             vol = int(opt.get("volume") or 0)
             oi = int(opt.get("open_interest") or 0)
@@ -591,11 +617,11 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
             # institutional fingerprints (sweep, V/OI 2.6) but was under the
             # 500-vol floor. Two-stage check preserves noise filter for
             # cheap-name nonsense while opening the door to small-vol whale
-            # prints on expensive contracts.
+            # prints on expensive contracts. Hot-ticker mode lowers further.
             est_notional_pre = vol * (float(opt.get("last") or 0)) * 100
-            if vol < 200:
+            if vol < vol_floor:
                 continue
-            if vol < 500 and est_notional_pre < 1_000_000:
+            if vol < 500 and est_notional_pre < notional_floor_low:
                 continue
             # OI=0 is legitimate for strikes that carried over with no settled
             # OI from the prior session — and is precisely where insider plays
@@ -612,8 +638,11 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
             # 3. Mid-V/OI ($1M+) — V/OI >=2.0 with $1M+ notional captures
             #    real whale prints that don't quite reach the strict gate
             est_notional = vol * (float(opt.get("last") or 0)) * 100
+            # notional_floor_high: $2M default, $1M when hot (P2 5/13).
+            # The V/OI >= 2.0 + $1M side-channel is unchanged — it's already
+            # the most generous path for whale prints with mid-vol.
             if (vol_oi < vol_oi_threshold
-                    and est_notional < 2_000_000
+                    and est_notional < notional_floor_high
                     and not (vol_oi >= 2.0 and est_notional >= 1_000_000)):
                 continue
 
@@ -702,6 +731,16 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
             }
             insert_alert(alert, gex_info)
             new_alerts.append(alert)
+
+            # P2 (5/13): mark ticker hot if this alert's notional clears
+            # $1M. Lowers gates + bumps max_exp on this ticker's next scan
+            # cycle. Defense-in-depth for adjacent strikes riding the
+            # same whale wave.
+            try:
+                from .hot_chain import mark_hot
+                mark_hot(ticker, notional)
+            except Exception:
+                pass
 
             # Auto-track for exit signals
             try:
