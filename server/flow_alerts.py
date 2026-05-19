@@ -607,10 +607,32 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
         vol_floor = HOT_VOL_FLOOR if _ticker_hot else 200
         notional_floor_low = HOT_NOTIONAL_FLOOR_LOW if _ticker_hot else 1_000_000
         notional_floor_high = HOT_NOTIONAL_FLOOR_HIGH if _ticker_hot else 2_000_000
+        # Fix C (5/19): lower V/OI threshold for hot tickers from 3.0 -> 2.0.
+        # Matches the existing "V/OI >= 2.0 + $1M" side-channel — consistent
+        # whale-signature floor. Catches ARM 280C-style trades (V/OI 1.77
+        # with $545K premium) that UW flagged today but we missed.
+        effective_vol_oi_threshold = 2.0 if _ticker_hot else vol_oi_threshold
 
         for opt in contracts:
             vol = int(opt.get("volume") or 0)
             oi = int(opt.get("open_interest") or 0)
+            est_notional_pre = vol * (float(opt.get("last") or 0)) * 100
+
+            # Fix B (5/19): LOW-VOL WHALE BYPASS. Two patterns:
+            #   1. OI=0 fresh-strike whale: insider opens a strike no one
+            #      has touched (SNDK 1375P 6/18 today: vol=14, OI=0, $155K)
+            #   2. OI<=5 ratio-extreme whale: insider enters on a stale,
+            #      barely-positioned strike (STX 755C: vol=40, OI=3, $174K;
+            #      MU 727.5C: vol=77, OI=2, $460K — both today)
+            # Both bypass the vol_floor + notional_floor_low gates ONLY;
+            # downstream IV, delta, dedup, and sentiment checks still apply.
+            # Bar: notional >= $150K to ensure it's not penny-options noise.
+            fresh_strike_whale = (
+                (oi == 0 and vol >= 10 and est_notional_pre >= 150_000)
+                or
+                (0 < oi <= 5 and vol >= 10 and est_notional_pre >= 150_000)
+            )
+
             # Volume floor: 500 contracts for normal contracts, 200 for
             # high-notional/V-O-I-rich ones. Bumped 2026-05-12 after missing
             # MU 9/18 $1030C ($2.5M notional, vol=307) — the trade had real
@@ -618,11 +640,11 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
             # 500-vol floor. Two-stage check preserves noise filter for
             # cheap-name nonsense while opening the door to small-vol whale
             # prints on expensive contracts. Hot-ticker mode lowers further.
-            est_notional_pre = vol * (float(opt.get("last") or 0)) * 100
-            if vol < vol_floor:
-                continue
-            if vol < 500 and est_notional_pre < notional_floor_low:
-                continue
+            if not fresh_strike_whale:
+                if vol < vol_floor:
+                    continue
+                if vol < 500 and est_notional_pre < notional_floor_low:
+                    continue
             # OI=0 is legitimate for strikes that carried over with no settled
             # OI from the prior session — and is precisely where insider plays
             # often appear (fresh strike, no public position, then a single
@@ -641,7 +663,10 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
             # notional_floor_high: $2M default, $1M when hot (P2 5/13).
             # The V/OI >= 2.0 + $1M side-channel is unchanged — it's already
             # the most generous path for whale prints with mid-vol.
-            if (vol_oi < vol_oi_threshold
+            # effective_vol_oi_threshold: 3.0 default, 2.0 when hot (Fix C 5/19).
+            # Fresh-strike whales (OI=0) auto-pass this gate because
+            # vol_oi=999 always clears any threshold.
+            if (vol_oi < effective_vol_oi_threshold
                     and est_notional < notional_floor_high
                     and not (vol_oi >= 2.0 and est_notional >= 1_000_000)):
                 continue

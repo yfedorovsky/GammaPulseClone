@@ -12,6 +12,10 @@ TIER_1 = [
     "USO",   # United States Oil Fund — Hormuz / OPEC / supply shocks
     "GLD",   # SPDR Gold Shares — safe-haven flows / real-rate regime
     "SLV",   # iShares Silver Trust — gold proxy + industrial demand beta
+    "TLT",   # 20+ Year Treasury Bond ETF — duration / long-rate macro hedge.
+             # Added 5/19: UW flagged TLT $84C 6/26 (4,499 contracts on
+             # the ASK, $405K premium, 94% chain bid/ask). Major macro-flow
+             # gap before now — institutions hedge rate cuts via TLT calls.
     # Leveraged ETFs — institutional front-run vehicles (added 5/13).
     # Buddy's hypothesis: NVDL flow yesterday signaled today's Trump-China-
     # NVDA-CEO news before it broke. Levered ETFs let funds front-run a
@@ -126,6 +130,10 @@ TIER_2 = [
     # is the live ticker — add SW separately if needed.
     # Real estate / REITs
     "PLD", "AMT", "EQIX", "CCI", "PSA", "O", "SPG", "WELL", "DLR",
+    "CBRS",  # CBRE Group — commercial real estate services. Added 5/19:
+             # UW flagged CBRS 340C 7/17 ($118K, ASK-side); also surfaced
+             # in our Mir signal cache yesterday as WATCH HIGH from
+             # TraderMir. Two-source confirmation, no prior coverage.
     # Utilities
     "NEE", "DUK", "SO", "AEP", "EXC", "D", "SRE", "XEL", "PEG",
 ]
@@ -139,6 +147,11 @@ TIER_3 = [
     # Photonics / Fiber / AI Infra (Mir's top themes 2026)
     # ANET promoted to TIER_1 Apr 21.
     "AAOI", "COHR", "GLW", "CIEN", "VRT", "AXTI", "LITE",
+    "POET",  # POET Technologies — photonics integration. Added 5/19 after
+             # UW flagged POET $17C 7/17 as the #1 contract by volume
+             # across the entire UW universe today (131K vol, OI 62K, V/OI 2.09).
+             # Mr. Whale also flagged it as "under-the-radar bullish" with
+             # +115% / 30 days. Was on our radar via PUT loss; now flipped.
     "NOK",  # Nokia — networking + telecom infra. Added 5/13 after
             # 5/13 NOK 1/15/27 $27C LEAP whale ($1.69M premium, 13.5K
             # contracts, peak 2,379/min at 11:36) AND NOK was #7
@@ -217,6 +230,10 @@ TIER_3 = [
     # Crypto-related (MSTR = BTC proxy, Qullamaggie + Stockbee momentum leader)
     "MARA", "RIOT", "MSTR", "CLSK", "HUT", "BITF",
     "CIFR",  # Cipher Mining — BTC miner pivoted to AI hosting (Fluidstack/Google deal)
+    "WULF",  # TeraWulf — BTC miner. Added 5/19: UW unusual-flow tape showed
+             # WULF $27C 7/17 with 78% bullish premium skew (most lopsided
+             # bullish on the day), AND Mr. Whale flagged it as "under-the-
+             # radar bullish speculation". Same theme as MARA/RIOT/CLSK.
     # Speculatives / meme
     # WISH removed 5/13 (P1 audit): ContextLogic delisted from NASDAQ 2023;
     # no options chain on Tradier.
@@ -241,6 +258,13 @@ TIER_3 = [
     # Software second tier
     "TEAM", "WDAY", "INTU", "CDNS", "SNPS", "FTNT", "OKTA", "ZM", "DOCU",
     "TWLO", "PINS", "SNAP", "SPOT", "ROKU", "MTCH", "YELP", "TRIP",
+    "ZETA",  # Zeta Global — AI marketing software. Added 5/19: UW unusual
+             # flow showed ZETA 19.5C 6/18 with 2,421 contracts (98% chain
+             # bid/ask), AND Mr. Whale flagged it under "less crowded bullish
+             # speculation". Fits the small/mid-cap growth bucket.
+    "PAYC",  # Paycom Software — HR/payroll SaaS. Added 5/19: UW showed
+             # PAYC 135P 6/18 (222 contracts, $111K, 98% bearish). Active
+             # options flow on a name not previously in universe.
     # IBD Sector Leaders — Precious Metals (Apr 20, bull regime commodities)
     "AGI",   # Alamos Gold — 28% YTD, Sector Leader
     "GFI",   # Gold Fields — 14% YTD, Sector Leader
