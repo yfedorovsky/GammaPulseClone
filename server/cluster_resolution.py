@@ -20,7 +20,25 @@ from typing import Any
 # Configuration
 RESOLUTION_WINDOW_SEC = 15 * 60   # 15-minute window
 RESOLUTION_MIN_LEGS_NEW = 5       # new cluster must be at least 5 legs
-RESOLUTION_MIN_NOTIONAL = 50_000_000  # new cluster must be >=$50M
+
+# Tier-based notional thresholds (2026-05-20 PM Perplexity follow-up).
+# Original $50M flat floor would NEVER trigger on ~80% of the 446-ticker
+# universe (Tier 2/3 names rarely see $50M in 5 min). Tier-aware floors:
+#   Tier 1 (mega-caps, indices): $50M
+#   Tier 2 (active mid/large): $10M
+#   Tier 3 (long tail): $5M
+RESOLUTION_NOTIONAL_BY_TIER = {1: 50_000_000, 2: 10_000_000, 3: 5_000_000}
+RESOLUTION_MIN_NOTIONAL_DEFAULT = 50_000_000  # used if tier lookup fails
+
+
+def _resolution_notional_floor(ticker: str) -> float:
+    """Tier-aware notional floor for resolution alerts."""
+    try:
+        from .tickers import tier_of
+        tier = tier_of(ticker)
+        return RESOLUTION_NOTIONAL_BY_TIER.get(tier, RESOLUTION_MIN_NOTIONAL_DEFAULT)
+    except Exception:
+        return RESOLUTION_MIN_NOTIONAL_DEFAULT
 
 
 @dataclass
@@ -77,7 +95,8 @@ def check_resolution(
 
     new_legs = new_summary.get("legs", 0)
     new_notional = new_summary.get("total_notional", 0)
-    if new_legs < RESOLUTION_MIN_LEGS_NEW or new_notional < RESOLUTION_MIN_NOTIONAL:
+    notional_floor = _resolution_notional_floor(ticker)
+    if new_legs < RESOLUTION_MIN_LEGS_NEW or new_notional < notional_floor:
         return None  # not enough volume to qualify the resolution
 
     # Resolution detected — clear the pending state + build payload

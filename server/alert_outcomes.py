@@ -72,6 +72,14 @@ CREATE TABLE IF NOT EXISTS alert_outcomes (
     earnings_in_window INTEGER,          -- 0/1 — DOES the contract span an earnings date
     earnings_days_to   INTEGER,          -- days to next earnings (NULL if none in window)
     ivr_at_alert       REAL,             -- IV rank 0-100
+    -- 2026-05-20 PM (Perplexity follow-up): additional regime fields
+    -- recommended for proper regime-conditional analysis. Backfilled
+    -- where possible; NULL on alerts before this ship.
+    atm_iv             REAL,             -- ATM IV at alert time (different from IVR)
+    skew_25d           REAL,             -- 25-delta skew (put IV - call IV) at alert
+    macro_event_flag   TEXT,             -- 'FOMC' | 'CPI' | 'NFP' | 'EARNINGS_HEAVY' | NULL
+    alert_source_cluster TEXT,           -- e.g. 'WHALE_CALL_CLUSTER' for downstream
+                                         --   alerts that fired from a parent cluster
     -- Outcome columns (NULL until backfilled)
     outcome_status     TEXT,             -- pending / target_hit / stop_hit / time_expired / flat
     outcome_resolved_at REAL,            -- epoch when outcome became known
@@ -106,6 +114,19 @@ def _ensure_schema(db_path: str = DB_PATH) -> None:
     conn = sqlite3.connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        # Idempotent ADD COLUMN migrations for tables that pre-date the
+        # PM 5/20 follow-up schema additions.
+        for col, decl in [
+            ("atm_iv", "REAL"),
+            ("skew_25d", "REAL"),
+            ("macro_event_flag", "TEXT"),
+            ("alert_source_cluster", "TEXT"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE alert_outcomes ADD COLUMN {col} {decl}")
+            except sqlite3.OperationalError:
+                # Column already exists — fine
+                pass
         conn.commit()
     finally:
         conn.close()

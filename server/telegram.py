@@ -22,12 +22,18 @@ MAX_MESSAGES_PER_WINDOW = 3      # max messages in the window
 WINDOW_SECONDS = 600              # 10 minute window
 TICKER_COOLDOWN_SECONDS = 3600    # 1 hour per ticker
 
-# Per-ticker DAILY cap (added 2026-05-20 per Perplexity recommendation —
-# alert density vs quality). Max 5 alerts per ticker per session for
-# normal alerts; 10 for priority/force alerts (SOE A+, Mir ENTRY,
-# GEX MAGNET). Resets each calendar day at midnight ET.
+# Per-ticker DAILY cap. Max 5 alerts per ticker per session for normal
+# alerts; 6 for priority/force alerts. Resets each calendar day at
+# midnight ET.
+#
+# History:
+#   2026-05-20 initial: 5 normal / 10 priority
+#   2026-05-20 PM follow-up (Perplexity): 10/day priority cap is too high
+#     for institutional-quality density. Reduced to 6. Note that 5/day
+#     baseline is still an unevidenced prior — recalibrate after n>=200
+#     per ticker.
 PER_TICKER_DAILY_CAP = 5
-PER_TICKER_DAILY_CAP_PRIORITY = 10
+PER_TICKER_DAILY_CAP_PRIORITY = 6
 
 _message_times: deque[float] = deque()
 _ticker_last_sent: dict[str, float] = {}

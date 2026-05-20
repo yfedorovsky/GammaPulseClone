@@ -504,6 +504,21 @@ def _compute_signal_score(
         structure += 0.5
         sub_reasons.append(f"Put wall ${put_wall}")
 
+    # GEX VIX conditioning (2026-05-20 — Perplexity follow-up bug fix).
+    # Original implementation only applied in zero_dte_engine.py;
+    # signals.py SOE scoring was missing this gate. Per the 8-yr SPY
+    # backtest, GEX's directional edge collapses at VIX >= 20 (p=0.44).
+    # Downgrade structure factor by up to 0.5 pts when vol is elevated.
+    try:
+        from .scalp_alerts import _current_vix
+        _vix = _current_vix.get("level", 0) or 0
+        if _vix >= 20:
+            structure_pre = structure
+            structure = max(0, structure - 0.5)
+            sub_reasons.append(f"VIX {_vix:.1f}>=20 GEX downgrade (-{structure_pre - structure:.1f})")
+    except Exception:
+        pass
+
     score += structure
     strength = "Strong" if structure >= 1.5 else "Moderate" if structure >= 1.0 else "Weak"
     reasons.append(f"{strength} GEX structure ({structure:.1f}/2): {'; '.join(sub_reasons) or 'no alignment'}")

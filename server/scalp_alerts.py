@@ -675,7 +675,10 @@ async def _check_scalp_alerts() -> list[dict[str, Any]]:
         _runway_min = 960 - _now_mins
         _no_runway = _runway_min < 45
         _vix_level = _current_vix.get("level", 0)
-        _vix_too_high = _vix_level >= 22
+        # VIX threshold 20 per FlashAlpha GEX paper + 8-yr SPY backtest
+        # (Perplexity follow-up — original 22 was 2 points looser than
+        # the published academic threshold).
+        _vix_too_high = _vix_level >= 20
         _gex_signal = (state.get("signal") or "").upper()
         _gex_choppy = _gex_signal in ("PINNING", "MIXED", "")
         _dte_pref_days, _ = _get_dte_preference()
