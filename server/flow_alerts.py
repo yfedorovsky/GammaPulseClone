@@ -836,6 +836,20 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                     for a in alerts:
                         for decision, payload in f.process(a):
                             if decision == "FIRE":
+                                # Weak-signal mute (added 2026-05-20).
+                                # 5/19 backtest showed FLOW [MEDIUM] alerts
+                                # with V/OI < 1.0 AND notional < $10M (the
+                                # "existing OI dominates" tier) were 1/3
+                                # directionally right — the format itself
+                                # tags them "weak signal", so don't ping
+                                # Telegram for what we've already labeled
+                                # weak. Fresh strikes (OI=0, V/OI=999) and
+                                # whale prints ($10M+) still go through.
+                                _vol_oi = payload.get("vol_oi", 0) or 0
+                                _notional = payload.get("notional", 0) or 0
+                                _is_weak = _vol_oi < 1.0 and _notional < 10_000_000
+                                if _is_weak:
+                                    continue
                                 await send(
                                     format_flow_alert(payload),
                                     ticker=payload.get("ticker", ""),
@@ -859,6 +873,12 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                 f = get_filter()
                 for decision, payload in f.flush():
                     if decision == "FIRE":
+                        # Same weak-signal mute as the process loop above.
+                        _vol_oi = payload.get("vol_oi", 0) or 0
+                        _notional = payload.get("notional", 0) or 0
+                        _is_weak = _vol_oi < 1.0 and _notional < 10_000_000
+                        if _is_weak:
+                            continue
                         await send(
                             format_flow_alert(payload),
                             ticker=payload.get("ticker", ""),

@@ -659,15 +659,32 @@ async def _check_scalp_alerts() -> list[dict[str, Any]]:
                 _record_alert(ticker, "ZGL_CROSS_DOWN")
 
         # ── 8 EMA PULLBACK: Mir's #1 intraday entry trigger ─────────
+        # LATE-SESSION GATE (added 2026-05-20 after backtest showed two
+        # 0DTE EMA pullback alerts fired at 3:57 PM with stops hit in
+        # ~3 minutes — no theta runway for thesis). Block 0DTE alerts
+        # after 14:30 ET. 1DTE alerts (post-3:00 still allowed via
+        # _get_dte_preference) are not affected by this gate.
+        import datetime as _dt
+        _now = _dt.datetime.now()
+        _now_mins = _now.hour * 60 + _now.minute
+        _too_late_for_0dte = _now_mins >= 930  # 15:30 ET
+        _dte_pref_days, _ = _get_dte_preference()
+
         ema_alert = await _detect_ema_pullback(ticker, state)
         if ema_alert and _can_alert(ticker, ema_alert["type"]):
-            # Add trend day context to headline
-            if trend_mode == "TREND_DAY":
-                ema_alert["headline"] += " (TREND DAY)"
-            elif trend_mode == "EXTREME_TREND":
-                ema_alert["headline"] += " (EXTREME GAP — reduced size)"
-            alerts.append(ema_alert)
-            _record_alert(ticker, ema_alert["type"])
+            if _too_late_for_0dte and _dte_pref_days == 0:
+                # 3:30 PM+ and we would recommend 0DTE — skip entirely.
+                # The trader has <30 min for thesis to play out vs
+                # accelerating theta + closing-auction noise.
+                pass
+            else:
+                # Add trend day context to headline
+                if trend_mode == "TREND_DAY":
+                    ema_alert["headline"] += " (TREND DAY)"
+                elif trend_mode == "EXTREME_TREND":
+                    ema_alert["headline"] += " (EXTREME GAP — reduced size)"
+                alerts.append(ema_alert)
+                _record_alert(ticker, ema_alert["type"])
 
         # Tag alerts with volume context + VIX/DTE metadata
         for a in alerts:

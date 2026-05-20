@@ -154,21 +154,24 @@ class ClusterCollapser:
 
     @staticmethod
     def _cluster_passes_gates(summary: dict[str, Any]) -> bool:
-        """Post-build gates added 2026-05-13 to suppress noise clusters.
+        """Post-build gates suppressing noise clusters.
 
-        Two filters:
+        Filters (2026-05-13 base + 2026-05-20 tightening):
           1. Notional floor — cluster's aggregate notional must be
              institutional-grade. Sub-$10M clusters are usually MM activity
              plus retail piggybacking, not orchestrated flow.
-          2. Directional clarity — drop pure-MIXED clusters (bull == bear).
-             A cluster that's directionally split provides no actionable
-             read; it's just an active 0DTE day. MIXED-BULL/MIXED-BEAR
-             (bull > bear or vice versa, but not 2x) still pass because
-             the lean is informative.
+          2. Directional clarity — drop ALL MIXED clusters from Telegram.
+             5/19 backtest showed 3/3 MIXED-BULL/BEAR alerts (SPY, IWM,
+             SPX) were directionally wrong — the lean wasn't actually
+             informative, just descriptive noise. Was: drop only pure
+             MIXED (bull == bear). Now: drop MIXED-*, only let pure
+             BULLISH (bull > 2x bear) or BEARISH through.
         """
         if (summary.get("total_notional") or 0) < CLUSTER_MIN_NOTIONAL:
             return False
-        if CLUSTER_DIRECTIONAL_BIAS and summary.get("bias") == "MIXED":
+        bias = summary.get("bias", "")
+        # Drop ALL MIXED variants (MIXED, MIXED-BULL, MIXED-BEAR)
+        if CLUSTER_DIRECTIONAL_BIAS and bias.startswith("MIXED"):
             return False
         return True
 

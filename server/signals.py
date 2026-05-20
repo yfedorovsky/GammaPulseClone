@@ -2342,6 +2342,15 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
         if regime_blocks_long or regime_grade_blocks or iv_blocks_long:
             should_push = False
 
+        # Mute HIGH-SCORE FADE WATCH from Telegram (added 2026-05-20).
+        # Backtest of 5/19 alerts showed 2/2 FADE WATCH alerts (GOOGL A+
+        # @5.6, V A @5.1) went against their direction — system was right
+        # to auto-block trading. Since they're already auto-blocked, the
+        # Telegram message just adds noise. They still persist to DB +
+        # render in UI for the audit trail.
+        if sig.get("is_high_score_fade"):
+            should_push = False
+
         if should_push and not sig.get("_suppress_telegram"):
             try:
                 from .telegram import send, format_soe_signal
