@@ -605,6 +605,21 @@ class MirDiscordClient:
         xref = _crossref_mir_signal(ticker, mir_direction)
         convergence_block = _format_mir_convergence_block(xref)
 
+        # CHAT_RELAY DEPRECATED FROM TELEGRAM (2026-05-20) per Perplexity
+        # recommendation: "Cut this. A low-conviction mention from a
+        # Discord trader with no formal entry signal is noise by
+        # definition. The convergence upgrade logic is the only redeeming
+        # path — but that's covered by MIR DISCORD SIGNALS (ENTRY) #8."
+        #
+        # Rule: chat relays now ONLY hit Telegram if system convergence
+        # is detected (SOE or flow_alert agreement in last 30 min).
+        # Without convergence, the chat relay still persists to
+        # mir_signal_cache + UI for audit/research, but no Telegram.
+        if not xref.get("has_convergence"):
+            print(f"[DISCORD]   -> CHAT_RELAY {ticker} suppressed "
+                  "(no system convergence) — DB only")
+            return
+
         # Soft Telegram push — not forced, respects per-ticker cooldown.
         # Rationale: chat relays are informational, not actionable, so
         # they shouldn't elbow out higher-conviction signals — UNLESS we
@@ -828,6 +843,38 @@ class MirDiscordClient:
             except Exception as e:
                 print(f"[DISCORD]   -> Paper trade error: {e}")
 
+        # Mir convergence gate (2026-05-20 — per-Perplexity concession).
+        # The Perplexity audit flagged Mir signals as having "structural
+        # alpha decay" because by the time the post hits Discord, faster
+        # participants have already filled. Counter: when our system has
+        # detected the SAME setup BEFORE Mir posts, the convergence
+        # validates the signal and the alpha decay is mitigated.
+        # Rule: ENTRY/ADD/WATCH signals require system convergence to fire
+        # Telegram. Convergence = SOE or NET_FLOW or large flow_alert
+        # already firing on the same direction in the last 30 min.
+        # Note: agreement="MIR_DIRECT" or "MIR_VERIFIED" (challenge
+        # channel with P relay) bypasses this gate — those are high-trust
+        # by channel, not just by content.
+        try:
+            mir_direction = _mir_direction_from_otype(parsed.get("option_type"))
+            xref = _crossref_mir_signal(ticker, mir_direction)
+            has_convergence = xref.get("has_convergence", False)
+        except Exception:
+            xref = {"has_convergence": False}
+            has_convergence = False
+
+        # Bypass gate if signal came from the high-trust channels
+        _is_high_trust = agreement in ("MIR_DIRECT", "MIR_VERIFIED")
+
+        if not _is_high_trust and not has_convergence:
+            print(f"[DISCORD]   -> ENTRY {ticker} suppressed "
+                  "(no system convergence, agreement={}, bypass with convergence)"
+                  .format(agreement))
+            # Still cache the signal for UI / future convergence detection
+            mir_signal["_suppressed_no_convergence"] = True
+            await cache.set_mir_signal(ticker, mir_signal)
+            return
+
         # Telegram alert with full enrichment (contract, Greeks, GEX, RTS)
         if conviction in ("HIGH", "MEDIUM"):
             try:
@@ -841,6 +888,28 @@ class MirDiscordClient:
                     state, gex_context,
                 )
                 await send(alert, ticker=ticker, force=True)
+                # Performance database log (2026-05-20)
+                try:
+                    from .alert_outcomes import log_alert
+                    _dir = _mir_direction_from_otype(parsed.get("option_type"))
+                    log_alert(
+                        alert_type=f"MIR_{agreement}",
+                        ticker=ticker,
+                        direction=_dir if _dir else "NEUTRAL",
+                        grade=conviction,
+                        strike=parsed.get("strike"),
+                        expiration=parsed.get("expiry_raw"),
+                        option_type=(parsed.get("option_type") or "").lower(),
+                        spot_at_alert=(gex_context or {}).get("spot"),
+                        entry_price=parsed.get("price"),
+                        gex_regime=(gex_context or {}).get("regime"),
+                        king=(gex_context or {}).get("king"),
+                        floor=(gex_context or {}).get("floor"),
+                        ceiling=(gex_context or {}).get("ceiling"),
+                        raw_alert=parsed,
+                    )
+                except Exception:
+                    pass
             except Exception as e:
                 print(f"[DISCORD] Telegram error: {e}")
 

@@ -855,13 +855,59 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                                     ticker=payload.get("ticker", ""),
                                 )
                                 fired_singles += 1
+                                # Performance database log (2026-05-20)
+                                try:
+                                    from .alert_outcomes import log_alert
+                                    _side = payload.get("side", "")
+                                    _otype = (payload.get("option_type") or "").lower()
+                                    _is_bull_flow = (
+                                        (_side == "ASK" and _otype == "call")
+                                        or (_side == "BID" and _otype == "put")
+                                    )
+                                    log_alert(
+                                        alert_type="FLOW_MEDIUM",
+                                        ticker=payload.get("ticker", ""),
+                                        direction="BULL" if _is_bull_flow else "BEAR",
+                                        score=_vol_oi,
+                                        strike=payload.get("strike"),
+                                        expiration=payload.get("expiration"),
+                                        option_type=_otype,
+                                        spot_at_alert=payload.get("spot"),
+                                        entry_price=payload.get("last"),
+                                        gex_regime=None,  # not in flow alert payload
+                                        raw_alert=payload,
+                                    )
+                                except Exception:
+                                    pass
                             elif decision == "FIRE_SUMMARY":
                                 if payload.get("kind") == "CLUSTER":
                                     text = format_cluster_summary(payload)
+                                elif payload.get("kind") == "CLUSTER_RESOLUTION":
+                                    from .cluster_resolution import format_resolution_telegram
+                                    text = format_resolution_telegram(payload)
                                 else:
                                     text = format_hot_flow_summary(payload)
                                 await send(text, ticker=payload.get("ticker", ""))
                                 fired_summaries += 1
+                                # Performance database log (2026-05-20)
+                                try:
+                                    from .alert_outcomes import log_alert
+                                    bias = payload.get("bias", "")
+                                    log_alert(
+                                        alert_type=(f"CLUSTER_{bias.replace('-','_')}"
+                                                    if payload.get("kind") == "CLUSTER"
+                                                    else "HOT_FLOW"),
+                                        ticker=payload.get("ticker", ""),
+                                        direction=("BULL" if "BULL" in bias
+                                                  else "BEAR" if "BEAR" in bias
+                                                  else "NEUTRAL"),
+                                        spot_at_alert=payload.get("spot"),
+                                        raw_alert={"bias": bias,
+                                                   "notional": payload.get("total_notional"),
+                                                   "legs": payload.get("legs")},
+                                    )
+                                except Exception:
+                                    pass
                     if fired_singles or fired_summaries:
                         print(
                             f"[FLOW][{level}] fired {fired_singles} single + "

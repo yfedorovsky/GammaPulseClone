@@ -250,23 +250,41 @@ def _score_gex(
     if spot is None or spot <= 0:
         return FactorScore("gex", 0, "no spot")
 
+    # GEX VIX conditioning (2026-05-20 per-Perplexity #2). The 8-yr SPY
+    # backtest shows GEX's directional edge collapses in VIX > 20 regimes
+    # (p=0.44, statistically no signal). When VIX is elevated, downgrade
+    # any GEX-derived score by 1 point. Read VIX from in-memory cache.
+    _vix_downgrade = 0
+    try:
+        from .scalp_alerts import _current_vix
+        _vix_level = _current_vix.get("level", 0) or 0
+        if _vix_level >= 20:
+            _vix_downgrade = 1
+    except Exception:
+        pass
+
     if direction == "bullish":
         if gex_signal == "MAGNET UP" and king_pos and king_pos > spot:
             dist_pct = (king_pos - spot) / spot
             # Room to run gets higher score
             if 0.002 <= dist_pct <= 0.015:
+                base_pts = 4
+                pts = max(0, base_pts - _vix_downgrade)
+                note = " [VIX-downgrade]" if _vix_downgrade else ""
                 return FactorScore(
-                    "gex", 4,
-                    f"MAGNET UP with {dist_pct*100:.2f}% to king ${king_pos:g}"
+                    "gex", pts,
+                    f"MAGNET UP with {dist_pct*100:.2f}% to king ${king_pos:g}{note}"
                 )
             elif dist_pct > 0.015:
+                pts = max(0, 3 - _vix_downgrade)
                 return FactorScore(
-                    "gex", 3,
+                    "gex", pts,
                     f"MAGNET UP but king ${king_pos:g} far ({dist_pct*100:.2f}%)"
                 )
             else:
+                pts = max(0, 2 - _vix_downgrade)
                 return FactorScore(
-                    "gex", 2,
+                    "gex", pts,
                     f"MAGNET UP but nearly at king ${king_pos:g}"
                 )
         # MAGNET FADE handler (added 2026-05-20). Broken-magnet variant in

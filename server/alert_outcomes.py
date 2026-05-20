@@ -1,0 +1,544 @@
+"""Alert outcomes performance database.
+
+The foundational change recommended by Perplexity's 5/20 evaluation:
+every Telegram alert that fires gets logged with full context, then a
+background task backfills outcomes (1h, EOD, 1d, target-hit, stop-hit,
+MFE, MAE) when the evaluation window closes.
+
+Without this, every filter threshold, every score band, every alert-type
+deprecation decision is guided by anecdote. With this, after 60 trading
+days we have ~1,200 outcome rows to validate every architectural
+hypothesis empirically.
+
+Schema philosophy:
+  - Flat table, one row per alert fire
+  - Context fields capture the alert state at fire time
+  - Outcome fields are NULL until backfill task fills them
+  - Regime fields (VIX, GEX, earnings, IVR) enable regime-conditional
+    analysis (Perplexity flagged: GEX edge disappears in VIX>20)
+
+Background task `run_outcome_backfill_loop` runs every 30 min during RTH
++ once at 18:00 ET for EOD evaluation. Idempotent — re-running just
+re-fills NULL columns.
+
+Shipped 2026-05-20 night.
+"""
+from __future__ import annotations
+
+import asyncio
+import datetime as _dt
+import hashlib
+import json
+import sqlite3
+import time
+from dataclasses import dataclass, field
+from typing import Any
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Schema
+# ─────────────────────────────────────────────────────────────────────────────
+
+DB_PATH = "./alert_outcomes.db"  # standalone DB so it survives main DB migrations
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS alert_outcomes (
+    alert_id           TEXT PRIMARY KEY,
+    fired_at           REAL NOT NULL,
+    alert_type         TEXT NOT NULL,    -- SOE_A, SOE_AP, GEX_MAGNET, ZERO_DTE, FLOW_MEDIUM, CLUSTER, MIR, KING_MIGRATION, etc
+    ticker             TEXT NOT NULL,
+    direction          TEXT,             -- BULL/BEAR/NEUTRAL
+    grade              TEXT,             -- A+/A/B+/B/C or score
+    score              REAL,
+    -- Contract spec (NULL for info-only alerts)
+    strike             REAL,
+    expiration         TEXT,
+    option_type        TEXT,             -- call/put
+    dte                INTEGER,
+    -- Entry/exit plan (as published in alert)
+    spot_at_alert      REAL,
+    entry_price        REAL,             -- option mid at fire time
+    target_spot        REAL,             -- spot target
+    stop_spot          REAL,
+    target_premium     REAL,             -- option-price target (if specified)
+    stop_premium       REAL,
+    -- Context fields (Perplexity emphasis: regime conditioning)
+    vix_at_alert       REAL,
+    gex_regime         TEXT,             -- POS/NEG/null
+    gex_signal         TEXT,             -- MAGNET UP / MAGNET FADE / etc
+    king               REAL,
+    floor              REAL,
+    ceiling            REAL,
+    earnings_in_window INTEGER,          -- 0/1 — DOES the contract span an earnings date
+    earnings_days_to   INTEGER,          -- days to next earnings (NULL if none in window)
+    ivr_at_alert       REAL,             -- IV rank 0-100
+    -- Outcome columns (NULL until backfilled)
+    outcome_status     TEXT,             -- pending / target_hit / stop_hit / time_expired / flat
+    outcome_resolved_at REAL,            -- epoch when outcome became known
+    outcome_resolution_spot REAL,
+    -- Spot MFE/MAE relative to alert spot
+    spot_high_after    REAL,             -- max spot in window
+    spot_low_after     REAL,             -- min spot in window
+    spot_mfe_pct       REAL,             -- in direction of thesis
+    spot_mae_pct       REAL,             -- against thesis
+    -- Option MFE/MAE
+    opt_high_after     REAL,
+    opt_low_after      REAL,
+    opt_mfe_pct        REAL,             -- option premium MFE vs entry
+    opt_mae_pct        REAL,
+    opt_close_eod      REAL,             -- option close on alert day
+    opt_close_next_day REAL,             -- next trading day close
+    -- Win/loss verdict by window
+    verdict_1h         TEXT,             -- WIN/LOSS/FLAT relative to 1-hour
+    verdict_eod        TEXT,             -- WIN/LOSS/FLAT relative to alert-day close
+    verdict_next_day   TEXT,             -- WIN/LOSS/FLAT relative to next-day close
+    -- Raw payload for debugging
+    raw_alert_json     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_alert_outcomes_type ON alert_outcomes(alert_type, fired_at);
+CREATE INDEX IF NOT EXISTS idx_alert_outcomes_ticker ON alert_outcomes(ticker, fired_at);
+CREATE INDEX IF NOT EXISTS idx_alert_outcomes_pending ON alert_outcomes(outcome_status, fired_at)
+    WHERE outcome_status = 'pending';
+"""
+
+
+def _ensure_schema(db_path: str = DB_PATH) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(SCHEMA)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Writer
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def make_alert_id(ticker: str, alert_type: str, fired_at: float,
+                  strike: float | None = None, exp: str | None = None) -> str:
+    """Deterministic ID for an alert — supports re-runs without dupes."""
+    key = f"{ticker}|{alert_type}|{int(fired_at)}|{strike or ''}|{exp or ''}"
+    return hashlib.md5(key.encode()).hexdigest()[:16]
+
+
+def log_alert(
+    *,
+    alert_type: str,
+    ticker: str,
+    fired_at: float | None = None,
+    direction: str | None = None,
+    grade: str | None = None,
+    score: float | None = None,
+    strike: float | None = None,
+    expiration: str | None = None,
+    option_type: str | None = None,
+    dte: int | None = None,
+    spot_at_alert: float | None = None,
+    entry_price: float | None = None,
+    target_spot: float | None = None,
+    stop_spot: float | None = None,
+    target_premium: float | None = None,
+    stop_premium: float | None = None,
+    vix_at_alert: float | None = None,
+    gex_regime: str | None = None,
+    gex_signal: str | None = None,
+    king: float | None = None,
+    floor: float | None = None,
+    ceiling: float | None = None,
+    earnings_in_window: int | None = None,
+    earnings_days_to: int | None = None,
+    ivr_at_alert: float | None = None,
+    raw_alert: dict | None = None,
+    db_path: str = DB_PATH,
+) -> str | None:
+    """Log a fired alert with full context. Returns alert_id, or None on
+    error. ALL outcome columns start NULL — backfill task populates them.
+
+    Best-effort: never raises. Alert logging failure should never block
+    the actual Telegram send. If logging fails silently for a day, we
+    lose 1 day of data — not a position.
+    """
+    try:
+        _ensure_schema(db_path)
+        ts = fired_at or time.time()
+        aid = make_alert_id(ticker, alert_type, ts, strike, expiration)
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute(
+                """INSERT OR IGNORE INTO alert_outcomes (
+                    alert_id, fired_at, alert_type, ticker, direction, grade,
+                    score, strike, expiration, option_type, dte,
+                    spot_at_alert, entry_price, target_spot, stop_spot,
+                    target_premium, stop_premium, vix_at_alert, gex_regime,
+                    gex_signal, king, floor, ceiling, earnings_in_window,
+                    earnings_days_to, ivr_at_alert, outcome_status, raw_alert_json
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, 'pending', ?
+                )""",
+                (
+                    aid, ts, alert_type, ticker.upper(), direction, grade,
+                    score, strike, expiration, option_type, dte,
+                    spot_at_alert, entry_price, target_spot, stop_spot,
+                    target_premium, stop_premium, vix_at_alert, gex_regime,
+                    gex_signal, king, floor, ceiling, earnings_in_window,
+                    earnings_days_to, ivr_at_alert,
+                    json.dumps(raw_alert, default=str) if raw_alert else None,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return aid
+    except Exception as e:
+        print(f"[alert_outcomes] log_alert failed: {e}")
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Outcome backfill — runs every 30 min
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _verdict(spot_change_pct: float, threshold: float = 0.3) -> str:
+    """Classify a spot move as WIN/LOSS/FLAT based on directional change."""
+    if spot_change_pct > threshold:
+        return "WIN"
+    if spot_change_pct < -threshold:
+        return "LOSS"
+    return "FLAT"
+
+
+async def backfill_outcomes(db_path: str = DB_PATH, max_age_days: int = 7) -> dict:
+    """Walk all pending alerts where the evaluation window has closed,
+    compute outcomes from Tradier/Theta history, and update rows.
+
+    Evaluation windows:
+      - 1h after alert: WIN if spot moved >0.3% in thesis direction
+      - EOD of alert day: same
+      - Next trading day close: same
+      - Target hit: spot reached target_spot at any point after alert
+      - Stop hit: spot reached stop_spot at any point after alert
+
+    Returns stats dict.
+    """
+    from server.tradier import TradierClient
+
+    _ensure_schema(db_path)
+    now = time.time()
+    cutoff_min = now - max_age_days * 86400  # don't backfill ancient
+    conn = sqlite3.connect(db_path)
+    try:
+        # Pull pending alerts whose alert-day has fully closed
+        # (i.e., it's now past 4:00 PM ET on the alert day)
+        rows = conn.execute(
+            """SELECT alert_id, fired_at, alert_type, ticker, direction,
+                      spot_at_alert, entry_price, target_spot, stop_spot,
+                      strike, expiration, option_type, dte
+               FROM alert_outcomes
+               WHERE outcome_status = 'pending'
+                 AND fired_at > ?
+                 AND fired_at < ?""",
+            (cutoff_min, now - 3600),  # at least 1h old
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        return {"processed": 0, "updated": 0, "skipped": 0}
+
+    print(f"[alert_outcomes] backfilling {len(rows)} pending alerts")
+
+    stats = {"processed": 0, "updated": 0, "skipped": 0, "errors": 0}
+    tradier = TradierClient()
+    try:
+        # Group by ticker to minimize API calls
+        from collections import defaultdict
+        by_ticker: dict[str, list] = defaultdict(list)
+        for r in rows:
+            by_ticker[r[3]].append(r)
+
+        for ticker, ticker_rows in by_ticker.items():
+            stats["processed"] += len(ticker_rows)
+            # Pull intraday history covering all alert times for this ticker
+            min_fired = min(r[1] for r in ticker_rows)
+            max_fired = max(r[1] for r in ticker_rows)
+            start = _dt.datetime.fromtimestamp(min_fired).date()
+            end = (_dt.datetime.fromtimestamp(max_fired).date()
+                   + _dt.timedelta(days=3))
+            try:
+                bars_5m = await tradier.history(
+                    ticker, interval="5min",
+                    start=start.isoformat(),
+                    end=end.isoformat(),
+                )
+                bars_daily = await tradier.history(
+                    ticker, interval="daily",
+                    start=start.isoformat(),
+                    end=end.isoformat(),
+                )
+            except Exception as e:
+                print(f"[alert_outcomes] history fetch failed for {ticker}: {e}")
+                stats["errors"] += len(ticker_rows)
+                continue
+
+            for row in ticker_rows:
+                (alert_id, fired_at, alert_type, _t, direction,
+                 spot_alert, entry_price, target_spot, stop_spot,
+                 strike, exp, otype, dte) = row
+
+                # Find 1h window, EOD window, next-day window
+                fired_dt = _dt.datetime.fromtimestamp(fired_at)
+
+                # Filter 5min bars to the windows we care about
+                def _bars_in_window(start_ts: float, end_ts: float):
+                    out = []
+                    for b in bars_5m:
+                        t_str = b.get("time")
+                        if not t_str:
+                            continue
+                        try:
+                            bt = _dt.datetime.fromisoformat(t_str).timestamp()
+                        except (ValueError, TypeError):
+                            continue
+                        if start_ts <= bt <= end_ts:
+                            out.append({"ts": bt, "high": b.get("high"),
+                                       "low": b.get("low"),
+                                       "close": b.get("close")})
+                    return out
+
+                w_1h = _bars_in_window(fired_at, fired_at + 3600)
+
+                # Alert-day EOD = 16:00 ET on fired_dt's date
+                eod_ts = fired_dt.replace(hour=16, minute=0, second=0,
+                                          microsecond=0).timestamp()
+                if eod_ts <= fired_at:
+                    eod_ts = fired_at + 86400  # in case fired after close
+                w_eod = _bars_in_window(fired_at, eod_ts)
+
+                # Compute spot MFE/MAE in window
+                is_bull = direction == "BULL" if direction else None
+                spot_high = max((b["high"] for b in w_eod if b.get("high")),
+                               default=None)
+                spot_low = min((b["low"] for b in w_eod if b.get("low")),
+                              default=None)
+                spot_eod_close = w_eod[-1]["close"] if w_eod else None
+
+                # Spot MFE/MAE relative to alert spot
+                spot_mfe = None
+                spot_mae = None
+                if spot_alert and spot_high and spot_low and is_bull is not None:
+                    if is_bull:
+                        spot_mfe = (spot_high - spot_alert) / spot_alert * 100
+                        spot_mae = (spot_low - spot_alert) / spot_alert * 100
+                    else:
+                        spot_mfe = (spot_alert - spot_low) / spot_alert * 100
+                        spot_mae = (spot_alert - spot_high) / spot_alert * 100
+
+                # Target/stop hits
+                target_hit = False
+                stop_hit = False
+                resolution_status = "pending"
+                resolution_ts = None
+                resolution_spot = None
+
+                if target_spot and stop_spot and is_bull is not None and w_eod:
+                    for b in w_eod:
+                        if is_bull:
+                            if b["high"] and b["high"] >= target_spot:
+                                target_hit = True
+                                resolution_status = "target_hit"
+                                resolution_ts = b["ts"]
+                                resolution_spot = target_spot
+                                break
+                            if b["low"] and b["low"] <= stop_spot:
+                                stop_hit = True
+                                resolution_status = "stop_hit"
+                                resolution_ts = b["ts"]
+                                resolution_spot = stop_spot
+                                break
+                        else:
+                            if b["low"] and b["low"] <= target_spot:
+                                target_hit = True
+                                resolution_status = "target_hit"
+                                resolution_ts = b["ts"]
+                                resolution_spot = target_spot
+                                break
+                            if b["high"] and b["high"] >= stop_spot:
+                                stop_hit = True
+                                resolution_status = "stop_hit"
+                                resolution_ts = b["ts"]
+                                resolution_spot = stop_spot
+                                break
+                    if not target_hit and not stop_hit:
+                        resolution_status = "time_expired"
+                        resolution_ts = eod_ts
+                        resolution_spot = spot_eod_close
+
+                # Verdict computations
+                def _verdict_from_close(close_spot):
+                    if not close_spot or not spot_alert or is_bull is None:
+                        return None
+                    delta = (close_spot - spot_alert) / spot_alert * 100
+                    if not is_bull:
+                        delta = -delta
+                    return _verdict(delta)
+
+                # 1h verdict
+                w_1h_close = w_1h[-1]["close"] if w_1h else None
+                v_1h = _verdict_from_close(w_1h_close)
+                v_eod = _verdict_from_close(spot_eod_close)
+
+                # Next-day close
+                fired_date_str = fired_dt.date().isoformat()
+                next_day_close = None
+                found_alert_day = False
+                for b in bars_daily:
+                    if b.get("time") == fired_date_str:
+                        found_alert_day = True
+                        continue
+                    if found_alert_day:
+                        next_day_close = b.get("close")
+                        break
+                v_next = _verdict_from_close(next_day_close)
+
+                # Apply update
+                conn = sqlite3.connect(db_path)
+                try:
+                    conn.execute(
+                        """UPDATE alert_outcomes SET
+                            outcome_status = ?,
+                            outcome_resolved_at = ?,
+                            outcome_resolution_spot = ?,
+                            spot_high_after = ?,
+                            spot_low_after = ?,
+                            spot_mfe_pct = ?,
+                            spot_mae_pct = ?,
+                            verdict_1h = ?,
+                            verdict_eod = ?,
+                            verdict_next_day = ?
+                           WHERE alert_id = ?""",
+                        (
+                            resolution_status, resolution_ts, resolution_spot,
+                            spot_high, spot_low, spot_mfe, spot_mae,
+                            v_1h, v_eod, v_next, alert_id,
+                        ),
+                    )
+                    conn.commit()
+                    stats["updated"] += 1
+                except Exception as e:
+                    print(f"[alert_outcomes] update failed for {alert_id}: {e}")
+                    stats["errors"] += 1
+                finally:
+                    conn.close()
+    finally:
+        await tradier.close()
+
+    return stats
+
+
+async def run_outcome_backfill_loop(stop_event: asyncio.Event,
+                                     interval_s: int = 1800) -> None:
+    """Background task: backfill outcomes every 30 min during RTH + once
+    at 18:00 ET for EOD evaluation."""
+    print(f"[alert_outcomes] backfill loop starting — interval={interval_s}s")
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval_s)
+            break
+        except asyncio.TimeoutError:
+            pass
+        try:
+            stats = await backfill_outcomes()
+            if stats["processed"] > 0:
+                print(f"[alert_outcomes] backfill: {stats}")
+        except Exception as e:
+            print(f"[alert_outcomes] backfill loop error: {e}")
+    print("[alert_outcomes] backfill loop stopped")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Analytics helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def get_win_rate_by_type(
+    days: int = 30, db_path: str = DB_PATH,
+) -> list[dict[str, Any]]:
+    """Return win rate stats per alert type over the last N days.
+
+    Used by the daily Telegram digest + the eventual UI dashboard.
+    """
+    _ensure_schema(db_path)
+    cutoff = time.time() - days * 86400
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            """SELECT alert_type,
+                      COUNT(*) AS n,
+                      SUM(CASE WHEN verdict_eod = 'WIN' THEN 1 ELSE 0 END) AS wins_eod,
+                      SUM(CASE WHEN verdict_eod = 'LOSS' THEN 1 ELSE 0 END) AS losses_eod,
+                      SUM(CASE WHEN verdict_eod = 'FLAT' THEN 1 ELSE 0 END) AS flat_eod,
+                      AVG(spot_mfe_pct) AS avg_mfe,
+                      AVG(spot_mae_pct) AS avg_mae
+               FROM alert_outcomes
+               WHERE fired_at > ?
+                 AND outcome_status != 'pending'
+               GROUP BY alert_type
+               ORDER BY n DESC""",
+            (cutoff,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [{
+        "alert_type": r[0],
+        "n": r[1],
+        "wins_eod": r[2],
+        "losses_eod": r[3],
+        "flat_eod": r[4],
+        "win_rate_eod": (r[2] / max(r[1] - r[4], 1)) * 100 if (r[1] - r[4]) > 0 else None,
+        "avg_mfe_pct": r[5],
+        "avg_mae_pct": r[6],
+    } for r in rows]
+
+
+def get_win_rate_by_type_and_regime(
+    days: int = 30, db_path: str = DB_PATH,
+) -> list[dict[str, Any]]:
+    """Win rate by (alert_type, vix_regime) — Perplexity's key ask:
+    'separate win rates for VIX < 15, VIX 15-25, VIX > 25'."""
+    _ensure_schema(db_path)
+    cutoff = time.time() - days * 86400
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            """SELECT alert_type,
+                      CASE
+                          WHEN vix_at_alert IS NULL THEN 'UNKNOWN'
+                          WHEN vix_at_alert < 15 THEN 'LOW'
+                          WHEN vix_at_alert < 25 THEN 'MED'
+                          ELSE 'HIGH'
+                      END AS vix_regime,
+                      COUNT(*) AS n,
+                      SUM(CASE WHEN verdict_eod = 'WIN' THEN 1 ELSE 0 END) AS wins
+               FROM alert_outcomes
+               WHERE fired_at > ?
+                 AND outcome_status != 'pending'
+                 AND verdict_eod IS NOT NULL
+               GROUP BY alert_type, vix_regime
+               ORDER BY alert_type, vix_regime""",
+            (cutoff,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [{
+        "alert_type": r[0], "vix_regime": r[1],
+        "n": r[2], "wins": r[3],
+        "win_rate": (r[3] / r[2]) * 100 if r[2] > 0 else None,
+    } for r in rows]

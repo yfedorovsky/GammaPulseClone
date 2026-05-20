@@ -131,3 +131,47 @@ def earnings_badge_sync(ticker: str) -> str | None:
     if dte == 1:
         return f"🔔 ER TOMORROW ({label})"
     return f"🔔 ER: {label} ({dte}d)"
+
+
+# Earnings-in-window check for multi-day alert gating (added 2026-05-20
+# per Perplexity recommendation #2 — IV crush gate). Returns:
+#   (earnings_in_window: bool, days_to_er: int | None)
+def er_in_window_sync(ticker: str, dte: int) -> tuple[bool, int | None]:
+    """Sync check: does an earnings announcement fall WITHIN the option's
+    DTE window? Returns (in_window, days_to_er) where in_window=True means
+    the contract spans the ER date — IV crush risk.
+
+    Reads from the same async cache as earnings_badge_sync. Returns
+    (False, None) if cache is cold (no false positives).
+    """
+    cached = _cache.get(ticker.upper())
+    if not cached:
+        return False, None
+    er = cached[1]
+    if er is None:
+        return False, None
+    today = _dt.date.today()
+    days_to = (er - today).days
+    if days_to < 0:
+        return False, None  # past earnings
+    if days_to <= dte:
+        return True, days_to
+    return False, days_to
+
+
+def er_blocks_long_premium(ticker: str, dte: int) -> tuple[bool, str | None]:
+    """Should a long-premium (call/put BUY) alert be blocked because of
+    earnings in window?
+
+    Rule: block when ER is within DTE AND DTE >= 2 (we want to avoid
+    holding through ER for IV crush; 0DTE/1DTE on ER day is a different
+    play and not gated here).
+
+    Returns (block: bool, reason: str | None).
+    """
+    in_window, days_to = er_in_window_sync(ticker, dte)
+    if not in_window:
+        return False, None
+    if dte < 2:
+        return False, None  # 0DTE/1DTE on ER day is a different setup
+    return True, f"ER in {days_to}d (within {dte}-day DTE) — IV crush risk"

@@ -4,7 +4,52 @@ A real-time options analytics platform with **OPRA-level flow detection**, **gam
 
 Originally reverse-engineered from [GammaPulse Pro](https://gammapulse.rstechnology.org/), now substantially beyond it in signal coverage AND in the rigor of the meta-system that decides which signals to trust.
 
-> **What's new (Apr 27 2026):** Cross-LLM critique cycle (Gemini/Grok/OpenAI/Perplexity) independently converged on the system's biggest empirical finding: **score is inversely correlated with 1d outcome** (5.0+ score = 9% hit on n=33; 3.75-4.1 score = 67%). High-score fade rule shipped + convergence bonus demoted to flag-only + macro regime tagger added (calendar pressure × breadth × VIX term + SKEW). All in shadow mode pending Friday's audit. See [docs/feedback/strategy_0427/](docs/feedback/strategy_0427/).
+> **What's new (May 20 2026 — Perplexity audit response):**
+> Cross-LLM critique (Perplexity Sonar Reasoning Pro) flagged that filter
+> decisions were being made on statistically-meaningless samples (n=16
+> from one 62-min window, 95% CI 0-35%). Tonight's foundational ship:
+> - **`server/alert_outcomes.py`** — performance database that logs every
+>   fired alert with full regime context + backfills 1h/EOD/next-day
+>   outcomes from intraday history. Without this, every filter threshold
+>   is unfounded. Background loop runs every 30 min during RTH.
+> - **`server/cluster_resolution.py`** — MIXED-bias clusters now muted
+>   from Telegram but TRACKED for 15 min; if a same-ticker cluster
+>   resolves to single-direction within the window, fires a high-EV
+>   `⚡ CLUSTER RESOLUTION` alert.
+> - **Earnings + IVR gates** — multi-day SOE alerts now check
+>   `earnings_in_window` and block long-premium recommendations when an
+>   ER falls inside DTE. IVR percentile rendered in alert body.
+> - **0DTE runway gate** — replaces hard 14:30 cutoff with a runway-based
+>   gate (≥45 min to close + VIX < 22 + non-PINNING regime).
+> - **Per-ticker daily cap** — max 5 alerts/ticker/day (10 for SOE A+).
+> - **CHAT_RELAY (Mir LOW) deprecated from Telegram** — only fires
+>   with system convergence.
+> - **Mir ENTRY requires system convergence** — addresses copy-trade
+>   alpha decay by gating Mir alerts on SOE/flow agreement (HIGH-TRUST
+>   channels bypass).
+> - **GEX VIX conditioning** — when VIX ≥ 20 in NEG regime, GEX-derived
+>   scores downgrade by 1 (per 8-yr SPY backtest: GEX directional edge
+>   collapses at high VIX, p=0.44).
+>
+> See [docs/research/perplexity_alert_evaluation_prompt.md](docs/research/perplexity_alert_evaluation_prompt.md)
+> for the full evaluation prompt and [Perplexity report](https://example.com/perplexity-report)
+> for the brutal critique that drove these changes.
+
+> **Earlier (May 19 2026 — first wave of Perplexity-driven filters):**
+> SOE FADE WATCH muted, MIXED cluster muted, late-session 0DTE blocked,
+> weak FLOW [MEDIUM] muted. 16/16 backtest alerts → 7/16 post-fix.
+
+> **Earlier (May 13 2026):** Bug #10 (Discord listener extracted to
+> standalone process), P1 close (universe cleanup 444→440), P2 hot-chain
+> expansion (lower gates for hot tickers), GEX magnet entry alert, snapshot
+> watchdog. [docs/research/alert_format_previews.md](docs/research/alert_format_previews.md)
+
+> **Apr 27 2026:** Cross-LLM critique cycle (Gemini/Grok/OpenAI/Perplexity)
+> independently converged on the system's biggest empirical finding:
+> **score is inversely correlated with 1d outcome** (5.0+ score = 9% hit
+> on n=33; 3.75-4.1 score = 67%). High-score fade rule shipped +
+> convergence bonus demoted to flag-only + macro regime tagger added.
+> See [docs/feedback/strategy_0427/](docs/feedback/strategy_0427/).
 
 **Current capability comparison:**
 
@@ -85,6 +130,52 @@ Telegram footer renders: `⚠ Regime: HARD — FOMC 45h | weighted megacap 7.4 (
 ### Convergence detection (Apr 27 v2 — informational flag)
 
 When a SOE fires AND a NET FLOW or large flow_alert (per-ticker tier floor) co-fires same direction within 30min, surface a 🔎 CONVERGENCE FLAG block. Per 4-LLM critique consensus, the score boost was REMOVED (correlated signals are not independent confirmation). Detection survives for postmortem analysis via the audit harness.
+
+### Telegram alert types + suppression rules (post-5/20 audit)
+
+The system fires ~30-80 alerts/day post-filtering. Every alert is also
+logged to `alert_outcomes.db` for retroactive validation.
+
+| Alert | Source module | Always fires? | Suppression rule |
+|---|---|---|---|
+| **🔥 SOE A+** | `signals.py` | Yes (force=True) | None — highest priority |
+| **⚡ SOE A** | `signals.py` | Yes | Per-ticker daily cap (10) |
+| **⚠ SOE FADE WATCH** | `signals.py` | **UI only** | Muted from Telegram (5/20) |
+| **🧲 GEX MAGNET ENTRY** | `gex_magnet_entry.py` | Yes | 45 min cooldown per (ticker, magnet) |
+| **⚡ CLUSTER RESOLUTION** | `cluster_resolution.py` | Yes | Only when MIXED→single-direction in 15 min |
+| **🎯 0DTE Engine A+/A/B+** | `zero_dte_loop.py` | Yes | Cooldown 10 min per (ticker, dir) |
+| **📈 0DTE EMA Pullback** | `scalp_alerts.py` | Conditional | Blocked if <45 min to close OR VIX≥22 OR regime PINNING/MIXED |
+| **🟢/🔴 CLUSTER FLOW (single-direction)** | `flow_alert_filter.py` | Conditional | MIXED-* bias muted; <$10M muted |
+| **🟢/🔴 FLOW [MEDIUM]** | `flow_alerts.py` | Conditional | V/OI<1.0 AND notional<$10M muted |
+| **🎯 MIR ENTRY (system convergence)** | `discord_listener.py` | Conditional | Requires SOE/flow convergence unless from #challenge-account |
+| **💬 MIR CHAT (low)** | `discord_listener.py` | **UI only** | Telegram only with convergence; otherwise DB-only |
+| **👑 KING MIGRATION** | `king_migration.py` | Yes | Cooldown per ticker |
+| **SETUP FORMING** | `signals.py` | Yes | Top 3 by score per cycle |
+| **🚨 SNAPSHOT WATCHDOG** | `snapshot_watchdog.py` | On alarm | Snapshots silent >10 min during RTH |
+
+**Universal gates** (apply to all):
+- Per-ticker daily cap: 5/day normal, 10/day priority (SOE A+, MIR ENTRY)
+- Earnings-in-window block: long-premium SOE alerts with DTE≥2 skip when
+  an ER falls inside the contract window
+- 30-min `ZERO_DTE_TELEGRAM_FORMAT=clean` (default) — clean alert
+  formatter; set `=full` for legacy multi-banner format
+
+### Performance database (`alert_outcomes.db`)
+
+Every fire is logged with:
+- Context at fire time: spot, king/floor/ceiling, GEX regime, VIX, IVR,
+  earnings_in_window, dte
+- Plan: target_spot, stop_spot, entry_price
+- Outcomes (backfilled by `alert_outcomes.run_outcome_backfill_loop`
+  every 30 min): 1h verdict, EOD verdict, next-day verdict, spot
+  MFE/MAE, target_hit_ts, stop_hit_ts
+
+Query helpers:
+- `get_win_rate_by_type(days=30)` — WR per alert type
+- `get_win_rate_by_type_and_regime(days=30)` — WR by VIX regime (LOW/MED/HIGH)
+
+After 60-120 trading days of data, every filter threshold can be
+recalibrated empirically vs the current "logic and intuition" basis.
 
 ### UI tabs
 

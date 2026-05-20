@@ -645,6 +645,32 @@ async def _eval_and_maybe_fire(
     cd.mark(ev.ticker, ev.direction, ev.grade)
     get_alert_history().append(alert)
     _persist_alert(alert)
+
+    # Performance database (2026-05-20)
+    try:
+        from .alert_outcomes import log_alert
+        log_alert(
+            alert_type=f"ZERO_DTE_{alert.grade.replace('+','P')}",
+            ticker=alert.ticker,
+            fired_at=alert.fired_at,
+            direction="BULL" if alert.direction == "bullish" else "BEAR",
+            grade=alert.grade,
+            score=alert.total_points,
+            strike=alert.strike,
+            expiration=alert.expiration,
+            option_type=(alert.right or "").lower(),
+            dte=0,
+            spot_at_alert=alert.spot,
+            entry_price=alert.est_entry_price,
+            target_premium=alert.target_mid,
+            stop_premium=alert.stop_mid,
+            gex_signal=alert.gex_signal,
+            king=alert.king_pos,
+            floor=alert.king_neg,
+            raw_alert=alert.to_row(),
+        )
+    except Exception as e:
+        print(f"[alert_outcomes] zero_dte log failed: {e}")
     print(
         f"[ZERO_DTE] {alert.grade} {alert.direction.upper()} {ticker} "
         f"{strike_choice.strike}{strike_choice.right[0].upper()} "

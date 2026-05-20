@@ -210,13 +210,25 @@ async def lifespan(app: FastAPI):
         print("[STARTUP] Snapshot persist watchdog enabled")
     except Exception as e:
         print(f"[STARTUP] Snapshot watchdog NOT started: {e}")
+
+    # Alert outcomes performance database backfill (5/20 night, Perplexity
+    # recommendation #1). Every 30 min walks pending alerts and computes
+    # 1h/EOD/next-day outcomes + spot MFE/MAE + target/stop hits. Without
+    # this, every filter threshold is unfounded.
+    _outcomes_task = None
+    try:
+        from .alert_outcomes import run_outcome_backfill_loop
+        _outcomes_task = asyncio.create_task(run_outcome_backfill_loop(_stop))
+        print("[STARTUP] Alert outcomes backfill loop enabled")
+    except Exception as e:
+        print(f"[STARTUP] Alert outcomes backfill NOT started: {e}")
     try:
         yield
     finally:
         _stop.set()
         await streamer.stop()
         await db.stop()  # Drain write queue before shutdown
-        all_tasks = [_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task, _priority_task, _net_flow_task, _net_flow_alert_task, _net_flow_fast_task, _zero_dte_task, _king_mig_task, _king_brk_task, _floor_mig_task, _structural_turn_task, _gex_magnet_task, _snap_watchdog_task]
+        all_tasks = [_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task, _priority_task, _net_flow_task, _net_flow_alert_task, _net_flow_fast_task, _zero_dte_task, _king_mig_task, _king_brk_task, _floor_mig_task, _structural_turn_task, _gex_magnet_task, _snap_watchdog_task, _outcomes_task]
         for task in all_tasks:
             if task:
                 try:

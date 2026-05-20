@@ -332,6 +332,21 @@ async def run_magnet_entry_loop(stop_event: asyncio.Event) -> None:
                         await send(format_telegram(sig), ticker=sig.ticker, force=True)
                     except Exception as e:
                         print(f"[gex_magnet] telegram send failed: {e}")
+                    # Performance database log (2026-05-20)
+                    try:
+                        from .alert_outcomes import log_alert
+                        log_alert(
+                            alert_type="GEX_MAGNET",
+                            ticker=sig.ticker,
+                            fired_at=sig.fired_at,
+                            direction="BULL",
+                            spot_at_alert=sig.spot,
+                            target_spot=sig.king,
+                            king=sig.king,
+                            raw_alert=sig.to_row(),
+                        )
+                    except Exception as e:
+                        print(f"[gex_magnet] log_alert failed: {e}")
             cycles += 1
             if cycles % 60 == 0:  # heartbeat every 30 min
                 print(f"[gex_magnet] heartbeat — cycles={cycles} fires={fires_total}")

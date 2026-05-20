@@ -2351,6 +2351,23 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
         if sig.get("is_high_score_fade"):
             should_push = False
 
+        # ER-in-window gate for long-premium multi-day alerts (2026-05-20
+        # — Perplexity recommendation #2). Block SOE long-call/long-put
+        # alerts when ER falls inside the contract window AND DTE >= 2.
+        # 0DTE/1DTE on ER day is a different setup (vol play, not held
+        # through crush) — not gated. Alert STILL persisted + shown in
+        # UI; just muted from Telegram.
+        try:
+            from .earnings_calendar import er_blocks_long_premium
+            _dte = sig.get("dte")
+            if _dte is not None and _dte >= 2:
+                blocked, reason = er_blocks_long_premium(ticker, _dte)
+                if blocked:
+                    should_push = False
+                    sig["_er_blocked_reason"] = reason
+        except Exception:
+            pass
+
         if should_push and not sig.get("_suppress_telegram"):
             try:
                 from .telegram import send, format_soe_signal
@@ -2369,6 +2386,36 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
                     priority=(_grade == "A+"),
                     force=(_grade in ("A", "A+")),
                 )
+                # Performance database log (2026-05-20). Logs even if
+                # suppressed; future analysis needs to know what would-have-
+                # fired vs what did. Set _suppress_telegram for the UI-only
+                # FADE WATCH path.
+                try:
+                    from .alert_outcomes import log_alert
+                    log_alert(
+                        alert_type=f"SOE_{_grade.replace('+','P')}",
+                        ticker=ticker,
+                        fired_at=time.time(),
+                        direction="BULL" if sig.get("direction") in ("▲","BULL") else "BEAR",
+                        grade=_grade,
+                        score=sig.get("score"),
+                        strike=sig.get("strike"),
+                        expiration=sig.get("expiration"),
+                        option_type=sig.get("option_type", "").lower(),
+                        dte=sig.get("dte"),
+                        spot_at_alert=sig.get("spot"),
+                        entry_price=sig.get("mid_price"),
+                        target_spot=sig.get("target"),
+                        stop_spot=sig.get("stop"),
+                        gex_regime=sig.get("regime"),
+                        king=sig.get("king"),
+                        floor=sig.get("floor_level"),
+                        ceiling=sig.get("ceiling_level"),
+                        ivr_at_alert=sig.get("iv_rank") or sig.get("ivp"),
+                        raw_alert=sig,
+                    )
+                except Exception as e:
+                    print(f"[alert_outcomes] SOE log failed: {e}")
             except Exception:
                 pass
 

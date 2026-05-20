@@ -22,16 +22,42 @@ MAX_MESSAGES_PER_WINDOW = 3      # max messages in the window
 WINDOW_SECONDS = 600              # 10 minute window
 TICKER_COOLDOWN_SECONDS = 3600    # 1 hour per ticker
 
+# Per-ticker DAILY cap (added 2026-05-20 per Perplexity recommendation —
+# alert density vs quality). Max 5 alerts per ticker per session for
+# normal alerts; 10 for priority/force alerts (SOE A+, Mir ENTRY,
+# GEX MAGNET). Resets each calendar day at midnight ET.
+PER_TICKER_DAILY_CAP = 5
+PER_TICKER_DAILY_CAP_PRIORITY = 10
+
 _message_times: deque[float] = deque()
 _ticker_last_sent: dict[str, float] = {}
+# (ticker, day_str) -> count
+_ticker_daily_count: dict[tuple[str, str], int] = {}
+
+
+def _today_str() -> str:
+    """ET calendar day (server assumed ET)."""
+    import datetime as _dt
+    return _dt.datetime.now().date().isoformat()
 
 
 def _can_send(ticker: str = "", priority: bool = False, force: bool = False) -> bool:
     """Check if we can send a message without being spammy."""
-    if force:
-        return True  # Mir Discord signals bypass all rate limits
-
     now = time.time()
+
+    # Per-ticker DAILY cap — applies to ALL alerts including force,
+    # but priority/force gets the higher cap (10/day vs 5/day).
+    # Without this gate, force=True alerts in the same ticker can spam
+    # 20+ times in a session.
+    if ticker:
+        day = _today_str()
+        key = (ticker, day)
+        cap = PER_TICKER_DAILY_CAP_PRIORITY if (priority or force) else PER_TICKER_DAILY_CAP
+        if _ticker_daily_count.get(key, 0) >= cap:
+            return False
+
+    if force:
+        return True  # Mir Discord signals bypass per-message rate limits
 
     # Priority messages (A/A+ signals) bypass rate limit but not ticker cooldown
     if not priority:
@@ -55,6 +81,9 @@ def _record_sent(ticker: str = "") -> None:
     _message_times.append(now)
     if ticker:
         _ticker_last_sent[ticker] = now
+        # Bump daily counter
+        key = (ticker, _today_str())
+        _ticker_daily_count[key] = _ticker_daily_count.get(key, 0) + 1
 
 
 async def send(
@@ -272,6 +301,39 @@ def format_soe_signal(sig: dict[str, Any]) -> str:
             f"<b>{size_mult}× base</b> (mean-reversion risk dominates)"
         )
 
+    # Earnings + IVR block (2026-05-20 — Perplexity recommendation #2).
+    # Surfaces ER-in-window risk + IV rank percentile so the trader knows
+    # the structural IV crush + premium-pay exposure at entry. Multi-day
+    # alerts only (0DTE/1DTE are different setups).
+    er_ivr_block = None
+    if dte is not None and dte >= 2:
+        try:
+            from .earnings_calendar import er_in_window_sync
+            er_in_win, days_to_er = er_in_window_sync(ticker, dte)
+            ivr = sig.get("iv_rank") or sig.get("ivp")
+            parts = []
+            if er_in_win:
+                parts.append(f"⚠️ <b>EARNINGS IN WINDOW</b>: ER in {days_to_er}d "
+                            f"(within {dte}-day DTE) — IV crush risk on close")
+            if ivr is not None:
+                try:
+                    ivr_v = float(ivr)
+                    ivr_pct = ivr_v if ivr_v <= 100 else ivr_v / 100
+                    if ivr_pct > 75:
+                        parts.append(f"⚠️ <b>IVR: {ivr_pct:.0f}</b> (>75th pct) — "
+                                    "long premium structurally expensive")
+                    elif ivr_pct < 25:
+                        parts.append(f"✅ <b>IVR: {ivr_pct:.0f}</b> (<25th pct) — "
+                                    "long premium cheap")
+                    else:
+                        parts.append(f"IVR: {ivr_pct:.0f}")
+                except (ValueError, TypeError):
+                    pass
+            if parts:
+                er_ivr_block = "\n".join(parts)
+        except Exception:
+            pass
+
     # Macro regime footer — Apr 27 shadow mode. Compact one-liner so
     # the trader sees regime context at the moment of decision, not just
     # in postmortem. NONE = no badge (avoid clutter on normal days).
@@ -301,6 +363,7 @@ def format_soe_signal(sig: dict[str, Any]) -> str:
         f"Mid: ${mid:.2f}" if mid else None,
         f"Size: {kelly}%" if kelly else None,
         f"Greeks: {source.upper()}",
+        er_ivr_block,  # ER-in-window + IVR pct (2026-05-20)
         high_score_fade_block,  # Above convergence so the warning lands first
         convergence_block,
         drift_warning,

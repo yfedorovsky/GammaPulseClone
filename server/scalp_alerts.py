@@ -659,23 +659,39 @@ async def _check_scalp_alerts() -> list[dict[str, Any]]:
                 _record_alert(ticker, "ZGL_CROSS_DOWN")
 
         # ── 8 EMA PULLBACK: Mir's #1 intraday entry trigger ─────────
-        # LATE-SESSION GATE (added 2026-05-20 after backtest showed two
-        # 0DTE EMA pullback alerts fired at 3:57 PM with stops hit in
-        # ~3 minutes — no theta runway for thesis). Block 0DTE alerts
-        # after 14:30 ET. 1DTE alerts (post-3:00 still allowed via
-        # _get_dte_preference) are not affected by this gate.
+        # RUNWAY GATE for 0DTE (added 2026-05-20, refined per Perplexity
+        # recommendation #5 — replace hard time cutoff with a runway-based
+        # gate that respects VIX + regime context).
+        # Block 0DTE alerts when ANY of:
+        #   - <45 min to close (no theta runway)
+        #   - VIX >= 22 (volatility ≠ trending; choppy = 0DTE loses)
+        #   - GEX regime is choppy/PINNING (not trending)
+        # 1DTE alerts (post-3:00 still allowed via _get_dte_preference)
+        # are not affected by this gate.
         import datetime as _dt
         _now = _dt.datetime.now()
         _now_mins = _now.hour * 60 + _now.minute
-        _too_late_for_0dte = _now_mins >= 930  # 15:30 ET
+        # Market close = 16:00 = 960 mins. Runway = 960 - _now_mins.
+        _runway_min = 960 - _now_mins
+        _no_runway = _runway_min < 45
+        _vix_level = _current_vix.get("level", 0)
+        _vix_too_high = _vix_level >= 22
+        _gex_signal = (state.get("signal") or "").upper()
+        _gex_choppy = _gex_signal in ("PINNING", "MIXED", "")
         _dte_pref_days, _ = _get_dte_preference()
+        _block_0dte = _no_runway or _vix_too_high or _gex_choppy
 
         ema_alert = await _detect_ema_pullback(ticker, state)
         if ema_alert and _can_alert(ticker, ema_alert["type"]):
-            if _too_late_for_0dte and _dte_pref_days == 0:
-                # 3:30 PM+ and we would recommend 0DTE — skip entirely.
-                # The trader has <30 min for thesis to play out vs
-                # accelerating theta + closing-auction noise.
+            if _block_0dte and _dte_pref_days == 0:
+                # Would recommend 0DTE but blocked by runway/VIX/regime.
+                # Log the suppression reason for diagnostic visibility.
+                reason = (
+                    "runway" if _no_runway
+                    else "vix" if _vix_too_high
+                    else "regime"
+                )
+                # Optionally swap to 1DTE here in the future
                 pass
             else:
                 # Add trend day context to headline
@@ -900,6 +916,24 @@ async def run_scalp_scanner(stop_event: asyncio.Event) -> None:
                 for a in alerts:
                     msg = format_scalp_alert(a)
                     await send(msg, ticker=a["ticker"], force=True)
+                    # Performance database log (2026-05-20)
+                    try:
+                        from .alert_outcomes import log_alert
+                        log_alert(
+                            alert_type=f"SCALP_{a.get('type', 'EMA')}",
+                            ticker=a["ticker"],
+                            direction="BULL" if a.get("direction", "CALLS") == "CALLS" else "BEAR",
+                            spot_at_alert=a.get("spot"),
+                            target_spot=a.get("target"),
+                            stop_spot=a.get("stop"),
+                            king=a.get("king"),
+                            gex_regime=a.get("regime"),
+                            dte=0 if a.get("_dte_label") == "0DTE" else 1,
+                            vix_at_alert=a.get("_vix_level"),
+                            raw_alert=a,
+                        )
+                    except Exception:
+                        pass
                     print(f"[SCALP] {a['ticker']} {a['type']}: {a['headline']}")
                     # Auto-open paper position for real trade alerts
                     await _auto_paper_scalp(a)

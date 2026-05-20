@@ -126,9 +126,28 @@ class ClusterCollapser:
             if len(items) >= self.min_legs:
                 summary = self._build_summary(ticker, items)
                 if self._cluster_passes_gates(summary):
+                    # Check if this fire follows a recent muted MIXED — if
+                    # so, emit a CLUSTER_RESOLUTION alongside (high-EV
+                    # pattern: ambiguity → conviction). The regular FIRE
+                    # also stays so we don't lose the original cluster.
+                    try:
+                        from .cluster_resolution import check_resolution
+                        resolution = check_resolution(ticker, summary)
+                        if resolution:
+                            out.append(("FIRE_SUMMARY", resolution))
+                    except Exception:
+                        pass
                     out.append(("FIRE_SUMMARY", summary))
-                # else: silently drop — cluster was directionally mixed
-                # or below notional floor, not signal-worthy
+                else:
+                    # Cluster MIXED-bias was muted; remember it in case the
+                    # next cluster resolves to single-direction within 15min.
+                    bias = summary.get("bias", "")
+                    if bias.startswith("MIXED"):
+                        try:
+                            from .cluster_resolution import remember_mixed
+                            remember_mixed(ticker, summary)
+                        except Exception:
+                            pass
             else:
                 for _, a in items:
                     out.append(("FIRE", a))
