@@ -258,13 +258,114 @@ def format_zero_dte_alert(alert: Any) -> str:
     )
 
 
+def format_zero_dte_alert_clean(alert: Any) -> str:
+    """Cleaner alert format — under 14 lines, single emoji per state,
+    all numbers visible at a glance. The trade thesis in one line.
+
+    Designed 2026-05-20 in response to: "I want a more cleaner alert."
+    Format philosophy: every line earns its place. No banners unless they
+    change the action. No regime text dump. Three checkmark conditions
+    instead of 5 stars-out-of-4.
+
+    Example:
+
+        🎯 SPY 0DTE · A+
+        🟢 BUY $740C 2026-05-19 @ $1.80
+
+        Spot $733.20 → magnet $740 (+0.93%)
+        GEX: MAGNET FADE · Flow: NCP +$1.5M/2m
+
+        ✓ Magnet within reach
+        ✓ Higher low confirmed
+        ✓ $86M call cluster firing
+
+        TP +50% / Stop -30% / Time 30min — exit on magnet touch.
+    """
+    strike = alert.strike
+    strike_str = (
+        f"${int(strike)}" if (strike is not None and strike == int(strike))
+        else f"${strike:.2f}" if strike is not None else "?"
+    )
+    right = (alert.right or "call").upper()[:4]  # CALL or PUT
+    exp = alert.expiration or "?"
+    dir_emoji = _direction_emoji(alert.direction)
+    grade_emoji = _grade_emoji(alert.grade)
+
+    # Pricing line
+    entry = alert.est_entry_price
+    entry_str = f" @ ${entry:.2f}" if entry is not None else ""
+
+    # Context line: spot → target
+    ctx_line = ""
+    if alert.spot is not None and alert.target_level is not None:
+        dist_pct = abs(alert.target_level - alert.spot) / alert.spot * 100
+        arrow = "→" if alert.direction == "bullish" else "↓"
+        ctx_line = f"Spot ${alert.spot:.2f} {arrow} magnet ${alert.target_level:g} (+{dist_pct:.2f}%)"
+
+    # Top-3 factors as checkmarks (the ones that contributed)
+    factor_labels = {
+        "gex": "GEX", "fast_flow": "Flow", "regime": "Regime",
+        "sweep": "Sweeps", "golden": "GOLDEN",
+    }
+    top_factors = sorted(alert.factors, key=lambda f: -f.get("points", 0))[:4]
+    factor_lines = []
+    for f in top_factors:
+        pts = f.get("points", 0)
+        if pts <= 0:
+            continue
+        name = factor_labels.get(f.get("name", "?"), f.get("name", "?"))
+        reasoning = f.get("reasoning", "")[:60]
+        factor_lines.append(f"  ✓ {name}: {reasoning}")
+
+    # Mini-regime line
+    regime_line = ""
+    if alert.gex_signal or alert.flow_regime:
+        gex = alert.gex_signal or "—"
+        regime_line = f"GEX: {gex}"
+        if alert.flow_regime:
+            regime_line += f" · Flow: {alert.flow_regime}"
+
+    # Exits line
+    target = alert.target_mid
+    stop = alert.stop_mid
+    exit_parts = []
+    if target is not None and entry is not None:
+        target_pct = (target / entry - 1) * 100
+        exit_parts.append(f"Target ${target:.2f} (+{target_pct:.0f}%)")
+    if stop is not None and entry is not None:
+        stop_pct = (stop / entry - 1) * 100
+        exit_parts.append(f"Stop ${stop:.2f} ({stop_pct:+.0f}%)")
+    exit_line = " | ".join(exit_parts) if exit_parts else ""
+
+    # Assemble — keep it tight
+    lines = [
+        f"{grade_emoji} <b>{alert.ticker} 0DTE · {alert.grade}</b>",
+        f"{dir_emoji} BUY {strike_str}{right[0]} {exp}{entry_str}",
+    ]
+    if ctx_line:
+        lines.append("")
+        lines.append(ctx_line)
+    if regime_line:
+        lines.append(regime_line)
+    if factor_lines:
+        lines.append("")
+        lines.extend(factor_lines)
+    if exit_line:
+        lines.append("")
+        lines.append(exit_line)
+    lines.append("<i>TP +50% / Stop -30% / Time 30min — exit on magnet touch.</i>")
+    return "\n".join(lines)
+
+
 async def send_zero_dte_alert(alert: Any) -> None:
     """Send a 0DTE alert to Telegram. Errors logged but swallowed —
     alerting failures should never break the eval loop.
 
-    Apr 29: hardened error logging after the SPX 14:58 alert went missing
-    (DB had it, Telegram didn't). Now wraps format + send with try/except
-    and logs alert_id so we can correlate which fires died in transit."""
+    Format: CLEAN by default (5/20 user request). Set
+    ZERO_DTE_TELEGRAM_FORMAT=full to get the legacy multi-banner format
+    with structural-turn cross-confirmation and exit-management warning.
+    """
+    import os
     alert_id = getattr(alert, "alert_id", "?")
     ticker = getattr(alert, "ticker", "?")
     try:
@@ -273,7 +374,11 @@ async def send_zero_dte_alert(alert: Any) -> None:
         print(f"[ZERO_DTE] {alert_id} ({ticker}) telegram module not available")
         return
     try:
-        text = format_zero_dte_alert(alert)
+        fmt = (os.environ.get("ZERO_DTE_TELEGRAM_FORMAT") or "clean").lower()
+        if fmt == "full":
+            text = format_zero_dte_alert(alert)
+        else:
+            text = format_zero_dte_alert_clean(alert)
     except Exception as e:
         print(f"[ZERO_DTE] {alert_id} ({ticker}) format failed: {e!r}")
         import traceback

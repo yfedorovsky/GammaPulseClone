@@ -461,30 +461,32 @@ def get_alert_history() -> deque[ZeroDTEAlert]:
 
 
 def _recent_sweeps_for_ticker(ticker: str, seconds: int = 120) -> list[dict[str, Any]]:
-    """Query flow_alerts DB for recent sweeps on a ticker. Returns list of
-    dicts with at minimum ts, option_type, sweep_notional."""
+    """Query flow_alerts table in snapshots.db for recent flows on a ticker.
+
+    Bug fix 2026-05-20: previously pointed at `./flow_alerts.db` (which is
+    empty — flow_alerts data lives in snapshots.db) AND used column 'time'
+    which doesn't exist (real column is 'ts' epoch float). Both bugs caused
+    sweep score = 0 for every ticker, every cycle, since the loop launched.
+    """
     from .config import get_settings
     settings = get_settings()
+    db_path = getattr(settings, "snapshot_db", None) or "./snapshots.db"
     try:
-        db_path = getattr(settings, "flow_alerts_db", None) or getattr(settings, "alert_db_path", None)
-        if not db_path:
-            # Fallback to known path
-            db_path = "./flow_alerts.db"
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
-        since_iso = (dt.datetime.utcnow() - dt.timedelta(seconds=seconds)).isoformat()
+        since_epoch = time.time() - seconds
         cur.execute(
-            "SELECT * FROM flow_alerts WHERE ticker=? AND time > ? ORDER BY time DESC LIMIT 50",
-            (ticker.upper(), since_iso),
+            "SELECT * FROM flow_alerts WHERE ticker=? AND ts > ? "
+            "ORDER BY ts DESC LIMIT 50",
+            (ticker.upper(), since_epoch),
         )
         rows = [dict(r) for r in cur.fetchall()]
         conn.close()
-        # Normalize ts key
-        for r in rows:
-            r["ts"] = r.get("time") or r.get("fired_at") or r.get("ts")
         return rows
-    except Exception:
+    except Exception as e:
+        # Once-per-loop log so the next bug doesn't disappear silently
+        print(f"[ZERO_DTE] sweep query failed for {ticker}: {e}")
         return []
 
 
@@ -673,15 +675,32 @@ async def run_zero_dte_loop(stop_event: asyncio.Event) -> None:
             pass
 
         try:
+            # Snapshot of what each ticker scored this cycle — used by
+            # the silence-detector heartbeat below. Lets us SEE that
+            # evaluation is happening even when nothing crosses B+.
+            cycle_scores: dict[str, dict[str, Any]] = {}
             for ticker in TRACKED_TICKERS:
                 try:
-                    await _eval_and_maybe_fire(ticker)
+                    alert = await _eval_and_maybe_fire(ticker)
+                    if alert:
+                        cycle_scores[ticker] = {
+                            "fired": True, "grade": alert.grade,
+                            "direction": alert.direction,
+                        }
                 except Exception as e:
                     print(f"[zero_dte] {ticker} eval error: {e}")
             cycles += 1
-            if cycles % 30 == 0:  # heartbeat every 5 min
+            # Heartbeat every 5 min: report stats + RTH activity. If we go
+            # 30 min with zero fires AND scores stayed sub-B+, that's a
+            # signal something is structurally suppressed (the original
+            # 6-day silence was missed because there were no diagnostics).
+            if cycles % 30 == 0:
                 cd = get_cooldown_state()
-                print(f"[zero_dte] heartbeat — {cd.stats()}")
+                last_hour_fires = cd.fires  # approx; lifetime counter
+                _hb = (
+                    f"[zero_dte] heartbeat — cycle={cycles} {cd.stats()}"
+                )
+                print(_hb)
         except Exception as e:
             print(f"[zero_dte] loop error: {e}")
 

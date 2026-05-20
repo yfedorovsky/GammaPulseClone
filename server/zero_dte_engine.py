@@ -163,12 +163,27 @@ def _resolve_direction(
     reasons = []
 
     # GEX signal vote
+    # Bug fix 2026-05-20: previously MAGNET FADE / SUPPORT FADE (the NEG-regime
+    # variants, ~30% of all SPY snapshots) were unhandled = 0 votes = ambiguous
+    # = no fire. This was the structural cause of the 6-day 0DTE silence.
+    # Treatment: FADE signals get conditional weight based on king position —
+    # MAGNET FADE with king above spot still has bullish bias (magnet exists,
+    # just fragile); SUPPORT FADE means support is breaking down = bearish.
     if gex_signal == "MAGNET UP":
         bull_votes += 2
         reasons.append("GEX MAGNET UP")
+    elif gex_signal == "MAGNET FADE" and king_pos and king_pos > spot:
+        # Broken magnet in NEG regime — magnet exists but vol-amplified;
+        # institutional flow can still force the move toward king.
+        bull_votes += 1
+        reasons.append("GEX MAGNET FADE (king above)")
     elif gex_signal == "SUPPORT":
         bull_votes += 1
         reasons.append("GEX SUPPORT")
+    elif gex_signal == "SUPPORT FADE":
+        # Support is breaking down in NEG regime — bearish bias
+        bear_votes += 1
+        reasons.append("GEX SUPPORT FADE")
     elif gex_signal == "DANGER":
         bear_votes += 2
         reasons.append("GEX DANGER")
@@ -254,6 +269,20 @@ def _score_gex(
                     "gex", 2,
                     f"MAGNET UP but nearly at king ${king_pos:g}"
                 )
+        # MAGNET FADE handler (added 2026-05-20). Broken-magnet variant in
+        # NEG regime — give partial score (2 of 4) instead of zero so a real
+        # bullish setup with strong supporting factors can still grade B+.
+        if gex_signal == "MAGNET FADE" and king_pos and king_pos > spot:
+            dist_pct = (king_pos - spot) / spot
+            if 0.002 <= dist_pct <= 0.015:
+                return FactorScore(
+                    "gex", 2,
+                    f"MAGNET FADE (NEG regime) with {dist_pct*100:.2f}% to king ${king_pos:g}"
+                )
+            return FactorScore(
+                "gex", 1,
+                f"MAGNET FADE with king ${king_pos:g} ({dist_pct*100:.2f}% away)"
+            )
         if gex_signal == "SUPPORT":
             return FactorScore("gex", 2, "SUPPORT signal")
         if gex_signal == "PINNING":
@@ -273,6 +302,10 @@ def _score_gex(
                     "gex", 3,
                     f"{gex_signal} within {dist_pct*100:.2f}% of neg_king"
                 )
+        # SUPPORT FADE handler (added 2026-05-20): support breaking in NEG
+        # regime = bearish setup.
+        if gex_signal == "SUPPORT FADE":
+            return FactorScore("gex", 2, "SUPPORT FADE — support breaking")
         if gex_signal == "RESISTANCE":
             return FactorScore("gex", 2, "RESISTANCE above spot")
         return FactorScore("gex", 0, f"GEX {gex_signal} not bearish")

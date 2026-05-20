@@ -188,13 +188,35 @@ async def lifespan(app: FastAPI):
         from .sweep_detector import run_sweep_detector
         _sweep_task = asyncio.create_task(run_sweep_detector(_stop))
         print("[STARTUP] Theta sweep detector enabled")
+
+    # GEX Magnet Entry — 3-condition convergence alert (shipped 5/20)
+    # Synthesis layer for SPY/QQQ/IWM 0DTE setups: magnet within reach +
+    # higher-low confirmed + institutional call cluster firing.
+    _gex_magnet_task = None
+    try:
+        from .gex_magnet_entry import run_magnet_entry_loop
+        _gex_magnet_task = asyncio.create_task(run_magnet_entry_loop(_stop))
+        print("[STARTUP] GEX magnet entry loop enabled")
+    except Exception as e:
+        print(f"[STARTUP] GEX magnet entry loop NOT started: {e}")
+
+    # Snapshot persist watchdog — alarms via Telegram if snapshots table
+    # goes >10 min without a write during RTH (the 5/14-5/19 4-day silent
+    # bug must never repeat undetected).
+    _snap_watchdog_task = None
+    try:
+        from .snapshot_watchdog import run_snapshot_watchdog
+        _snap_watchdog_task = asyncio.create_task(run_snapshot_watchdog(_stop))
+        print("[STARTUP] Snapshot persist watchdog enabled")
+    except Exception as e:
+        print(f"[STARTUP] Snapshot watchdog NOT started: {e}")
     try:
         yield
     finally:
         _stop.set()
         await streamer.stop()
         await db.stop()  # Drain write queue before shutdown
-        all_tasks = [_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task, _priority_task, _net_flow_task, _net_flow_alert_task, _net_flow_fast_task, _zero_dte_task, _king_mig_task, _king_brk_task, _floor_mig_task, _structural_turn_task]
+        all_tasks = [_worker_task, _flow_task, _monitor_task, _signal_task, _scalp_task, _discord_task, _sweep_task, _priority_task, _net_flow_task, _net_flow_alert_task, _net_flow_fast_task, _zero_dte_task, _king_mig_task, _king_brk_task, _floor_mig_task, _structural_turn_task, _gex_magnet_task, _snap_watchdog_task]
         for task in all_tasks:
             if task:
                 try:
