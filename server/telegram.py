@@ -47,8 +47,21 @@ def _today_str() -> str:
     return _dt.datetime.now().date().isoformat()
 
 
-def _can_send(ticker: str = "", priority: bool = False, force: bool = False) -> bool:
-    """Check if we can send a message without being spammy."""
+def _can_send(
+    ticker: str = "", priority: bool = False, force: bool = False
+) -> tuple[bool, str]:
+    """Check if we can send a message without being spammy.
+
+    Returns (allowed, reason). reason is "" when allowed; otherwise a
+    short tag identifying why the message was dropped. Reason tags:
+      - "daily_cap"     — ticker hit PER_TICKER_DAILY_CAP[_PRIORITY]
+      - "rate_window"   — non-priority hit MAX_MESSAGES_PER_WINDOW
+      - "ticker_cd"     — ticker still in TICKER_COOLDOWN_SECONDS window
+
+    Added 2026-05-20 (Option C — instrumentation-only). Behaviour
+    unchanged; the only change is that drops are now observable so we
+    can see WHY alerts don't reach Telegram during high-volume tape.
+    """
     now = time.time()
 
     # Per-ticker DAILY cap — applies to ALL alerts including force,
@@ -60,10 +73,10 @@ def _can_send(ticker: str = "", priority: bool = False, force: bool = False) -> 
         key = (ticker, day)
         cap = PER_TICKER_DAILY_CAP_PRIORITY if (priority or force) else PER_TICKER_DAILY_CAP
         if _ticker_daily_count.get(key, 0) >= cap:
-            return False
+            return False, "daily_cap"
 
     if force:
-        return True  # Mir Discord signals bypass per-message rate limits
+        return True, ""  # Mir Discord signals bypass per-message rate limits
 
     # Priority messages (A/A+ signals) bypass rate limit but not ticker cooldown
     if not priority:
@@ -71,15 +84,29 @@ def _can_send(ticker: str = "", priority: bool = False, force: bool = False) -> 
         while _message_times and _message_times[0] < now - WINDOW_SECONDS:
             _message_times.popleft()
         if len(_message_times) >= MAX_MESSAGES_PER_WINDOW:
-            return False
+            return False, "rate_window"
 
     # Per-ticker cooldown
     if ticker:
         last = _ticker_last_sent.get(ticker, 0)
         if now - last < TICKER_COOLDOWN_SECONDS:
-            return False
+            return False, "ticker_cd"
 
-    return True
+    return True, ""
+
+
+# Drop-reason counters for periodic visibility. Reset by callers if needed.
+_drop_counts: dict[str, int] = {"daily_cap": 0, "rate_window": 0, "ticker_cd": 0}
+
+
+def get_drop_stats() -> dict[str, int]:
+    """Snapshot of per-reason drop counters since process start (or last reset)."""
+    return dict(_drop_counts)
+
+
+def reset_drop_stats() -> None:
+    for k in _drop_counts:
+        _drop_counts[k] = 0
 
 
 def _record_sent(ticker: str = "") -> None:
@@ -117,7 +144,22 @@ async def send(
     if not s.telegram_bot_token or not s.telegram_chat_id:
         return False
 
-    if not _can_send(ticker, priority, force):
+    allowed, drop_reason = _can_send(ticker, priority, force)
+    if not allowed:
+        # Option C instrumentation (2026-05-20): observe WHY each alert
+        # was dropped so we can later distinguish rate-limiter noise from
+        # genuine "no signal" silence. Pure visibility — no behaviour
+        # change. Per-ticker daily cap is logged once per ticker per day
+        # to avoid spam in the log itself.
+        try:
+            _drop_counts[drop_reason] = _drop_counts.get(drop_reason, 0) + 1
+            tag = ticker or "-"
+            # Truncate text preview for log readability
+            preview = (text[:60].replace("\n", " ") + "…") if len(text) > 60 else text.replace("\n", " ")
+            prio_str = " priority" if priority else (" force" if force else "")
+            print(f"[TELEGRAM-DROP] reason={drop_reason} ticker={tag}{prio_str} text={preview!r}")
+        except Exception:
+            pass
         return False
 
     try:
