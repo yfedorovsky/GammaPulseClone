@@ -296,15 +296,24 @@ async def backfill_outcomes(db_path: str = DB_PATH, max_age_days: int = 7) -> di
                 # Find 1h window, EOD window, next-day window
                 fired_dt = _dt.datetime.fromtimestamp(fired_at)
 
-                # Filter 5min bars to the windows we care about
+                # Filter 5min bars to the windows we care about.
+                # Bug fix 2026-05-20: Tradier intraday history returns `time`
+                # as an epoch integer, not an ISO string. Original code used
+                # fromisoformat() which silently failed (ValueError caught by
+                # the except), filtering everything out and leaving every
+                # alert in 'pending' status despite the backfill reporting
+                # "updated".
                 def _bars_in_window(start_ts: float, end_ts: float):
                     out = []
                     for b in bars_5m:
-                        t_str = b.get("time")
-                        if not t_str:
+                        t_val = b.get("time")
+                        if t_val is None:
                             continue
                         try:
-                            bt = _dt.datetime.fromisoformat(t_str).timestamp()
+                            if isinstance(t_val, (int, float)):
+                                bt = float(t_val)
+                            else:
+                                bt = _dt.datetime.fromisoformat(t_val).timestamp()
                         except (ValueError, TypeError):
                             continue
                         if start_ts <= bt <= end_ts:
@@ -380,6 +389,14 @@ async def backfill_outcomes(db_path: str = DB_PATH, max_age_days: int = 7) -> di
                         resolution_status = "time_expired"
                         resolution_ts = eod_ts
                         resolution_spot = spot_eod_close
+                elif w_eod:
+                    # Info-only alerts (FLOW_MEDIUM, CLUSTER, MIR, SETUP_FORMING)
+                    # don't have explicit target/stop. Score them by spot move
+                    # alone — bug fix 2026-05-20 post-deploy: original
+                    # logic left these in 'pending' status forever.
+                    resolution_status = "info_only"
+                    resolution_ts = eod_ts
+                    resolution_spot = spot_eod_close
 
                 # Verdict computations
                 def _verdict_from_close(close_spot):
