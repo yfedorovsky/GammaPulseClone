@@ -185,6 +185,14 @@ def log_alert(
         _ensure_schema(db_path)
         ts = fired_at or time.time()
         aid = make_alert_id(ticker, alert_type, ts, strike, expiration)
+        # Pull the latest snapshot's is_stale flag for this ticker. If the most
+        # recent snapshot was flagged stale, the alert was scored against
+        # frozen data and should be marked. Added 2026-05-21 PM.
+        try:
+            from .snapshots import is_latest_stale
+            entry_was_stale = is_latest_stale(ticker)
+        except Exception:
+            entry_was_stale = 0
         conn = sqlite3.connect(db_path)
         try:
             conn.execute(
@@ -194,14 +202,16 @@ def log_alert(
                     spot_at_alert, entry_price, target_spot, stop_spot,
                     target_premium, stop_premium, vix_at_alert, gex_regime,
                     gex_signal, king, floor, ceiling, earnings_in_window,
-                    earnings_days_to, ivr_at_alert, outcome_status, raw_alert_json
+                    earnings_days_to, ivr_at_alert, outcome_status, raw_alert_json,
+                    entry_was_stale
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?,
                     ?, ?, ?, ?,
                     ?, ?, ?, ?,
                     ?, ?, ?, ?, ?,
-                    ?, ?, 'pending', ?
+                    ?, ?, 'pending', ?,
+                    ?
                 )""",
                 (
                     aid, ts, alert_type, ticker.upper(), direction, grade,
@@ -211,6 +221,7 @@ def log_alert(
                     gex_signal, king, floor, ceiling, earnings_in_window,
                     earnings_days_to, ivr_at_alert,
                     json.dumps(raw_alert, default=str) if raw_alert else None,
+                    entry_was_stale,
                 ),
             )
             conn.commit()
