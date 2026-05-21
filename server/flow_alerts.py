@@ -477,6 +477,29 @@ def _detect_side(
     # Two-sided so the symmetric BID-side aggression is also captured
     # (institutional put-buying / call-selling on the bid side).
     vol_oi = vol / max(oi, 1) if oi > 0 else 999.0
+
+    # Extreme V/OI shock layer (2026-05-20 PM): the 1.5x quarter-spread tier
+    # still coin-flips when last sits in the middle 50% of the spread. ABNB
+    # 137C 6/12 today: vol_oi=552.8 (!!), 2,211 contracts, but last drifted
+    # slightly below mid -> tagged BID/BEARISH via line 487 fallback. Bullflow
+    # and Flowseeker both read this as 95% ASK/BULLISH. At 25x+ V/OI the
+    # accumulation is so aggressive that mid-of-spread prints are statistical
+    # noise — institutional buyers are actively lifting offers across the
+    # tape, not patient-resting at mid. Tighten the aggression bands from
+    # 0.25*spread to 0.10*spread for this regime.
+    if spread > 0 and vol_oi >= 25.0 and last > 0:
+        if last >= mid + spread * 0.10:
+            return "ASK"
+        if last <= mid - spread * 0.10:
+            return "BID"
+        # last is within ±10% of mid AND V/OI >= 25x. Historical base rate:
+        # extreme V/OI shocks with no clear bid/ask preference are 70%+
+        # aggressive opens (institutional accumulation). Lean ASK rather
+        # than coin-flip via line 491 fallback. _detect_sentiment then
+        # interprets call+ASK = bullish, put+ASK = bearish — both correct
+        # priors for V/OI shock signature.
+        return "ASK"
+
     if spread > 0 and vol_oi >= 1.5:
         # Quarter-spread aggression line: above mid + spread*0.25 is "lean ask"
         if last >= mid + spread * 0.25:

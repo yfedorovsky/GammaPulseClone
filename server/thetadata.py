@@ -720,10 +720,16 @@ class ThetaStream:
                 self._last_diag_ts = _now
 
             try:
-                raw = await asyncio.wait_for(ws.recv(), timeout=15.0)
+                raw = await asyncio.wait_for(ws.recv(), timeout=45.0)
             except asyncio.TimeoutError:
-                # No message in 15s — heartbeat should arrive every 1s
-                print("[THETA_STREAM] no heartbeat for 15s, forcing reconnect")
+                # No message in 45s — Theta keepalive ping is nominally every 1s
+                # but server-side hiccups produce 20-30s lulls during which the
+                # stream is fine. 2026-05-20: bumped 15s -> 45s. The previous
+                # 15s threshold force-killed healthy connections multiple times
+                # per session, each reconnect resubscribing 7000+ contracts and
+                # starving the snapshot persist path. 45s preserves the dead-
+                # connection detection while tolerating realistic server lulls.
+                print("[THETA_STREAM] no heartbeat for 45s, forcing reconnect")
                 await ws.close()
                 return
 

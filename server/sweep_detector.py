@@ -144,7 +144,7 @@ class SweepRollup:
 # ── Subscription planning ─────────────────────────────────────────────
 
 
-def _next_expirations(n: int = 10) -> list[int]:
+def _next_expirations(n: int = 15) -> list[int]:
     """Return the next N expiration dates as YYYYMMDD ints.
 
     Expanded 2026-04-22 to include Tuesday + Thursday so SPX/SPXW daily
@@ -160,6 +160,13 @@ def _next_expirations(n: int = 10) -> list[int]:
     full two weeks of weekday expirations, capturing every M/W/F daily-
     expiry product + every Friday equity weekly without leaving a gap.
 
+    Bumped 10 -> 15 on 2026-05-20 PM after missing SMH 560C 6/05 ($1.8M)
+    and NVDA 237.5C 5/27 ($1.2M). 6/05 was the 1st-Friday-of-June weekly
+    (not a monthly), 11 weekdays out from 5/20 — outside the n=10 window
+    by 1 weekday. n=15 covers ~3 weeks of weekdays, capturing every
+    weekly Friday and every mid-month "non-standard" expiration through
+    the end of the next calendar month.
+
     Theta silently ignores non-existent expirations, so over-subscribing
     weekdays is safe — equities just won't have data on T/Th roots.
     """
@@ -167,9 +174,9 @@ def _next_expirations(n: int = 10) -> list[int]:
     today = datetime.date.today()
     dates: list[datetime.date] = []
 
-    # Cover all weekdays in the next 18 calendar days (gives n=10 a clean
-    # 2 weeks + a few extra days of headroom for holidays).
-    for d in range(0, 18):
+    # Cover all weekdays in the next 28 calendar days (gives n=15 a clean
+    # 3 weeks + headroom for holidays). Was 18 days for n=10.
+    for d in range(0, 28):
         candidate = today + datetime.timedelta(days=d)
         if candidate.weekday() < 5:  # Mon-Fri
             dates.append(candidate)
@@ -383,15 +390,22 @@ SUBSCRIPTION_TARGET = 7_000         # target — 500 headroom for intra-session 
 SUBSCRIPTION_MAX_PLANNED = 7_000    # stop adding new tiers above this on startup
 
 # Per-tier soft budgets. Compress agent 2's 5-tier prio scheme into a tighter
-# envelope. flow_tail dropped (it was 0 anyway in practice). flow_top kept
-# at material size so AAPL-deal-style insider flow on rank-11 names like
-# INTC/QCOM/RBLX/MSTR/COIN actually has subscription coverage.
+# envelope. flow_top kept at material size so AAPL-deal-style insider flow
+# on rank-11 names like INTC/QCOM/RBLX/MSTR/COIN actually has subscription
+# coverage.
+#
+# 2026-05-20 PM (post-NVDA-earnings audit): 7-of-12 named whale trades from
+# salmaogs/bullflow board MISSED today. Pattern: small-cap + monthly/quarterly
+# expiration (AAOI 175C 7/17 $9.4M, HIVE 4C 9/18 $995K, PL 47C 8/21 $1.4M,
+# IOT 30C 1/15/27 $1.8M). flow_tail=0 was the structural blocker. Bumped
+# 0 -> 400 to cover rank 101-300 tickers at narrow strike radius. Total
+# budget rises 6850 -> 7250, still well within the 7500 ceiling.
 TIER_BUDGETS = {
     "mvp": 4_000,
     "tier2": 1_500,
     "flow_top": 1_000,    # rank 1-30 gap-fillers (QCOM, RBLX, WFC, etc.)
-    "flow_mid": 350,      # rank 31-100 (trimmed 500->350 for 2x radius bump 5/12)
-    "flow_tail": 0,       # dropped — was 500 cap, never hit it in practice
+    "flow_mid": 500,      # rank 31-100 (5/20: 350->500 to fit monthly coverage)
+    "flow_tail": 400,     # 2026-05-20: rank 101-300 long-tail (AAOI/HIVE/PL/IOT)
 }
 
 FLOW_FULL_COVERAGE_PCT = 0.10       # ±10% of spot for top-30 (bumped 5/12)
@@ -471,13 +485,19 @@ def _radius_pct_for_rank(rank: int | None) -> float | None:
 def _expirations_for_rank(rank: int | None,
                           near_term: list[int],
                           monthly: list[int]) -> list[int]:
-    """Pick which expirations a tier gets. Top-30 + MVP get all; mid get
-    near-term only; long-tail gets 0DTE/1DTE only."""
+    """Pick which expirations a tier gets.
+
+    2026-05-20 PM update: previously flow_mid (rank 31-100) got near-term
+    weekdays only, blinding us to monthly insider flow on names like
+    INTC 195C 7/17 ($5.2M today). Now flow_mid gets near-term + the 3
+    nearest monthlies. Flow_tail (rank 101+) bumped from 0DTE/1DTE only
+    to nearest 4 weekdays (covers daily-expiry products on tail names).
+    """
     if rank is None or rank <= 30:
-        return near_term + monthly
+        return near_term + monthly                       # full coverage
     if rank <= 100:
-        return near_term
-    return near_term[:2]  # 0DTE + 1DTE only
+        return near_term + monthly[:3]                   # + 3 nearest monthlies
+    return near_term[:4]                                 # tail: nearest 4 weekdays
 
 
 async def _build_subscription_plan(
