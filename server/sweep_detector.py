@@ -386,8 +386,8 @@ TIER2_MAX_RADIUS = 20
 # safe value Theta will accept.
 
 SUBSCRIPTION_BUDGET = 7_500         # hard ceiling — empirically below Theta cap
-SUBSCRIPTION_TARGET = 7_000         # target — 500 headroom for intra-session expansion
-SUBSCRIPTION_MAX_PLANNED = 7_000    # stop adding new tiers above this on startup
+SUBSCRIPTION_TARGET = 7_400         # target — 100 headroom for intra-session expansion (2026-05-22)
+SUBSCRIPTION_MAX_PLANNED = 7_400    # 2026-05-22: bumped 7000->7400 to fit MVP monthly radius bump
 
 # Per-tier soft budgets. Compress agent 2's 5-tier prio scheme into a tighter
 # envelope. flow_top kept at material size so AAPL-deal-style insider flow
@@ -401,7 +401,7 @@ SUBSCRIPTION_MAX_PLANNED = 7_000    # stop adding new tiers above this on startu
 # 0 -> 400 to cover rank 101-300 tickers at narrow strike radius. Total
 # budget rises 6850 -> 7250, still well within the 7500 ceiling.
 TIER_BUDGETS = {
-    "mvp": 4_000,
+    "mvp": 4_400,         # 2026-05-22: 4000->4400 (+400) for monthly OTM radius bump
     "tier2": 1_500,
     "flow_top": 1_000,    # rank 1-30 gap-fillers (QCOM, RBLX, WFC, etc.)
     "flow_mid": 500,      # rank 31-100 (5/20: 350->500 to fit monthly coverage)
@@ -411,6 +411,15 @@ TIER_BUDGETS = {
 FLOW_FULL_COVERAGE_PCT = 0.10       # ±10% of spot for top-30 (bumped 5/12)
 FLOW_REDUCED_COVERAGE_PCT = 0.05    # ±5% for rank 31-100 (bumped 5/12)
 FLOW_MIN_COVERAGE_PCT = 0.025       # ±2.5% for long-tail (101+) (bumped 5/12)
+
+# 2026-05-22: differentiated MVP coverage on monthly expirations. The
+# 10% near-term radius leaves whales like SPY 805C 8/21 ($2.7M FL0WG0D
+# trade on 5/21, 8.4% OTM) and AAOI 175C 7/17 ($9.4M, 7.3% OTM) outside
+# the chain when the total strike-count budget is saturated. Monthly
+# expirations are where INSIDER / whale flow concentrates per the
+# documented pattern, so they get a wider radius than weeklies.
+MVP_MONTHLY_COVERAGE_PCT = 0.13     # ±13% on MVP monthly 3rd-Fridays
+                                    # (~30% wider radius than weeklies)
 
 # Coverage bump rationale (2026-05-12):
 # Bug #2 fix part 2. GLD 6/18 $380C ($51 ITM on $431 spot) sat 12% below
@@ -607,7 +616,13 @@ async def _build_subscription_plan(
         if root in INDEX_ROOTS:
             _subscribe_root(root, INDEX_OTM_PCT, near_term, "mvp")
         else:
-            _subscribe_root(root, FLOW_FULL_COVERAGE_PCT, all_exps, "mvp")
+            # 2026-05-22: split near-term (10% radius) vs monthly (13% radius).
+            # Monthly expirations are where insider/whale flow concentrates
+            # in OTM strikes — the SPY 805C 8/21 ($2.7M, 8.4% OTM) and
+            # AAOI 175C 7/17 ($9.4M, 7.3% OTM) misses are both at monthly
+            # OTM strikes that fell outside the prior 10% radius.
+            _subscribe_root(root, FLOW_FULL_COVERAGE_PCT, near_term, "mvp")
+            _subscribe_root(root, MVP_MONTHLY_COVERAGE_PCT, monthly, "mvp")
             # LEAP tier — only fires on MVP names (Tier 1) to keep budget tight.
             # MU/NVDA/AAPL/MSFT/etc. — exactly the names where LEAP whale
             # prints actually happen.
