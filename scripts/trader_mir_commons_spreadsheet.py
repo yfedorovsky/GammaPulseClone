@@ -41,7 +41,7 @@ from server.config import get_settings
 
 EVENTS_CSV = ROOT / "discord" / "commons_parsed_events_v3.csv"
 TODAY = date.today().isoformat()
-OUT_XLSX = ROOT / "discord" / f"trader_mir_commons_portfolio_{TODAY}_v4.xlsx"
+OUT_XLSX = ROOT / "discord" / f"trader_mir_commons_portfolio_{TODAY}_v7.xlsx"
 
 TRADIER_TOKEN = (
     os.environ.get("TRADIER_TOKEN")
@@ -101,7 +101,38 @@ def fetch_close_on_date(client: httpx.Client, ticker: str, d: str) -> float | No
 
 # ── Position ledger ────────────────────────────────────────────────────
 
+def dedupe_events(events: list[dict]) -> list[dict]:
+    """Remove duplicate events that reference the same trade.
+
+    Two events are considered duplicates if they have the same
+    (ticker, date, action, price). Keeps the first occurrence (sorted
+    chronologically). Common cause: a 9/17 recap message generates an
+    OPEN @ $10.33 for AMPX, then a later same-day standalone message
+    '$AMPX @ $10.33 to be added to commons' generates another OPEN at
+    the same price — both reference the same actual trade.
+
+    Override-inserted events (timestamp T23:59:59) are never deduped
+    against earlier events on the same date because they intentionally
+    record distinct later actions.
+    """
+    seen: set[tuple[str, str, str, float | None]] = set()
+    out: list[dict] = []
+    for e in events:
+        # Override inserts always pass through
+        if e.get("tag", "").startswith("OVERRIDE_INSERT"):
+            out.append(e)
+            continue
+        key = (e["ticker"], e["date"], e["action"],
+               round(e["price"], 4) if e.get("price") else None)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(e)
+    return out
+
+
 def build_ledger(events: list[dict]) -> dict[str, dict[str, Any]]:
+    events = dedupe_events(events)
     """Walk events chronologically per ticker, build position state.
 
     Returns: ticker -> {
@@ -139,19 +170,21 @@ def build_ledger(events: list[dict]) -> dict[str, dict[str, Any]]:
             if action in ("OPEN", "ADD"):
                 if p is None:
                     continue
-                # OPEN restarts position if currently flat; ADD is +1 unit
-                if action == "OPEN" and units == 0:
+                # Semantic correction: OPEN only when units == 0 (establishing
+                # position from zero); any subsequent buy is an ADD. This
+                # mutates e['action'] so the notes column shows ADD vs OPEN
+                # consistently regardless of how the parser tagged it.
+                if units == 0:
+                    # Either fresh OPEN or re-OPEN after a CLOSE
+                    e["action"] = "OPEN"
                     units = 1.0
-                    entries.append((d, p))
-                    peak_units = max(peak_units, units)
-                    if first_entry_date is None:
-                        first_entry_date = d
                 else:
+                    e["action"] = "ADD"
                     units += 1.0
-                    entries.append((d, p))
-                    peak_units = max(peak_units, units)
-                    if first_entry_date is None:
-                        first_entry_date = d
+                entries.append((d, p))
+                peak_units = max(peak_units, units)
+                if first_entry_date is None:
+                    first_entry_date = d
             elif action == "TRIM":
                 if units <= 0 or p is None:
                     continue
@@ -493,15 +526,24 @@ def apply_manual_overrides(events: list[dict]) -> list[dict]:
         op = ov["operation"]
 
         if op.startswith("UPDATE"):
-            # Determine the EXPECTED current action from the operation suffix
-            # (e.g. UPDATE_ACTION_FROM_CLOSE → find an event currently tagged CLOSE)
-            expected_current: str | None = None
-            if "FROM_" in op:
-                expected_current = op.split("FROM_")[-1].strip()
+            # UPDATE_ACTION_FROM_<action>  match by current action
+            # UPDATE_PRICE_FROM_<price>    match by current price (float)
+            # UPDATE                       match first by (date, ticker)
+            expected_action: str | None = None
+            expected_price: float | None = None
+            if op.startswith("UPDATE_PRICE_FROM_"):
+                try:
+                    expected_price = float(op.split("FROM_")[-1].strip())
+                except (ValueError, IndexError):
+                    pass
+            elif "FROM_" in op:
+                expected_action = op.split("FROM_")[-1].strip()
             for e in events:
                 if e["date"] != date or e["ticker"] != ticker:
                     continue
-                if expected_current and e["action"] != expected_current:
+                if expected_action and e["action"] != expected_action:
+                    continue
+                if expected_price is not None and abs((e.get("price") or 0) - expected_price) > 0.01:
                     continue
                 e["action"] = new_action
                 if new_price is not None:
