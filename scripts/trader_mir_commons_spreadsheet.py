@@ -41,7 +41,7 @@ from server.config import get_settings
 
 EVENTS_CSV = ROOT / "discord" / "commons_parsed_events_v3.csv"
 TODAY = date.today().isoformat()
-OUT_XLSX = ROOT / "discord" / f"trader_mir_commons_portfolio_{TODAY}_v8.xlsx"
+OUT_XLSX = ROOT / "discord" / f"trader_mir_commons_portfolio_{TODAY}_v9.xlsx"
 
 TRADIER_TOKEN = (
     os.environ.get("TRADIER_TOKEN")
@@ -324,9 +324,10 @@ def build_spreadsheet(ledger: dict[str, dict[str, Any]],
     # ── Tab 1: Current Positions ────────────────────────────────────
     ws1 = wb.active
     ws1.title = "Current Positions"
-    headers = ["Ticker", "Status", "First Entry", "Days Held", "Avg Cost",
-               "Current Price", "Unrealized %", "SPY Entry", "SPY Current",
-               "SPY % Move", "Alpha vs SPY", "# Entries", "# Exits", "Notes"]
+    headers = ["Ticker", "Status", "First Entry", "Entry Conf", "Days Held",
+               "Avg Cost", "Current Price", "Unrealized %", "SPY Entry",
+               "SPY Current", "SPY % Move", "Alpha vs SPY", "# Entries",
+               "# Exits", "Notes"]
     ws1.append(headers)
     style_header(ws1, 1, len(headers))
 
@@ -346,10 +347,21 @@ def build_spreadsheet(ledger: dict[str, dict[str, Any]],
         alpha = (unreal_pct - spy_move) if (unreal_pct is not None and spy_move is not None) else None
 
         notes = build_notes(st["events"])
+        # Determine entry confidence: if the FIRST entry event for the
+        # current open position lifecycle has RECAP tag, mark "estimated"
+        # (9/17 recap is our best-evidence date, actual entry was earlier).
+        # Otherwise "actual" (we have a non-recap entry message).
+        entry_confidence = "estimated"
+        for e in st["events"]:
+            if e["action"] in ("OPEN", "ADD"):
+                tag = (e.get("tag") or "").upper()
+                entry_confidence = "estimated" if "RECAP" in tag else "actual"
+                break
         row = [
             ticker,
             "OPEN",
             first_entry,
+            entry_confidence,
             days_held,
             avg_cost if avg_cost else None,
             cur,
@@ -364,33 +376,33 @@ def build_spreadsheet(ledger: dict[str, dict[str, Any]],
         ]
         ws1.append(row)
 
-        # Color cells by P&L sign
+        # Color cells by P&L sign — col 8 = Unrealized %, col 12 = Alpha
         r = ws1.max_row
-        for col_idx, val in [(7, unreal_pct), (11, alpha)]:
+        for col_idx, val in [(8, unreal_pct), (12, alpha)]:
             cell = ws1.cell(row=r, column=col_idx)
             if val is not None:
                 cell.fill = GAIN_FILL if val >= 0 else LOSS_FILL
 
-    # Format numeric columns
+    # Format numeric columns (re-indexed for new Entry Conf column at col 4)
     for r in range(2, ws1.max_row + 1):
-        ws1.cell(row=r, column=5).number_format = '$#,##0.00'  # Avg Cost
-        ws1.cell(row=r, column=6).number_format = '$#,##0.00'  # Current
-        ws1.cell(row=r, column=7).number_format = '0.0%'        # Unreal %
-        ws1.cell(row=r, column=8).number_format = '$#,##0.00'  # SPY Entry
-        ws1.cell(row=r, column=9).number_format = '$#,##0.00'  # SPY Current
-        ws1.cell(row=r, column=10).number_format = '0.0%'       # SPY Move
-        ws1.cell(row=r, column=11).number_format = '0.0%'       # Alpha
+        ws1.cell(row=r, column=6).number_format = '$#,##0.00'  # Avg Cost
+        ws1.cell(row=r, column=7).number_format = '$#,##0.00'  # Current
+        ws1.cell(row=r, column=8).number_format = '0.0%'        # Unreal %
+        ws1.cell(row=r, column=9).number_format = '$#,##0.00'  # SPY Entry
+        ws1.cell(row=r, column=10).number_format = '$#,##0.00' # SPY Current
+        ws1.cell(row=r, column=11).number_format = '0.0%'      # SPY Move
+        ws1.cell(row=r, column=12).number_format = '0.0%'      # Alpha
         for c in range(1, len(headers) + 1):
             ws1.cell(row=r, column=c).font = BODY_FONT
             ws1.cell(row=r, column=c).border = BORDER
 
-    # Column widths
-    widths = [8, 7, 12, 10, 10, 12, 12, 10, 12, 12, 13, 9, 8, 100]
+    # Column widths — re-indexed with Entry Conf at col 4
+    widths = [8, 7, 12, 10, 10, 10, 12, 12, 10, 12, 12, 13, 9, 8, 100]
     for i, w in enumerate(widths, 1):
         ws1.column_dimensions[get_column_letter(i)].width = w
-    # Wrap text + top-align Notes column
+    # Wrap text + top-align Notes column (now col 15)
     for r in range(2, ws1.max_row + 1):
-        ws1.cell(row=r, column=14).alignment = Alignment(vertical="top", wrap_text=True)
+        ws1.cell(row=r, column=15).alignment = Alignment(vertical="top", wrap_text=True)
     ws1.freeze_panes = "A2"
 
     # ── Tab 2: Trade History + Closed P&L ───────────────────────────

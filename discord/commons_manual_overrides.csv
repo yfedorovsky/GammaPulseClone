@@ -20,3 +20,4 @@ date,ticker,action,price,operation,note
 2025-09-17,AXTI,TRIM,98.60,UPDATE_ACTION_FROM_CLOSE,"Recap '$AXTI - $44.75 (1/2 out @ 98.60 for 120%)' = TRIM half, not CLOSE. Half position remains open at $44.75 cost basis."
 2025-09-17,AMPX,TRIM,15,DELETE_FROM_TRIM,"Phantom event from recap parsing of 'closing 1/2 @ 10.33 for 77%, stop @ 15...'. The actual trim happened 3/10/2026 @ $18.28 (already captured)."
 2025-09-17,AMPX,STOP,15,DELETE_FROM_STOP,"Phantom event from recap parsing of '(stop was hit. Adding back @ $15.44)'. The actual stop happened 5/21/2026 @ $15 (already captured)."
+2025-09-17,SEI,OPEN,50,DELETE_FROM_OPEN,"SEI was NOT entered on 9/17 — the recap was edited later to include it. Actual first entry was 10/17 (per 'Adding solar name $SEI @ 50 to the commons port'). Removing the recap proxy so 10/17 becomes the true first_entry_date."
