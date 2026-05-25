@@ -1,0 +1,58 @@
+status,ticker,exp_date,strike,right,cost_avg,exit_price,pnl_pct,entry_date,exit_date,note
+Closed,CRWV,2026-01-16,100,C,1.60,3.20,100.00,12/19,12/22,Scale out 1/3
+Closed,CRWV,2026-01-16,100,C,1.60,2.33,45.63,12/19,1/15,Scale out 1/3
+Closed,CRWV,2026-01-16,100,C,1.60,0.80,-50.00,12/19,1/15,Stop Loss 50%
+Closed,FSLR,2026-01-16,250,C,8.50,14.85,74.71,8/26,9/22,Scale out 1/2
+Closed,FSLR,2026-01-16,250,C,8.50,18.40,116.47,8/26,9/24,Remaining 1/2 contract
+Closed,FSLR,2026-01-16,250,C,21.00,26.85,27.86,10/3,10/15,
+Closed,HIMS,2026-01-16,30,P,1.20,0.00,-100.00,10/14,1/16,Expired
+Closed,INOD,2026-01-16,105,C,6.65,0.00,-100.00,9/18,1/16,Remaining 1/2 contract. Expired
+Closed,INOD,2026-01-16,105,C,6.65,14.00,110.53,9/18,10/3,Scale out 1/2
+Closed,JD,2026-01-16,40,C,1.37,0.00,-100.00,9/8,1/16,Expired
+Closed,PATH,2026-01-16,20,C,1.37,0.00,-100.00,10/24,1/16,Expired
+Closed,RGTI,2026-01-16,30,C,2.40,8.35,247.92,9/17,9/23,
+Closed,RGTI,2026-01-16,30,C,2.40,14.50,504.17,9/17,10/3,Remaining 1/2 contract
+Closed,RGTI,2026-01-16,50,C,8.40,0.00,-100.00,10/3,1/16,Roll up from 30C. Expired
+Closed,LITE,2026-01-23,420,C,12.00,19.20,60.00,1/7,1/7,
+Closed,MSFT,2026-02-20,545,C,8.00,0.00,-100.00,11/28,2/20,Expired
+Closed,QS,2026-02-20,20,C,4.60,0.00,-100.00,10/15,2/20,Expired
+Closed,UAMY,2026-02-20,12.5,C,3.75,0.00,-100.00,10/21,2/20,Expired
+Closed,BIDU,2026-03-20,200,C,6.00,0.00,-100.00,9/24,3/20,Expired
+Closed,EWY,2026-03-20,155,C,4.40,0.00,-100.00,2/24,3/20,Expired
+Closed,GOOGL,2026-03-20,300,C,10.00,20.70,107.00,10/20,10/30,2/3 size | Scale out 1/2
+Closed,GOOGL,2026-03-20,300,C,10.00,42.50,325.00,10/20,1/29,2/3 size | Remaining 1/2 contract
+Closed,LRCX,2026-03-20,270,C,8.99,0.00,-100.00,1/30,3/20,2/3 size 10.35 1/3 added at 6.6. Expired
+Closed,PANW,2026-03-20,260,C,5.43,6.20,14.18,9/18,11/5,Scale out 2/3
+Closed,SMH,2026-03-20,400,C,21.00,32.65,55.48,10/29,1/28,Scale out 2/3
+Closed,SMH,2026-03-20,400,C,21.00,33.00,57.14,10/29,1/28,Remaining 1/3
+Closed,SMH,2026-03-20,450,C,6.00,11.45,90.83,2/9,2/13,Scale out 1/2
+Closed,SMH,2026-03-20,450,C,6.00,5.30,-11.67,2/9,2/20,Remaining 1/2 contract
+Closed,SNPS,2026-03-20,590,C,12.00,0.00,-100.00,12/1,3/20,Expired
+Closed,XLE,2026-03-20,55,C,1.15,2.00,73.91,2/6,3/20,Expired ITM. Recorded at Bid
+Closed,GLD,2026-03-31,595,C,3.00,0.00,-100.00,1/30,3/31,GLD Final add 1/3 size + 640C 2/3 size. Expired
+Closed,EWY,2026-04-17,135,C,4.10,5.70,39.02,1/27,2/3,
+Closed,GFS,2026-04-17,45,C,5.00,9.10,82.00,2/11,4/17,Expired ITM. Recorded at Bid
+Closed,CRWV,2026-05-08,110,C,5.50,4.00,-27.27,4/10,5/8,Expired ITM. Recorded at Bid
+Closed,AMZN,2026-05-15,250,C,13.70,17.75,29.56,12/24,1/7,Scale out 1/2
+Closed,AMZN,2026-05-15,250,C,13.70,13.70,0.00,12/24,5/15,Remaining 1/2 contract
+Closed,APLD,2026-05-15,35,C,1.76,4.00,127.27,4/14,4/23,Scale out 1/2 | Stop at 3
+Closed,APLD,2026-05-15,35,C,1.76,8.00,354.55,4/14,5/15,
+Closed,AVGO,2026-05-15,450,C,6.50,0.00,-100.00,4/27,5/15,Expired
+Closed,WDC,2026-05-29,500,C,15.50,31.00,100.00,4/23,5/6,
+Open,WDC,2026-05-29,500,C,15.50,,,4/23,,
+Open,WDC,2026-05-29,560,C,23.00,,,5/11,,Added back
+Closed,GLD,2026-06-18,400,C,18.00,27.00,50.00,11/10,12/12,Scale out 1/2
+Closed,GLD,2026-06-18,400,C,18.00,32.00,77.78,11/10,12/24,Scale out 1/4
+Closed,GLD,2026-06-18,400,C,18.00,95.20,428.89,11/10,1/28,Remaining 1/4 contract
+Open,GOOGL,2026-06-18,430,C,6.18,,,1/29,,2/3 Size Roll up from 300C
+Open,SATS,2026-06-18,150,C,8.00,,,4/10,,
+Closed,SPX,2026-06-18,7900,C,3.55,14.90,319.72,4/24,5/14,Scale out 1/2
+Open,SPX,2026-06-18,7900,C,3.55,,,4/24,,Remaining 1/2 contract
+Open,GLD,2026-09-18,640,C,15.83,,,1/29,,2/3 size
+Closed,RKLB,2026-12-18,120,C,7.85,15.70,100.00,4/14,4/20,Scale out 1/2. Raise stop
+Closed,RKLB,2026-12-18,120,C,7.85,10.00,27.39,4/14,5/1,Remaining 1/2 contract. Stop loss triggered at 10
+Closed,BIDU,2027-01-15,160,C,4.65,10.00,115.05,9/2,9/17,Half leaps and half commons
+Closed,BIDU,2027-01-15,160,C,4.65,20.70,345.16,9/2,9/17,Half leaps and half commons. Remaining 1/2 contract of leap
+Closed,EWY,2027-01-15,155,C,11.45,20.00,74.67,2/13,2/20,
+Open,EWY,2027-01-15,170,C,19.20,,,2/24,,
+Open,BIDU,SHARES,,,95.00,,,9/2,,Leaps sold on 9/17 | Commons remain

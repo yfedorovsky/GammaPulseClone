@@ -141,7 +141,13 @@ def build_ledger(events: list[dict]) -> list[dict]:
 
             # ROLL events: treat as CLOSE of current contract + (separate
             # OPEN tracked elsewhere if explicit). For now, just close.
+            # GUARD: multi-ticker summary messages like "Bought $GLD Rolled
+            # $GOOGL" can wrongly assign ROLL to the first ticker. If the
+            # ROLL has no explicit price (i.e. came from a summary, not
+            # an exit announcement), skip it — don't close the position.
             elif action == "ROLL":
+                if p is None:
+                    continue   # phantom ROLL from multi-ticker message
                 if units > 0 and entries:
                     avg_cost = sum(price for _, price in entries) / len(entries)
                     rows.append({
