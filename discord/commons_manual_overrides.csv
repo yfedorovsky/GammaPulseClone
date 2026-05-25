@@ -1,0 +1,10 @@
+date,ticker,action,price,operation,note
+2026-02-02,MP,ADD,60.60,UPDATE_ACTION_FROM_CLOSE,"'Dropping RXRX and ADDING other half of MP' — parser saw 'Dropping' verb and tagged both as CLOSE. MP was actually ADD."
+2026-03-02,AXTI,OPEN,44.75,UPDATE_ACTION_FROM_TRIM,"3/2 message: 'adding AXTI @ 44.75 to commons port and selling half of BBAI' — AXTI is the ADD, parser merged with BBAI verb."
+2026-03-10,AMPX,TRIM,18.28,UPDATE_PRICE_FROM_15,"AMPX +77% sell-half had STOP $15 captured instead of actual trim. $10.33 × 1.77 = $18.28."
+2026-04-24,INTC,TRIM,83.88,INSERT_NEW,"INTC up 150% — trim half. No price in source; computed $33.55 × 2.5. Position half-open after this."
+2026-04-27,INFQ,ADD,13.00,UPDATE_ACTION_FROM_OPEN,"INFQ already in commons (9/17 recap @ $13). 4/27 message is ADD confirmation, not fresh OPEN."
+2026-05-14,LITE,OPEN,1000,INSERT_NEW,"LITE 'added to commons' on 5/14 with no price. Context 'if we dip below 1K' suggests entry ~$1000."
+2026-05-21,AMPX,ADD,15.44,INSERT_NEW,"AMPX stopped at $15, then 'Adding back here @ $15.44 (half sized)'. Re-add missed by parser."
+2025-09-17,INTC,TRIM,82.55,UPDATE_ACTION_FROM_CLOSE,"Recap '$INTC closing 1/2 @ $82.55 +150%' = TRIM half, not full CLOSE. Half remains open."
+2025-09-17,NVTS,TRIM,20.87,UPDATE_ACTION_FROM_CLOSE,"Recap '$NVTS closing 1/2 @ 20.87 for just over 100%' = TRIM half, not CLOSE. Half remains open."

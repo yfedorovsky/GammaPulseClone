@@ -41,7 +41,7 @@ from server.config import get_settings
 
 EVENTS_CSV = ROOT / "discord" / "commons_parsed_events_v3.csv"
 TODAY = date.today().isoformat()
-OUT_XLSX = ROOT / "discord" / f"trader_mir_commons_portfolio_{TODAY}.xlsx"
+OUT_XLSX = ROOT / "discord" / f"trader_mir_commons_portfolio_{TODAY}_v2.xlsx"
 
 TRADIER_TOKEN = (
     os.environ.get("TRADIER_TOKEN")
@@ -407,6 +407,65 @@ def build_spreadsheet(ledger: dict[str, dict[str, Any]],
 
 # ── Main ───────────────────────────────────────────────────────────────
 
+def apply_manual_overrides(events: list[dict]) -> list[dict]:
+    """Apply operator-curated corrections from commons_manual_overrides.csv.
+
+    Each override row has an `operation` field:
+      UPDATE_ACTION_FROM_X     change matched event's action (and price if specified)
+      UPDATE_PRICE_FROM_X      change matched event's price
+      INSERT_NEW               add a new event not in the auto-parsed set
+      INSERT_NEW_WITH_FALLBACK same as INSERT_NEW but with caveat note
+    """
+    override_path = ROOT / "discord" / "commons_manual_overrides.csv"
+    if not override_path.exists():
+        return events
+    with override_path.open("r", encoding="utf-8") as f:
+        overrides = list(csv.DictReader(f))
+
+    applied = 0
+    for ov in overrides:
+        date = ov["date"]
+        ticker = ov["ticker"]
+        new_action = ov["action"]
+        new_price = float(ov["price"]) if ov["price"] else None
+        op = ov["operation"]
+
+        if op.startswith("UPDATE"):
+            # Determine the EXPECTED current action from the operation suffix
+            # (e.g. UPDATE_ACTION_FROM_CLOSE → find an event currently tagged CLOSE)
+            expected_current: str | None = None
+            if "FROM_" in op:
+                expected_current = op.split("FROM_")[-1].strip()
+            for e in events:
+                if e["date"] != date or e["ticker"] != ticker:
+                    continue
+                if expected_current and e["action"] != expected_current:
+                    continue
+                e["action"] = new_action
+                if new_price is not None:
+                    e["price"] = new_price
+                e["tag"] = (e.get("tag", "") + " OVERRIDDEN").strip()
+                applied += 1
+                break
+        elif op.startswith("INSERT"):
+            events.append({
+                "date": date,
+                "timestamp": date + "T12:00:00",
+                "ticker": ticker,
+                "action": new_action,
+                "price": new_price,
+                "tag": "OVERRIDE_INSERT",
+                "raw_snippet": ov["note"],
+                "msg_id": "manual_override",
+            })
+            applied += 1
+
+    events.sort(key=lambda e: e["timestamp"])
+    print(f"Applied {applied} manual overrides from {override_path.name}",
+          file=sys.stderr)
+    return events
+
+
 def main() -> None:
     # Load events
     with EVENTS_CSV.open("r", encoding="utf-8") as f:
@@ -414,6 +473,9 @@ def main() -> None:
     for r in rows:
         r["price"] = float(r["price"]) if r["price"] else None
     print(f"Loaded {len(rows)} events from {EVENTS_CSV.name}", file=sys.stderr)
+
+    rows = apply_manual_overrides(rows)
+    print(f"After overrides: {len(rows)} events", file=sys.stderr)
 
     ledger = build_ledger(rows)
     open_n = sum(1 for st in ledger.values() if st["status"] == "OPEN")

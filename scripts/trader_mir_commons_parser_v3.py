@@ -181,7 +181,14 @@ def parse_message(msg: dict) -> list[dict]:
 
         # ── Recap lines: extract BOTH entry and exit prices ────────────
         if is_recap:
+            # Dedupe: a single recap line may mention the same ticker
+            # multiple times (e.g. "$NVTS - $9.98 ( closing 1/2 $NVTS @ 20.87 )"
+            # — we only want one set of events per ticker per line.
+            seen_tickers: set[str] = set()
             for ticker in commons_in_line:
+                if ticker in seen_tickers:
+                    continue
+                seen_tickers.add(ticker)
                 tuples = _parse_recap_line(line, ticker)
                 for action, price in tuples:
                     events.append({
