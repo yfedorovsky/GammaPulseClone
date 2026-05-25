@@ -1,0 +1,92 @@
+date,timestamp,ticker,action,price,raw_snippet,msg_id
+2023-01-08,2023-01-08T19:55:12.721-05:00,JPM,OPEN,340.0,$JPM is the clear relative strength leader amongst $XLF large caps. However for new entry I like the idea of buying $GS since it's closer to a potential support @ 340 so our risk reward is much better,1061810340767211620
+2023-01-08,2023-01-08T19:55:12.721-05:00,XLF,OPEN,340.0,$JPM is the clear relative strength leader amongst $XLF large caps. However for new entry I like the idea of buying $GS since it's closer to a potential support @ 340 so our risk reward is much better,1061810340767211620
+2023-01-08,2023-01-08T19:55:12.721-05:00,GS,OPEN,340.0,$JPM is the clear relative strength leader amongst $XLF large caps. However for new entry I like the idea of buying $GS since it's closer to a potential support @ 340 so our risk reward is much better,1061810340767211620
+2023-01-08,2023-01-08T19:55:12.721-05:00,JPM,OPEN,340.0,$JPM is the clear relative strength leader amongst $XLF large caps. However for new entry I like the idea of buying $GS since it's closer to a potential support @ 340 so our risk reward is much better,1061810340767211620
+2023-01-08,2023-01-08T20:49:44.472-05:00,MRVL,OPEN,3.0,$MRVL 17MAR 37.5C @ $3,1061824063485513748
+2023-05-16,2023-05-16T00:17:27.753-04:00,EWJ,ADD,,$EWJ can be a painstakingly boring trade for options but I'm adding to my long term buy and hold portfolio if you'd like to join. If there's a market that's in a position to outperform $SPY this could,1107884497711661097
+2023-05-16,2023-05-16T00:17:27.753-04:00,SPY,ADD,,$EWJ can be a painstakingly boring trade for options but I'm adding to my long term buy and hold portfolio if you'd like to join. If there's a market that's in a position to outperform $SPY this could,1107884497711661097
+2023-05-16,2023-05-16T00:17:27.753-04:00,EWJ,OPEN,0.33,$EWJ 16JUN 62C @ 0.33 that's up a bit but still out of the money. Think these contracts are good to try out and get a feel for how the options trade.,1107884497711661097
+2023-05-22,2023-05-22T09:04:47.984-04:00,AMD,CLOSE,,Last week $AMD closed above the prior swing high of 102.43,1110191533652709427
+2023-06-01,2023-06-01T04:44:17.219-04:00,NFLX,OPEN,1.64,$NFLX 2JUN 410C @ $1.64,1113749852128563230
+2023-06-16,2023-06-16T01:12:29.089-04:00,VEEV,CLOSE,,$VEEV broke out today closing over the post earnings high of 200.44!,1119132368352063601
+2023-08-30,2023-08-30T01:51:41.691-04:00,CAT,OPEN,15.0,$CAT 15SEP 285C @ $3.2,1146321325800030310
+2023-08-30,2023-08-30T01:51:41.691-04:00,CAT,OPEN,17.0,$CAT 17NOV 310C @ $4.25,1146321325800030310
+2023-10-09,2023-10-09T04:05:07.447-04:00,TSLA,OPEN,7.75,$TSLA 20OCT 270C @ $7.75,1160850418998452284
+2023-10-15,2023-10-15T15:55:20.61-04:00,NVDA,CLOSE,,UPDATE: $NVDA all targets were met in time and price.  We also took trades in $MSFT from this list and all of its targets were met in time and price along with $META 328 $AVGO 888 to 920.  Trades are ,1163203478752067685
+2023-10-15,2023-10-15T15:55:20.61-04:00,MSFT,CLOSE,,UPDATE: $NVDA all targets were met in time and price.  We also took trades in $MSFT from this list and all of its targets were met in time and price along with $META 328 $AVGO 888 to 920.  Trades are ,1163203478752067685
+2023-10-15,2023-10-15T15:55:20.61-04:00,META,CLOSE,,UPDATE: $NVDA all targets were met in time and price.  We also took trades in $MSFT from this list and all of its targets were met in time and price along with $META 328 $AVGO 888 to 920.  Trades are ,1163203478752067685
+2023-10-15,2023-10-15T15:55:20.61-04:00,AVGO,CLOSE,,UPDATE: $NVDA all targets were met in time and price.  We also took trades in $MSFT from this list and all of its targets were met in time and price along with $META 328 $AVGO 888 to 920.  Trades are ,1163203478752067685
+2023-11-13,2023-11-13T23:39:50.425-05:00,AVGO,OPEN,,Ultimately it’s about risk to reward and risk tolerance. I’m fine buying a breakout like $AVGO because when they work the payout is fairly large and instant but I will say buying before the breakout t,1173844720825409578
+2023-11-14,2023-11-14T00:10:13.241-05:00,TSLA,CLOSE,,Big day today as $TSLA closed above the downtrend completing an inverse head and shoulders setup. We’ll likely start to see a lot of this patterns playing out in many different tickers. Success is usu,1173852366269853737
+2023-11-16,2023-11-16T23:50:22.138-05:00,GLD,OPEN,2.3,$GLD 15DEC 185C @ $2.3,1174934534018576435
+2024-02-16,2024-02-16T02:19:01.587-05:00,META,OPEN,5.25,$META 1MAR 500C @ 5.25 + Macro chart analysis that makes the case for buying LEAPS,1207949240668786689
+2024-02-16,2024-02-16T02:19:01.587-05:00,META,OPEN,9.0,$META 21JUN 600c @ $9,1207949240668786689
+2024-06-17,2024-06-17T12:22:33.247-04:00,CRWD,ADD,,$CRWD is in a break out after the announcement of being added to the S&P.,1252297343487971328
+2024-06-17,2024-06-17T12:22:33.247-04:00,CRWD,OPEN,9.0,$CRWD 28JUN 390c @ 9,1252297343487971328
+2024-06-17,2024-06-17T12:22:33.247-04:00,CRWD,OPEN,12.0,$CRWD 19JUL 400c @ 12,1252297343487971328
+2024-07-01,2024-07-01T15:03:43.029-04:00,DELL,OPEN,11.8,$DELL 18OCT 150c @ 11.8 - core hold,1257411331611562094
+2024-07-01,2024-07-01T15:03:43.029-04:00,DELL,OPEN,3.2,$DELL 19JUL 150C @ 3.2 - higher risk/reward.,1257411331611562094
+2024-08-07,2024-08-07T02:10:02.962-04:00,META,OPEN,8.0,$META 20SEP 530C @ $8 ( attempting to get filled @ $8 with current volatility but $9-$10 may be more realistic),1270624982766063690
+2024-09-14,2024-09-14T07:04:21.568-04:00,LW,OPEN,2.0,$LW 18OCT 70C @ 2,1284469787220774995
+2024-09-19,2024-09-19T02:12:14.406-04:00,CVNA,OPEN,,It's hard to believe we first bought $CVNA when it was in the single digits.,1286208212302958654
+2024-09-19,2024-09-19T02:12:14.406-04:00,CVNA,OPEN,3.45,We initiated a starter position during today's trading session in the $CVNA 4OCT 175c @ 3.45 but I also like,1286208212302958654
+2024-09-22,2024-09-22T23:55:20.406-04:00,META,OPEN,8.0,$META UPDATE: the 20SEP 530c @ $8 ended up finishing @ $34.,1287623311752171592
+2024-09-23,2024-09-23T05:01:01.614-04:00,GOOGL,OPEN,3.2,$GOOGL 18OCT 165C @ 3.2,1287700240354246689
+2024-09-23,2024-09-23T05:01:01.614-04:00,GOOGL,OPEN,1.45,$GOOGL 1/17/2025 200c @ 1.45 *CORE POSITION*,1287700240354246689
+2024-09-27,2024-09-27T03:08:17.493-04:00,ADI,OPEN,9.0,$ADI 1/17/2025 250C @ $9,1289121421036879894
+2024-10-01,2024-10-01T02:20:50.622-04:00,ISRG,ADD,,I like but don't love this particular setup mainly because of the break out level being so close to the psych 500 level but with earnings coming up we could see $ISRG breakout and rally into the print,1290559031856988250
+2024-10-13,2024-10-13T23:37:49.139-04:00,GS,CLOSE,,$GS closed the week at a new all time closing high mirroring what could be a possible rotation into $IWM.,1295229047596515439
+2024-10-13,2024-10-13T23:37:49.139-04:00,IWM,CLOSE,,$GS closed the week at a new all time closing high mirroring what could be a possible rotation into $IWM.,1295229047596515439
+2024-10-13,2024-10-13T23:37:49.139-04:00,GS,CLOSE,,$GS does report earnings on Tuesday before the bell at which point technicals become somewhat meaningless in the short term so my plan is to exit the weekly calls by the close of Monday trading.,1295229047596515439
+2024-12-12,2024-12-12T03:43:50.732-05:00,LRCX,OPEN,2.4,$LRCX 2/21/25 90C @ 2.4,1316686945769885737
+2024-12-30,2024-12-30T03:38:25.36-05:00,NVDA,ADD,,* all of these are ok to add for commons but for best entry with options trading will require some patience so stay tuned because there's lots to do here. I wanted to give you an idea of where my head,1323208562641604638
+2024-12-30,2024-12-30T03:38:25.36-05:00,TSLA,ADD,,* all of these are ok to add for commons but for best entry with options trading will require some patience so stay tuned because there's lots to do here. I wanted to give you an idea of where my head,1323208562641604638
+2025-02-24,2025-02-24T04:35:40.043-05:00,EWZ,OPEN,2.4,$EWZ 16JAN 2026 @ 2.40,1343516689219715107
+2025-02-24,2025-02-24T04:35:40.043-05:00,EWZ,ADD,,As an added bonus if looking for yield $EWZ has a very attractive divi.,1343516689219715107
+2025-03-17,2025-03-17T12:37:36.207-04:00,BIDU,OPEN,3.5,$BIDU 17APR 100c out @ 3.5,1351233018085376162
+2025-08-06,2025-08-06T14:04:16.499-04:00,INOD,ADD,43.0,$INOD commons added to long term portfolio at 43 cost basis,1402713906606112950
+2025-08-28,2025-08-28T12:24:38.246-04:00,SATS,ADD,,$SATS to be added to buy and hold account for larger portfolio growth.,1410661365038710806
+2025-09-09,2025-09-09T14:34:30.217-04:00,SOFI,ADD,25.9,Adding $SOFI to our commons here at 25.90 before I forget again.,1415042701321306283
+2025-09-09,2025-09-09T14:34:30.217-04:00,IREN,OPEN,30.0,$IREN at 30 as well,1415042701321306283
+2025-09-09,2025-09-09T14:56:35.495-04:00,LDI,OPEN,3.22,$LDI commons at 3.22,1415048259939864760
+2025-09-15,2025-09-15T16:23:10.11-04:00,BBAI,ADD,5.11,"Adding $BBAI commons at $5.11,",1417244374928199820
+2025-09-17,2025-09-17T11:05:03.252-04:00,INOD,CLOSE,83.0,$INOD - 43  (100% gain achieved) (remaining half of position closed at 83),1417889094574407912
+2025-09-17,2025-09-17T11:05:03.252-04:00,SOFI,OPEN,25.9,$SOFI - 25.90,1417889094574407912
+2025-09-17,2025-09-17T11:05:03.252-04:00,LDI,CLOSE,2.3,$LDI - 3.22 ( closing @ 2.3 ),1417889094574407912
+2025-09-17,2025-09-17T11:05:03.252-04:00,IREN,TRIM,30.0,$IREN - 30 (100% gain achieved),1417889094574407912
+2025-09-17,2025-09-17T11:05:03.252-04:00,RGTI,CLOSE,40.0,$RGTI - 19 (100% gain achieved) (full position closed out at 40 and 45),1417889094574407912
+2025-09-17,2025-09-17T11:05:03.252-04:00,BBAI,CLOSE,4.07,"$BBAI - 5.11 (2x weighting) (1/2 position closed @ 4.07, back to equal weight)",1417889094574407912
+2025-09-17,2025-09-17T11:05:03.252-04:00,RZLV,CLOSE,5.36,$RZLV - $7.12 ( closing position @ $5.36 ),1417889094574407912
+2025-09-17,2025-09-17T11:05:03.252-04:00,NB,CLOSE,6.36,$NB - $8.83 ( closing @ $6.36 - replacing with $MP ),1417889094574407912
+2025-09-17,2025-09-17T11:05:03.252-04:00,MP,CLOSE,6.36,$NB - $8.83 ( closing @ $6.36 - replacing with $MP ),1417889094574407912
+2025-09-17,2025-09-17T11:05:03.252-04:00,AMPX,CLOSE,10.33,"$AMPX - $10.33 (closing 1/2 @ 10.33 for 77%, stop @ 15 for remaining position) (stop was hit. Adding back @ $15.44)",1417889094574407912
+2025-09-17,2025-09-17T11:05:03.252-04:00,INTC,CLOSE,82.55,$INTC - $33.55 (closing 1/2 @ $82.55 +150%),1417889094574407912
+2025-09-17,2025-09-17T11:05:03.252-04:00,RXRX,CLOSE,4.18,$RXRX - $6 ( closing @ $4.18 ),1417889094574407912
+2025-09-17,2025-09-17T11:05:03.252-04:00,NVTS,CLOSE,20.87,$NVTS - $9.98 ( closing 1/2 $NVTS @ 20.87 for just over 100% ),1417889094574407912
+2025-09-17,2025-09-17T11:05:03.252-04:00,NVTS,CLOSE,20.87,$NVTS - $9.98 ( closing 1/2 $NVTS @ 20.87 for just over 100% ),1417889094574407912
+2025-09-17,2025-09-17T11:05:03.252-04:00,PATH,OPEN,16.75,$PATH - $16.75,1417889094574407912
+2025-09-17,2025-09-17T11:05:03.252-04:00,SEI,OPEN,50.0,$SEI - 50,1417889094574407912
+2025-09-17,2025-09-17T11:05:03.252-04:00,MP,ADD,64.76,$MP - 64.76 (half sized- will add other half if 65 is held or on a pullback to 57) (position now full sized),1417889094574407912
+2025-09-17,2025-09-17T11:05:03.252-04:00,SNDK,OPEN,667.0,$SNDK - $667,1417889094574407912
+2025-09-17,2025-09-17T11:05:03.252-04:00,AXTI,TRIM,98.6,$AXTI - $44.75 (1/2 out @ 98.60 for 120%),1417889094574407912
+2025-09-17,2025-09-17T11:05:03.252-04:00,INFQ,OPEN,13.0,$INFQ - $13 (S/L: 12),1417889094574407912
+2025-09-17,2025-09-17T11:05:03.252-04:00,TE,OPEN,7.4,$TE - $7.40,1417889094574407912
+2025-09-17,2025-09-17T15:54:59.082-04:00,AMPX,OPEN,10.33,$AMPX @ $10.33,1417962057973760122
+2025-10-02,2025-10-02T10:34:52.184-04:00,INOD,TRIM,,"$INOD 100% gain achieved, make it free fam",1423317316388524063
+2025-10-07,2025-10-07T09:21:23.134-04:00,NB,OPEN,8.83,$NB @ $8.83,1425110762820468746
+2025-10-13,2025-10-13T12:04:04.773-04:00,INOD,CLOSE,83.0,i’m selling the remaining $INOD commons @ 83.,1427326033295573074
+2025-10-17,2025-10-17T10:27:37.083-04:00,RGTI,CLOSE,45.0,Closing out the remaining $RGTI position @ 45 to lock in the over 100% gain on commons.,1428751309426921492
+2025-10-17,2025-10-17T13:18:48.835-04:00,SEI,ADD,50.0,Adding solar name $SEI @ 50 to the commons port,1428794392277155941
+2026-02-02,2026-02-02T11:51:48.469-05:00,RXRX,CLOSE,4.18,Dropping $RXRX from the commons port @ $4.18 and adding the other half of $MP @ 60.60,1467925485454626909
+2026-02-02,2026-02-02T11:51:48.469-05:00,MP,CLOSE,60.6,Dropping $RXRX from the commons port @ $4.18 and adding the other half of $MP @ 60.60,1467925485454626909
+2026-03-02,2026-03-02T13:16:14.026-05:00,AXTI,TRIM,44.75,$AXTI @ 44.75 to commons port and selling half of the $BBAI @ $4 that was previously 2x weighting.,1478093592177283254
+2026-03-02,2026-03-02T13:16:14.026-05:00,BBAI,TRIM,4.0,$AXTI @ 44.75 to commons port and selling half of the $BBAI @ $4 that was previously 2x weighting.,1478093592177283254
+2026-03-10,2026-03-10T12:02:12.266-04:00,AMPX,TRIM,15.0,"$AMPX UP 77%, SELLING HALF HERE WITH STOP AT 15 ON REMAINDER",1480958965516079104
+2026-04-27,2026-04-27T12:18:39.062-04:00,INFQ,OPEN,13.0,$INFQ @ $13 to commons port.,1498357721987022968
+2026-05-01,2026-05-01T18:34:52.993-04:00,AXTI,TRIM,98.6,$AXTI selling half of our position @ 98.60 for 120%,1499901955378516139
+2026-05-13,2026-05-13T11:26:32.349-04:00,NVTS,TRIM,20.87,"$NVTS 1/2 sold for @ 20.87 to lock in the 100% gain, standard practice.",1504142813451780137
+2026-05-13,2026-05-13T11:39:01.216-04:00,LITE,ADD,,"adding $LITE if we dip below 1K again, we should see this double again before the year is up",1504145954427895918
+2026-05-14,2026-05-14T13:00:42.856-04:00,LITE,ADD,,$LITE added to commons port.,1504528901261492315
+2026-05-18,2026-05-18T18:49:03.882-04:00,LITE,TRIM,886.0,reducing $LITE by 50% @ 886 ( plan to add back if 800 trades),1506066117981110313
+2026-05-21,2026-05-21T18:38:56.076-04:00,AMPX,STOP,15.0,$AMPX stopped @ $15 on remaining half of the original position from $10.33.,1507150732254777384
