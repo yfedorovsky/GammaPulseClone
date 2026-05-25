@@ -41,7 +41,7 @@ from server.config import get_settings
 
 EVENTS_CSV = ROOT / "discord" / "commons_parsed_events_v3.csv"
 TODAY = date.today().isoformat()
-OUT_XLSX = ROOT / "discord" / f"trader_mir_commons_portfolio_{TODAY}_v2.xlsx"
+OUT_XLSX = ROOT / "discord" / f"trader_mir_commons_portfolio_{TODAY}_v3.xlsx"
 
 TRADIER_TOKEN = (
     os.environ.get("TRADIER_TOKEN")
@@ -445,6 +445,24 @@ def apply_manual_overrides(events: list[dict]) -> list[dict]:
                 if new_price is not None:
                     e["price"] = new_price
                 e["tag"] = (e.get("tag", "") + " OVERRIDDEN").strip()
+                applied += 1
+                break
+        elif op.startswith("DELETE"):
+            # Remove a spurious event. Match on (date, ticker, current_action, price).
+            # Used for cross-ticker phantom events like the MP CLOSE @ $6.36 that
+            # got generated from the NB recap line "$NB - $8.83 (closing @ $6.36
+            # - replacing with $MP)".
+            expected_current = None
+            if "_FROM_" in op:
+                expected_current = op.split("_FROM_")[-1].strip()
+            for i, e in enumerate(events):
+                if e["date"] != date or e["ticker"] != ticker:
+                    continue
+                if expected_current and e["action"] != expected_current:
+                    continue
+                if new_price is not None and abs((e.get("price") or 0) - new_price) > 0.01:
+                    continue
+                events.pop(i)
                 applied += 1
                 break
         elif op.startswith("INSERT"):
