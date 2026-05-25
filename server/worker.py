@@ -921,15 +921,13 @@ async def _run_basket_detector() -> None:
     DO want to swallow any per-cycle exception so a basket detector bug
     can't kill the cycle.
     """
-    import datetime as __dt
-    # Belt-and-suspenders RTH gate. Mirror flow_alerts._is_rth_now logic
-    # so off-hours scans don't fire baskets on stale cache.
-    now = __dt.datetime.now()
-    if now.weekday() >= 5:
-        return
-    if now.hour < 9 or (now.hour == 9 and now.minute < 30):
-        return
-    if now.hour > 16 or (now.hour == 16 and now.minute > 15):
+    # Belt-and-suspenders RTH gate. Uses centralized market calendar so
+    # weekends + US equity holidays both block off-hours scans on stale
+    # cache. 2026-05-25: shipped market_calendar after Memorial Day
+    # produced 93K stale alerts (worker re-fired Friday-close V/OI flow
+    # on closed-market data). Holiday-aware.
+    from .market_calendar import is_rth_or_extended
+    if not is_rth_or_extended():
         return
 
     from .basket_detector import detect_baskets

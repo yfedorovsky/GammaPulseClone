@@ -576,14 +576,14 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
     """
     import datetime
 
-    now = datetime.datetime.now()
-    if now.weekday() >= 5:
-        return []
-    if now.hour < 9 or (now.hour == 9 and now.minute < 30):
-        return []
-    if now.hour > 16 or (now.hour == 16 and now.minute > 15):
+    # 2026-05-25: holiday-aware gate. Memorial Day produced 93K stale
+    # alerts because the prior weekend-only gate let Monday-holiday scans
+    # re-fire Friday-close V/OI data.
+    from .market_calendar import is_rth_or_extended
+    if not is_rth_or_extended():
         return []
 
+    now = datetime.datetime.now()
     today_str = now.strftime("%Y-%m-%d")
 
     # Read the worker's chain cache — this has raw per-option data
