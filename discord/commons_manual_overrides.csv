@@ -18,3 +18,5 @@ date,ticker,action,price,operation,note
 2025-11-10,NB,CLOSE,6.36,UPDATE_ACTION_FROM_OPEN,"'Selling $NB at 6.36 for a loss' classified as OPEN by parser because bare verb 'Selling' (without 'half'/'remaining') didn't match CLOSE regex. This is the 2nd-trade CLOSE (NB was re-opened 10/7 @ $8.83 then sold 11/10 for same -28% loss as the 1st trade)."
 2025-09-17,MP,CLOSE,6.36,DELETE_FROM_CLOSE,"Spurious MP CLOSE event generated from NB's recap line. The line '$NB - $8.83 ( closing @ $6.36 - replacing with $MP )' mentioned both tickers; the @ $6.36 was NB's exit but recap parser also assigned it to MP."
 2025-09-17,AXTI,TRIM,98.60,UPDATE_ACTION_FROM_CLOSE,"Recap '$AXTI - $44.75 (1/2 out @ 98.60 for 120%)' = TRIM half, not CLOSE. Half position remains open at $44.75 cost basis."
+2025-09-17,AMPX,TRIM,15,DELETE_FROM_TRIM,"Phantom event from recap parsing of 'closing 1/2 @ 10.33 for 77%, stop @ 15...'. The actual trim happened 3/10/2026 @ $18.28 (already captured)."
+2025-09-17,AMPX,STOP,15,DELETE_FROM_STOP,"Phantom event from recap parsing of '(stop was hit. Adding back @ $15.44)'. The actual stop happened 5/21/2026 @ $15 (already captured)."
