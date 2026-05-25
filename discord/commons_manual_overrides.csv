@@ -10,3 +10,8 @@ date,ticker,action,price,operation,note
 2025-09-17,NVTS,TRIM,20.87,UPDATE_ACTION_FROM_CLOSE,"Recap '$NVTS closing 1/2 @ 20.87 for just over 100%' = TRIM half, not CLOSE. Half remains open."
 2025-09-17,BBAI,TRIM,4.07,UPDATE_ACTION_FROM_CLOSE,"Recap '$BBAI 5.11 (2x weighting) (1/2 position closed @ 4.07, back to equal weight)' = TRIM half. The 2x weighting halved back to 1x; half remains open at $5.11 cost basis."
 2025-09-17,AMPX,STOP,15,UPDATE_ACTION_FROM_CLOSE,"Recap line for AMPX has multiple events; the FINAL exit before re-add was STOP @ $15 (per 'stop was hit'), NOT a CLOSE @ $15.44. The $15.44 is the re-add price. Re-classify to STOP so subsequent ADD @ $15.44 is treated as fresh OPEN."
+2025-10-07,IREN,TRIM,60,INSERT_NEW,"'Cost recouped' on 10/7 = 100% gain trim. Price ~$60 per 10/6 'will be official at 60' (the $30 entry × 2 = $60)."
+2025-09-05,SATS,OPEN,56,INSERT_NEW,"Per 9/8 message 'We were in at 56 just a few days ago' — entry estimated to 9/5 at $56. SATS was the first commons name explicitly tracked in this channel."
+2025-09-08,SATS,TRIM,89.60,INSERT_NEW,"9/8 message 'SATS commons were up nearly 60% on starlink acquisition... Let's harvest some gains'. +60% from $56 entry = $89.60. Recap 9/17 says 'sold after immediate large move' = the full exit happened in this window."
+2025-09-17,SATS,CLOSE,89.60,INSERT_NEW,"Recap 9/17 confirms SATS 'sold after immediate large move' — full exit at same ~$89.60 level as the 9/8 harvest signal. Treats SATS as fully closed."
+2025-09-12,RGTI,OPEN,19,INSERT_NEW,"Explicit entry message: 'I'm going to add it here at this 19 level so we can keep track with the other commons'. Shifts first_entry_date from 9/17 recap to actual 9/12 entry."
