@@ -41,7 +41,7 @@ from server.config import get_settings
 
 EVENTS_CSV = ROOT / "discord" / "commons_parsed_events_v3.csv"
 TODAY = date.today().isoformat()
-OUT_XLSX = ROOT / "discord" / f"trader_mir_commons_portfolio_{TODAY}_v3.xlsx"
+OUT_XLSX = ROOT / "discord" / f"trader_mir_commons_portfolio_{TODAY}_v4.xlsx"
 
 TRADIER_TOKEN = (
     os.environ.get("TRADIER_TOKEN")
@@ -228,6 +228,59 @@ def style_header(ws, row: int, ncols: int) -> None:
         cell.border = BORDER
 
 
+def build_notes(events: list[dict]) -> str:
+    """Build a compact human-readable trade history for the Notes column.
+
+    Format: "Entries: 9/17 OPEN $44.75, 10/17 ADD $50. Exits: 3/2 TRIM $44.75,
+    5/1 TRIM $98.60 (+120%)."
+    """
+    if not events:
+        return ""
+    entries = [e for e in events if e["action"] in ("OPEN", "ADD") and e.get("price")]
+    exits = [e for e in events if e["action"] in ("TRIM", "CLOSE", "STOP") and e.get("price")]
+
+    def short_date(d: str) -> str:
+        # YYYY-MM-DD → M/D
+        try:
+            parts = d.split("-")
+            return f"{int(parts[1])}/{int(parts[2])}"
+        except Exception:
+            return d
+
+    parts = []
+    if entries:
+        n = len(entries)
+        bits = [f"{short_date(e['date'])} {e['action']} ${e['price']:.2f}" for e in entries]
+        # Compute avg entry % from first entry to add P&L context per add
+        first_price = entries[0]["price"]
+        if n > 1:
+            bits_with_delta = []
+            for e in entries:
+                d = (e["price"] - first_price) / first_price * 100 if first_price else 0
+                if abs(d) < 0.5:
+                    bits_with_delta.append(f"{short_date(e['date'])} {e['action']} ${e['price']:.2f}")
+                else:
+                    bits_with_delta.append(
+                        f"{short_date(e['date'])} {e['action']} ${e['price']:.2f} ({d:+.0f}% from initial)")
+            bits = bits_with_delta
+        parts.append(f"Entries ({n}x): " + "; ".join(bits))
+    if exits:
+        bits = []
+        for e in exits:
+            d = short_date(e["date"])
+            act = e["action"]
+            price = e["price"]
+            # Compute gain vs first entry
+            if entries:
+                first = entries[0]["price"]
+                gain = (price - first) / first * 100 if first else 0
+                bits.append(f"{d} {act} ${price:.2f} ({gain:+.0f}%)")
+            else:
+                bits.append(f"{d} {act} ${price:.2f}")
+        parts.append(f"Exits ({len(exits)}x): " + "; ".join(bits))
+    return ". ".join(parts)
+
+
 def build_spreadsheet(ledger: dict[str, dict[str, Any]],
                        quotes: dict[str, float],
                        spy_entry: dict[str, float],
@@ -259,6 +312,7 @@ def build_spreadsheet(ledger: dict[str, dict[str, Any]],
         spy_move = (spy_current - spy_in) / spy_in * 100 if spy_in else None
         alpha = (unreal_pct - spy_move) if (unreal_pct is not None and spy_move is not None) else None
 
+        notes = build_notes(st["events"])
         row = [
             ticker,
             "OPEN",
@@ -273,7 +327,7 @@ def build_spreadsheet(ledger: dict[str, dict[str, Any]],
             alpha / 100 if alpha is not None else None,
             len(st["entries"]),
             len([e for e in st["events"] if e["action"] in ("TRIM", "CLOSE", "STOP")]),
-            "",
+            notes,
         ]
         ws1.append(row)
 
@@ -298,9 +352,12 @@ def build_spreadsheet(ledger: dict[str, dict[str, Any]],
             ws1.cell(row=r, column=c).border = BORDER
 
     # Column widths
-    widths = [8, 7, 12, 10, 10, 12, 12, 10, 12, 12, 13, 9, 8, 30]
+    widths = [8, 7, 12, 10, 10, 12, 12, 10, 12, 12, 13, 9, 8, 100]
     for i, w in enumerate(widths, 1):
         ws1.column_dimensions[get_column_letter(i)].width = w
+    # Wrap text + top-align Notes column
+    for r in range(2, ws1.max_row + 1):
+        ws1.cell(row=r, column=14).alignment = Alignment(vertical="top", wrap_text=True)
     ws1.freeze_panes = "A2"
 
     # ── Tab 2: Trade History + Closed P&L ───────────────────────────
@@ -312,7 +369,7 @@ def build_spreadsheet(ledger: dict[str, dict[str, Any]],
     ws2.append([])
     sum_headers = ["Ticker", "Status", "First Entry", "Last Exit", "Days Held",
                    "Avg Entry", "Avg Exit", "Realized %", "SPY Entry", "SPY Exit",
-                   "SPY %", "Alpha", "# Adds", "# Exits"]
+                   "SPY %", "Alpha", "# Adds", "# Exits", "Notes"]
     ws2.append(sum_headers)
     style_header(ws2, 3, len(sum_headers))
 
@@ -341,6 +398,7 @@ def build_spreadsheet(ledger: dict[str, dict[str, Any]],
         spy_move = (spy_out - spy_in) / spy_in * 100 if (spy_in and spy_out) else None
         alpha = (realized - spy_move) if (realized is not None and spy_move is not None) else None
 
+        notes_closed = build_notes(st["events"])
         row = [
             ticker, "CLOSED", first_entry, last_exit, days_held,
             avg_entry, avg_exit,
@@ -349,6 +407,7 @@ def build_spreadsheet(ledger: dict[str, dict[str, Any]],
             spy_move / 100 if spy_move is not None else None,
             alpha / 100 if alpha is not None else None,
             len(entry_evs), len(exit_evs),
+            notes_closed,
         ]
         ws2.append(row)
 
@@ -397,9 +456,12 @@ def build_spreadsheet(ledger: dict[str, dict[str, Any]],
             ws2.cell(row=r, column=c).alignment = Alignment(vertical="top", wrap_text=False)
 
     # Column widths for ws2
-    widths2 = [12, 8, 8, 12, 12, 14, 14, 12, 12, 12, 12, 12, 10, 10]
+    widths2 = [12, 8, 12, 12, 10, 12, 12, 11, 11, 11, 9, 9, 8, 8, 100]
     for i, w in enumerate(widths2, 1):
         ws2.column_dimensions[get_column_letter(i)].width = w
+    # Wrap Notes column (col 15) for closed-summary rows
+    for r in range(4, len(closed_positions) + 4):
+        ws2.cell(row=r, column=15).alignment = Alignment(vertical="top", wrap_text=True)
 
     wb.save(OUT_XLSX)
     print(f"Wrote spreadsheet to {OUT_XLSX}", file=sys.stderr)
