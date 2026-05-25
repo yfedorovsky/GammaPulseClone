@@ -448,9 +448,13 @@ def apply_manual_overrides(events: list[dict]) -> list[dict]:
                 applied += 1
                 break
         elif op.startswith("INSERT"):
+            # Use T23:59:59 so override sorts AFTER all auto-parsed events
+            # on the same date. Important for sequence-sensitive cases like
+            # AMPX 5/21 (stop hit, then re-add) where the override must
+            # come AFTER the auto-parsed STOP event in the ledger walk.
             events.append({
                 "date": date,
-                "timestamp": date + "T12:00:00",
+                "timestamp": date + "T23:59:59",
                 "ticker": ticker,
                 "action": new_action,
                 "price": new_price,

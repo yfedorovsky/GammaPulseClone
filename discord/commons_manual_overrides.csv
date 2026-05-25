@@ -8,3 +8,5 @@ date,ticker,action,price,operation,note
 2026-05-21,AMPX,ADD,15.44,INSERT_NEW,"AMPX stopped at $15, then 'Adding back here @ $15.44 (half sized)'. Re-add missed by parser."
 2025-09-17,INTC,TRIM,82.55,UPDATE_ACTION_FROM_CLOSE,"Recap '$INTC closing 1/2 @ $82.55 +150%' = TRIM half, not full CLOSE. Half remains open."
 2025-09-17,NVTS,TRIM,20.87,UPDATE_ACTION_FROM_CLOSE,"Recap '$NVTS closing 1/2 @ 20.87 for just over 100%' = TRIM half, not CLOSE. Half remains open."
+2025-09-17,BBAI,TRIM,4.07,UPDATE_ACTION_FROM_CLOSE,"Recap '$BBAI 5.11 (2x weighting) (1/2 position closed @ 4.07, back to equal weight)' = TRIM half. The 2x weighting halved back to 1x; half remains open at $5.11 cost basis."
+2025-09-17,AMPX,STOP,15,UPDATE_ACTION_FROM_CLOSE,"Recap line for AMPX has multiple events; the FINAL exit before re-add was STOP @ $15 (per 'stop was hit'), NOT a CLOSE @ $15.44. The $15.44 is the re-add price. Re-classify to STOP so subsequent ADD @ $15.44 is treated as fresh OPEN."
