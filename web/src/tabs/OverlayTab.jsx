@@ -8,6 +8,25 @@ import { VolumeProfilePrimitive } from '../lib/volumeProfilePrimitive.js';
 
 const MACRO_KEY = 'MACRO (ALL 200D)';
 
+// DST-safe ET time-of-day extraction. Returns minute-of-day [0, 1440)
+// in America/New_York. Prior code used (utcHours - 4) which silently
+// produced wrong answers during EST (Nov-March, UTC-5 not UTC-4).
+const _ET_FMT = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
+function etMinuteOfDay(unixSeconds) {
+  const parts = _ET_FMT.formatToParts(new Date(unixSeconds * 1000));
+  let h = 0, m = 0;
+  for (const p of parts) {
+    if (p.type === 'hour') h = parseInt(p.value, 10) % 24;
+    else if (p.type === 'minute') m = parseInt(p.value, 10);
+  }
+  return h * 60 + m;
+}
+
 const TIMEFRAMES = [
   { label: '1 Day (1min)', interval: '1min', days: 1 },
   { label: '5 Days (5min)', interval: '5min', days: 5 },
@@ -80,8 +99,43 @@ export default function OverlayTab() {
         vertLines: { color: 'rgba(255,255,255,0.03)' },
         horzLines: { color: 'rgba(255,255,255,0.03)' },
       },
+      // Crosshair tooltip + axis label time formatting → Eastern Time.
+      // Mirrors the tickMarkFormatter on timeScale below so the hover
+      // tooltip also shows ET (otherwise it'd show UTC and disagree with
+      // the axis tick beneath the cursor).
+      localization: {
+        timeFormatter: (time) => {
+          const date = new Date(time * 1000);
+          return new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/New_York',
+            year: 'numeric',
+            month: 'short',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+          }).format(date);
+        },
+      },
       rightPriceScale: { borderColor: '#1a2338', scaleMargins: { top: 0.05, bottom: 0.15 } },
-      timeScale: { borderColor: '#1a2338', timeVisible: true, secondsVisible: false },
+      timeScale: {
+        borderColor: '#1a2338',
+        timeVisible: true,
+        secondsVisible: false,
+        // Display x-axis tick labels in Eastern Time (DST-aware via Intl).
+        // Without this, lightweight-charts defaults to UTC — making the
+        // closing-auction bar at 4 PM ET appear at "20:00" on the axis
+        // (since 16:00 ET == 20:00 UTC during EDT).
+        tickMarkFormatter: (time) => {
+          const date = new Date(time * 1000);
+          return new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/New_York',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+          }).format(date);
+        },
+      },
       crosshair: { mode: 0 },
     });
     const candle = chart.addCandlestickSeries({
@@ -161,10 +215,7 @@ export default function OverlayTab() {
         if (showSessions && tf.interval !== 'daily') {
           rawBars = rawBars.filter((b) => {
             if (typeof b.time !== 'number') return true;
-            const d = new Date(b.time * 1000);
-            const etHour = (d.getUTCHours() - 4 + 24) % 24;
-            const etMin = d.getUTCMinutes();
-            const minuteOfDay = etHour * 60 + etMin;
+            const minuteOfDay = etMinuteOfDay(b.time);
             return minuteOfDay >= 570 && minuteOfDay <= 960;
           });
         }
@@ -176,10 +227,7 @@ export default function OverlayTab() {
           const bar = { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close };
           // Apply session-based coloring on intraday views when extended hours visible
           if (!showSessions && tf.interval !== 'daily' && typeof b.time === 'number') {
-            const d = new Date(b.time * 1000);
-            const etHour = (d.getUTCHours() - 4 + 24) % 24;
-            const etMin = d.getUTCMinutes();
-            const mod = etHour * 60 + etMin;
+            const mod = etMinuteOfDay(b.time);
             const isRTH = mod >= 570 && mod <= 960; // 9:30-16:00
             if (!isRTH) {
               const isUp = b.close >= b.open;
@@ -224,9 +272,7 @@ export default function OverlayTab() {
         let alpha = 0.15;
         // Dim extended-hours volume when visible
         if (!showSessions && tf.interval !== 'daily' && typeof b.time === 'number') {
-          const d = new Date(b.time * 1000);
-          const etHour = (d.getUTCHours() - 4 + 24) % 24;
-          const mod = etHour * 60 + d.getUTCMinutes();
+          const mod = etMinuteOfDay(b.time);
           if (mod < 570 || mod > 960) alpha = 0.06;
         }
         return {
