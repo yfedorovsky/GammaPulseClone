@@ -35,6 +35,8 @@ Complementary to runner tracker, not redundant.
 from __future__ import annotations
 
 import datetime
+
+from .market_calendar import is_market_holiday
 from typing import Any
 
 
@@ -78,6 +80,8 @@ def _is_market_hours() -> bool:
         et = datetime.datetime.now()
 
     if et.weekday() >= 5:
+        return False
+    if is_market_holiday(et.date()):
         return False
     minutes = et.hour * 60 + et.minute
     return 9 * 60 + 45 <= minutes < 16 * 60

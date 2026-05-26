@@ -40,6 +40,7 @@ from .stream import streamer
 from .tickers import all_tickers
 from .tradier import TradierClient
 from .worker import run_worker
+from .market_calendar import is_market_holiday
 
 MACRO_KEY = "MACRO (ALL 200D)"
 
@@ -1352,7 +1353,7 @@ async def bars(ticker: str, interval: str = "5min", days: int = 5):
             all_bars = []
             for d in range(days, -1, -1):
                 day = end - datetime.timedelta(days=d)
-                if day.weekday() >= 5:
+                if day.weekday() >= 5 or is_market_holiday(day):
                     continue
                 start_dt = f"{day.isoformat()} 04:00"
                 end_dt = f"{day.isoformat()} 20:00"

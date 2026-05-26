@@ -76,6 +76,8 @@ def _in_close_window(now: _dt.datetime | None = None) -> bool:
     now = now or _dt.datetime.now()
     if now.weekday() >= 5:
         return False  # weekends never boost
+    if is_market_holiday(now.date()):
+        return False  # holidays never boost
     hm = (now.hour, now.minute)
     return CLOSE_WINDOW_START <= hm < CLOSE_WINDOW_END
 
@@ -355,6 +357,7 @@ except ImportError:
     MIR_SECTORS = {}
 
 from .basket import get_basket_tickers, STOCK_SECTORS
+from .market_calendar import is_market_holiday, is_rth_or_extended
 
 _mir_cache: dict[str, tuple[str, dict[str, Any] | None]] = {}  # ticker -> (date_str, result)
 
@@ -783,6 +786,8 @@ async def _maybe_snapshot_eod_oi() -> None:
         return
     if now.weekday() >= 5:
         return
+    if is_market_holiday(now.date()):
+        return
 
     today_iso = _dt.date.today().isoformat()
     if _last_oi_snapshot_date == today_iso:
@@ -925,8 +930,7 @@ async def _run_basket_detector() -> None:
     # weekends + US equity holidays both block off-hours scans on stale
     # cache. 2026-05-25: shipped market_calendar after Memorial Day
     # produced 93K stale alerts (worker re-fired Friday-close V/OI flow
-    # on closed-market data). Holiday-aware.
-    from .market_calendar import is_rth_or_extended
+    # on closed-market data). Holiday-aware. Module-level import (line 360).
     if not is_rth_or_extended():
         return
 

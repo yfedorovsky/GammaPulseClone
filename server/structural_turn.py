@@ -1307,6 +1307,8 @@ def evaluate_turn(
 import asyncio
 import time as _time
 
+from .market_calendar import is_market_holiday
+
 # Tickers to watch for structural turns. Index ETFs first (highest signal
 # value); add catalyst-driven names as we expand. Keep small so the
 # yfinance pull stays fast (60s budget).
@@ -1600,7 +1602,7 @@ async def run_structural_turn_live_loop(stop_event) -> None:
             ny = _dt.now(pytz.timezone("America/New_York"))
         except Exception:
             ny = _dt.utcnow()
-        if ny.weekday() >= 5 or not (9 <= ny.hour < 16):
+        if ny.weekday() >= 5 or is_market_holiday(ny.date()) or not (9 <= ny.hour < 16):
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=300.0)
                 break

@@ -36,6 +36,7 @@ import time
 from contextlib import contextmanager
 
 from .config import get_settings
+from .market_calendar import is_market_holiday
 
 
 BUCKET_SIZE_SECONDS = 300       # 5 min
@@ -78,6 +79,8 @@ def detect_spikes(now: _dt.datetime | None = None) -> list[dict]:
     now = now or _dt.datetime.now()
     # Gate: only run during RTH so we don't fire on overnight noise
     if now.weekday() >= 5:
+        return []
+    if is_market_holiday(now.date()):
         return []
     if now.hour < 9 or (now.hour == 9 and now.minute < 35):
         return []  # 5 min grace after 9:30 to seed baseline

@@ -21,6 +21,7 @@ import httpx
 
 from .cache import cache
 from .config import get_settings
+from .market_calendar import is_rth_or_extended
 from .tick_side_tracker import get_tracker as _get_tick_side_tracker
 
 
@@ -578,8 +579,7 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
 
     # 2026-05-25: holiday-aware gate. Memorial Day produced 93K stale
     # alerts because the prior weekend-only gate let Monday-holiday scans
-    # re-fire Friday-close V/OI data.
-    from .market_calendar import is_rth_or_extended
+    # re-fire Friday-close V/OI data. Module-level import (see top of file).
     if not is_rth_or_extended():
         return []
 

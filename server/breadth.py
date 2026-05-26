@@ -26,6 +26,7 @@ from typing import Any
 import httpx
 
 from .config import get_settings
+from .market_calendar import is_market_holiday
 
 # ── Schema ────────────────────────────────────────────────────────────
 BREADTH_SCHEMA = """
@@ -290,6 +291,8 @@ async def update_breadth_today() -> None:
     import datetime
     today = datetime.date.today()
     if today.weekday() >= 5:
+        return
+    if is_market_holiday(today):
         return
 
     date_str = today.isoformat()

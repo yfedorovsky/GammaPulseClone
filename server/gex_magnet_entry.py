@@ -28,6 +28,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from .market_calendar import is_market_holiday
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
@@ -99,10 +101,13 @@ def _key(ticker: str, king: float) -> tuple[str, float]:
 
 
 def _is_rth() -> bool:
-    """Naive RTH check assuming server is on ET. RTH = weekday 9:30-16:00."""
+    """Naive RTH check assuming server is on ET. RTH = weekday 9:30-16:00,
+    excluding US equity full-close holidays."""
     import datetime as _dt
     now = _dt.datetime.now()
     if now.weekday() >= 5:
+        return False
+    if is_market_holiday(now.date()):
         return False
     hm = (now.hour, now.minute)
     if hm < (9, 30):

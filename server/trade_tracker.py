@@ -30,6 +30,7 @@ from typing import Any
 from .config import get_settings
 from .cache import cache
 from .tradier import TradierClient
+from .market_calendar import is_market_holiday
 
 
 TRACKER_SCHEMA = """
@@ -190,6 +191,8 @@ async def _check_exit_signals(tradier: TradierClient) -> list[dict[str, Any]]:
     now = datetime.datetime.now()
     # Only check during market hours
     if now.weekday() >= 5:
+        return []
+    if is_market_holiday(now.date()):
         return []
     if now.hour < 9 or (now.hour == 9 and now.minute < 30) or now.hour >= 17:
         return []

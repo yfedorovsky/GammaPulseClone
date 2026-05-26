@@ -324,6 +324,8 @@ import asyncio
 import json
 import sqlite3
 import time
+
+from .market_calendar import is_market_holiday
 from contextlib import contextmanager
 
 
@@ -570,6 +572,8 @@ def _is_rth_now() -> bool:
     import datetime
     now = datetime.datetime.now()
     if now.weekday() >= 5:
+        return False
+    if is_market_holiday(now.date()):
         return False
     if now.hour < 9 or (now.hour == 9 and now.minute < 30):
         return False

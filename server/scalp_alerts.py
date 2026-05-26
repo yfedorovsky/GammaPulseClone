@@ -29,6 +29,7 @@ from typing import Any
 
 from .cache import cache
 from .config import get_settings
+from .market_calendar import is_market_holiday
 
 # Which tickers get scalp alerts
 SCALP_TICKERS = {"SPY", "QQQ"}
@@ -289,6 +290,8 @@ async def _check_scalp_alerts() -> list[dict[str, Any]]:
     now = datetime.datetime.now()
     # Only during market hours
     if now.weekday() >= 5:
+        return []
+    if is_market_holiday(now.date()):
         return []
     if now.hour < 9 or (now.hour == 9 and now.minute < 30):
         return []

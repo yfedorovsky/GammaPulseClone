@@ -22,6 +22,8 @@ Telegram hop. Traders can inspect the log in the morning.
 from __future__ import annotations
 
 import datetime as dt
+
+from .market_calendar import is_market_holiday
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
@@ -37,6 +39,8 @@ def is_rth_or_close_window() -> bool:
     """
     now = dt.datetime.now(ET)
     if now.weekday() >= 5:  # Saturday=5, Sunday=6
+        return False
+    if is_market_holiday(now.date()):
         return False
     minute_of_day = now.hour * 60 + now.minute
     # 9:30 AM (570 min) through 4:15 PM (975 min)

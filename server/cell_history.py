@@ -31,6 +31,7 @@ except ImportError:
     _ET = None
 
 from .config import get_settings
+from .market_calendar import is_market_holiday
 
 
 # ── Schema ────────────────────────────────────────────────────────────
@@ -132,6 +133,8 @@ def _is_after_open() -> bool:
     now = _now_et()
     if now.weekday() >= 5:
         return False
+    if is_market_holiday(now.date()):
+        return False
     # 9:30 AM ET — snapshot window starts here
     return now.hour > 9 or (now.hour == 9 and now.minute >= 30)
 
@@ -145,6 +148,8 @@ def _is_capture_window() -> bool:
     """
     now = _now_et()
     if now.weekday() >= 5:
+        return False
+    if is_market_holiday(now.date()):
         return False
     if now.hour == 9 and now.minute >= 30:
         return True

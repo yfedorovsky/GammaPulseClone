@@ -44,6 +44,8 @@ from __future__ import annotations
 
 import datetime
 import time
+
+from .market_calendar import is_market_holiday
 from typing import Any
 
 
@@ -85,6 +87,8 @@ async def check_watches(snapshot: dict[str, dict[str, Any]]) -> None:
     # NFLX $100C DEEP_DISCOUNT fired at 5:38 PM post-ER).
     now_dt = datetime.datetime.now()
     if now_dt.weekday() >= 5:
+        return
+    if is_market_holiday(now_dt.date()):
         return
     mins = now_dt.hour * 60 + now_dt.minute
     if mins < 570 or mins > 960:  # before 9:30 or after 4:00

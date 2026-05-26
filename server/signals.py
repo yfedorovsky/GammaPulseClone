@@ -31,6 +31,7 @@ from typing import Any
 
 from .cache import cache
 from .config import get_settings
+from .market_calendar import is_market_holiday
 
 SIGNAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS soe_signals (
@@ -1721,6 +1722,8 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
     now = datetime.datetime.now()
     if now.weekday() >= 5:
         return []
+    if is_market_holiday(now.date()):
+        return []
     # Market hours only: 9:30 AM - 4:15 PM (indexes trade 15 min late; single
     # names are cut at 4:00 inside the per-ticker loop).
     mins = now.hour * 60 + now.minute
@@ -2686,6 +2689,8 @@ async def scan_setups() -> list[dict[str, Any]]:
 
     now = datetime.datetime.now()
     if now.weekday() >= 5:
+        return []
+    if is_market_holiday(now.date()):
         return []
     # Market hours only: 9:30 AM - 4:00 PM (pre-market spot is stale, post-close fires stale)
     mins = now.hour * 60 + now.minute

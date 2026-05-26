@@ -19,6 +19,8 @@ import asyncio
 import datetime as _dt
 import sqlite3
 import time
+
+from .market_calendar import is_market_holiday
 from typing import Any
 
 
@@ -41,9 +43,11 @@ _alarm_armed: bool = True
 
 
 def _is_rth() -> bool:
-    """RTH = weekday, 9:30-16:00 ET."""
+    """RTH = weekday, 9:30-16:00 ET, excluding US equity holidays."""
     now = _dt.datetime.now()
     if now.weekday() >= 5:
+        return False
+    if is_market_holiday(now.date()):
         return False
     hm = (now.hour, now.minute)
     if hm < (9, 30):

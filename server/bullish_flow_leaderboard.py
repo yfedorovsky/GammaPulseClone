@@ -28,6 +28,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from .config import get_settings
+from .market_calendar import is_market_holiday
 
 
 MIN_ORDERS_PER_TICKER = 3
@@ -157,6 +158,8 @@ async def maybe_fire_eod_leaderboard() -> bool:
     global _last_fired_date
     now = _dt.datetime.now()
     if now.weekday() >= 5:
+        return False
+    if is_market_holiday(now.date()):
         return False
     # Fire band: 16:00-16:15 ET (matches the RTH end-of-day band).
     if not (now.hour == 16 and now.minute <= 15):

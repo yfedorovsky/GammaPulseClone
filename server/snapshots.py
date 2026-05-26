@@ -23,6 +23,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from .config import get_settings
+from .market_calendar import is_market_holiday
 
 
 SCHEMA = """
@@ -66,9 +67,11 @@ _STALE_MIN_SPAN_S = 120     # those writes must span > 2 min (so we're not
 
 
 def _is_rth() -> bool:
-    """RTH = weekday, 9:30-16:00 ET."""
+    """RTH = weekday, 9:30-16:00 ET, excluding US equity holidays."""
     now = _dt.datetime.now()
     if now.weekday() >= 5:
+        return False
+    if is_market_holiday(now.date()):
         return False
     hm = (now.hour, now.minute)
     if hm < (9, 30):

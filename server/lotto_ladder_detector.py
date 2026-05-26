@@ -33,6 +33,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from .config import get_settings
+from .market_calendar import is_market_holiday
 
 
 # ── Tuning ────────────────────────────────────────────────────────────
@@ -82,6 +83,8 @@ def detect_lotto_ladders(now: _dt.datetime | None = None) -> list[dict[str, Any]
     """
     now = now or _dt.datetime.now()
     if now.weekday() >= 5:
+        return []
+    if is_market_holiday(now.date()):
         return []
     # Allow alerts 9:35 AM (5 min after open, scanner has data) through 15:55
     if now.hour < 9 or (now.hour == 9 and now.minute < 35):
