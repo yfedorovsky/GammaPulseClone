@@ -141,10 +141,24 @@ def close_trade(trade_id: int, reason: str) -> None:
         )
 
 
-def get_active_trades() -> list[dict[str, Any]]:
+def get_active_trades(limit: int = 200) -> list[dict[str, Any]]:
+    """Return up to `limit` most-recent ACTIVE tracked trades.
+
+    Hard cap added 2026-05-26 after a runaway accumulation incident:
+    flow_alerts auto-created tracked_trades for every alert (2,000+/cycle),
+    growing the table to 448,575 active rows. The 30s exit-signal loop
+    iterating all of them froze the asyncio event loop and triggered
+    cascading ThetaData WebSocket reconnects.
+
+    Defense in depth even though flow_alerts now only auto-tracks
+    HIGH/SWEEP conviction — if a future caller mass-creates trades, the
+    tracker loop still bounds its work per cycle.
+    """
     with _conn() as c:
         rows = c.execute(
-            "SELECT * FROM tracked_trades WHERE status = 'ACTIVE' ORDER BY created_ts DESC",
+            "SELECT * FROM tracked_trades WHERE status = 'ACTIVE' "
+            "ORDER BY created_ts DESC LIMIT ?",
+            (limit,),
         ).fetchall()
     return [dict(r) for r in rows]
 

@@ -790,12 +790,21 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
             except Exception:
                 pass
 
-            # Auto-track for exit signals
-            try:
-                from .trade_tracker import create_trade
-                create_trade(alert, gex_info)
-            except Exception:
-                pass
+            # Auto-track for exit signals — HIGH conviction tier only.
+            # Prior behavior auto-tracked every alert (~2,000/cycle) which
+            # blew up tracked_trades to 448,575 active rows on 2026-05-26,
+            # freezing the asyncio event loop in the 30s tracker scan
+            # (root cause of the post-Memorial-Day backend freezes).
+            # Filter: only SWEEP and HIGH tiers get auto-tracked. LOW/MEDIUM
+            # alerts are still inserted to flow_alerts table (insert_alert
+            # above), just not added to the active exit-tracking queue.
+            conviction = (alert.get("conviction") or "").upper()
+            if conviction in ("HIGH", "SWEEP"):
+                try:
+                    from .trade_tracker import create_trade
+                    create_trade(alert, gex_info)
+                except Exception:
+                    pass
 
     return new_alerts
 
