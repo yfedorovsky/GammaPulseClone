@@ -964,6 +964,13 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                     elif decision == "FIRE_SUMMARY":
                         if payload.get("kind") == "CLUSTER":
                             text = format_cluster_summary(payload)
+                        elif payload.get("kind") == "CLUSTER_RESOLUTION":
+                            # CLUSTER_RESOLUTION lacks `hour_start`; route to
+                            # its own formatter. Missing branch here caused
+                            # `[FLOW] scan error: 'hour_start'` KeyError
+                            # observed 2026-05-26.
+                            from .cluster_resolution import format_resolution_telegram
+                            text = format_resolution_telegram(payload)
                         else:
                             text = format_hot_flow_summary(payload)
                         await send(text, ticker=payload.get("ticker", ""))

@@ -1246,7 +1246,7 @@ async def earnings_dates(ticker: str, days: int = 90):
                          if ec.get("symbol", "").upper() == ticker.upper()]
                 return {"dates": sorted(set(dates))}
     except Exception as e:
-        print(f"[EARNINGS] dates fetch failed for {ticker}: {e}")
+        print(f"[EARNINGS] dates fetch failed for {ticker}: {e!r}", flush=True)
     return {"dates": []}
 
 

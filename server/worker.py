@@ -900,7 +900,12 @@ async def warmup_indexes() -> None:
                     await cache.put(t, state)
                     completed += 1
                 except Exception as e:
-                    print(f"[WARMUP] {t} failed: {e}")
+                    # !r shows exception type + message (e.g. "ConnectTimeout()")
+                    # so we don't get blank-after-colon when exc has no .args.
+                    # flush=True belt-and-suspenders vs stdout buffering bugs
+                    # (PYTHONUNBUFFERED handles it env-side too, but this is
+                    # defense for runs without that flag).
+                    print(f"[WARMUP] {t} failed: {e!r}", flush=True)
 
         t0 = time.time()
         print(f"[WARMUP] Priming cache for {len(ordered)} tickers "
