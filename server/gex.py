@@ -610,27 +610,98 @@ def compute_exp_data(
     pos_buckets = [(s, b["net_gex"]) for s, b in per_strike.items() if b["net_gex"] > 0]
     neg_buckets = [(s, b["net_gex"]) for s, b in per_strike.items() if b["net_gex"] < 0]
 
-    king_pos_strike: float | None = None
-    king_pos_val = 0.0
-    if pos_buckets:
-        king_pos_strike, king_pos_val = max(pos_buckets, key=lambda x: x[1])
+    # king-selection-v3 fix #1.5 (2026-05-27) — KING DISTANCE CAP.
+    #
+    # Problem: SMH on 5/27 showed KING $760 on spot $593.69 (28% above), even
+    # on the monthly OPEX panel. The unconstrained max-|net_gex| pick was
+    # finding a far-OTM strike where call-write OI / LEAP positioning had
+    # accumulated. That strike isn't a meaningful intraday dealer hedge level
+    # — dealers don't actively delta-hedge far-OTM exposure tick-by-tick.
+    #
+    # OG GammaPulse Pro behavior: king sits within ~5% of spot (SMH OG king
+    # was $585, just 1.5% below spot $593). The "king" semantically means the
+    # nearest big dealer wall, not the biggest wall anywhere in the chain.
+    #
+    # Fix: cap king search to MAX_KING_DIST_PCT of spot (8% default). Within
+    # the cap, take the largest |net_gex|. If nothing significant exists in
+    # window, fall back to unconstrained — preserves prior behavior for
+    # truly OTM-dominant chains (e.g. low-priced stocks, post-spike).
+    # Progressive widening cascade — try tight intraday cap first, then a
+    # generous fallback, then declare NO intraday king. Critical: do NOT
+    # fall back to fully unconstrained pos_buckets, because that's what
+    # gives the user the spurious $760 line off-screen (SMH 5/27 bug).
+    # The unconstrained pick is preserved separately as `king_far`.
+    KING_TIGHT_PCT = 0.05   # primary intraday window
+    KING_WIDE_PCT = 0.10    # widened fallback before giving up
 
-    king_neg_strike: float | None = None
-    king_neg_val = 0.0
+    def _pick_king(buckets, picker):
+        """Try 5% window, then 10%, else None. picker = max for pos, min for neg."""
+        if not buckets or not spot or spot <= 0:
+            return None, 0.0
+        for pct in (KING_TIGHT_PCT, KING_WIDE_PCT):
+            lo = spot * (1.0 - pct)
+            hi = spot * (1.0 + pct)
+            in_window = [(s, g) for s, g in buckets if lo <= s <= hi]
+            if in_window:
+                s, g = picker(in_window, key=lambda x: x[1])
+                return s, g
+        return None, 0.0
+
+    king_pos_strike, king_pos_val = _pick_king(pos_buckets, max)
+    king_neg_strike, king_neg_val = _pick_king(neg_buckets, min)
+
+    # Also compute UNCONSTRAINED king for MACRO/structural views. The
+    # constrained king above is for intraday-relevant dealer hedge zones
+    # (within 5% of spot). The "far king" is for structural analysis:
+    # "where does the biggest +GEX wall sit anywhere in the chain?" —
+    # answer matters for LEAP positioning, post-earnings call-write
+    # exhaustion, structural pinning targets. Frontend MACRO panel
+    # consumes king_far; monthly/weekly panels use the constrained king.
+    king_far_pos_strike: float | None = None
+    king_far_pos_val = 0.0
+    if pos_buckets:
+        king_far_pos_strike, king_far_pos_val = max(pos_buckets, key=lambda x: x[1])
+    king_far_neg_strike: float | None = None
+    king_far_neg_val = 0.0
     if neg_buckets:
-        king_neg_strike, king_neg_val = min(neg_buckets, key=lambda x: x[1])
+        king_far_neg_strike, king_far_neg_val = min(neg_buckets, key=lambda x: x[1])
 
     # Primary king = positive king (the magnet), with fallback to negative king
     # when no positive gamma exists (extreme-regime edge case — rare on liquid
     # underlyings, possible on expiry-day OTM-only books).
+    #
+    # king-selection-v3 (2026-05-27): when BOTH in-window picks come back
+    # None (no significant +GEX or -GEX within 10% of spot), use the
+    # unconstrained king_far for internal math (ceiling/floor search,
+    # callout) but expose king=0 in the API so the frontend can suppress
+    # the chart line. This prevents off-screen king lines like SMH $760.
     if king_pos_strike is not None:
         king_strike = king_pos_strike
         king_val = king_pos_val
         king_is_positive = True
-    else:
-        king_strike = king_neg_strike if king_neg_strike is not None else (strikes_sorted[0] if strikes_sorted else 0.0)
+        king_is_intraday = True
+    elif king_neg_strike is not None:
+        king_strike = king_neg_strike
         king_val = king_neg_val
         king_is_positive = False
+        king_is_intraday = True
+    elif king_far_pos_strike is not None:
+        # No intraday king — use far king internally for downstream math
+        # but flag it so the API consumer knows this isn't a tradeable level.
+        king_strike = king_far_pos_strike
+        king_val = king_far_pos_val
+        king_is_positive = True
+        king_is_intraday = False
+    elif king_far_neg_strike is not None:
+        king_strike = king_far_neg_strike
+        king_val = king_far_neg_val
+        king_is_positive = False
+        king_is_intraday = False
+    else:
+        king_strike = strikes_sorted[0] if strikes_sorted else 0.0
+        king_val = 0.0
+        king_is_positive = False
+        king_is_intraday = False
 
     # neg_king_strike is exposed to signal/callout logic as the "danger zone"
     # marker. Only populated if meaningfully negative vs the positive king
@@ -830,10 +901,13 @@ def compute_exp_data(
 
     return {
         "strikes": strikes_out,
-        # Primary king (kept for backward compat with UI/signal consumers).
-        # Post-v4 bifurcation: always the positive king unless no +GEX exists
-        # anywhere in the chain (rare — extreme-negative-regime edge case).
-        "king": king_strike,
+        # Primary king for UI consumers. When no significant +/-GEX strike
+        # sits within 10% of spot (king_is_intraday=False), this is 0 to
+        # signal "no intraday king — don't draw a line." Internal math
+        # (floor/ceiling search, callout) used the unconstrained far king
+        # as a fallback to keep those derived levels populated.
+        "king": king_strike if king_is_intraday else 0,
+        "king_is_intraday": king_is_intraday,
         "neg_king": neg_king_strike or 0,  # 0 when no significant neg-king
         # Explicit bifurcated fields — what the UI should render separately.
         # Frontend can show POS king as gold "KING" marker, NEG king as red
@@ -842,6 +916,15 @@ def compute_exp_data(
         "king_pos_gex": king_pos_val,
         "king_neg": king_neg_strike or 0,
         "king_neg_gex": king_neg_val,
+        # Unconstrained king (no 5%/10% distance cap). Use for MACRO panel /
+        # structural views where the biggest +GEX wall anywhere in the chain
+        # is the meaningful answer. May equal `king` when the largest +GEX
+        # strike happens to sit within 5% of spot.
+        "king_far": king_far_pos_strike or king_far_neg_strike or 0,
+        "king_far_pos": king_far_pos_strike or 0,
+        "king_far_pos_gex": king_far_pos_val,
+        "king_far_neg": king_far_neg_strike or 0,
+        "king_far_neg_gex": king_far_neg_val,
         "zgl": zgl,
         "iv": iv_avg,
         "net_delta": total_delta,

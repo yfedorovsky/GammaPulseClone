@@ -5,6 +5,7 @@ import { api } from '../api.js';
 import { fmtBig, fmtPrice } from '../lib/format.js';
 import { computeAllIndicators, computeAnchoredVWAP } from '../lib/indicators.js';
 import { VolumeProfilePrimitive } from '../lib/volumeProfilePrimitive.js';
+import { findNearestMonthlyOpex } from '../components/HeatmapPanel.jsx';
 
 const MACRO_KEY = 'MACRO (ALL 200D)';
 
@@ -443,8 +444,18 @@ export default function OverlayTab() {
 
     const data = chains[current];
     if (!data) return;
-    const ed = data.exp_data?.[MACRO_KEY] || {};
-    const king = ed.king;
+    // king-selection-v3 fix #1 (2026-05-27): prefer nearest monthly OPEX
+    // expiration for the king/floor/ceiling lines drawn on the price chart.
+    // MACRO (ALL 200D) pulled them too far from spot (LEAPs + quarterly OI
+    // dominate the aggregate). OG GammaPulse Pro defaults to monthly.
+    const _monthlyKey = findNearestMonthlyOpex(data.exps || []);
+    const _usingMonthly = !!(_monthlyKey && data.exp_data?.[_monthlyKey]);
+    const ed = (_usingMonthly && data.exp_data[_monthlyKey])
+      || data.exp_data?.[MACRO_KEY]
+      || {};
+    // When we land on MACRO (no monthly available), use king_far so the chart
+    // shows the structural king. On monthly panels use the constrained king.
+    const king = (_usingMonthly ? ed.king : (ed.king_far || ed.king));
     const floorVal = ed.floor;
     const ceilingVal = ed.ceiling;
     const zgl = ed.zgl;
@@ -602,11 +613,18 @@ export default function OverlayTab() {
     drawLevels();
   }, [drawLevels]);
 
-  const ed = chains[current]?.exp_data?.[MACRO_KEY] || {};
+  // king-selection-v3 fix #1: same monthly-OPEX preference as drawLevels.
+  // Determines the king/floor/ceiling shown in the side info panel.
+  const _monthlyKey2 = findNearestMonthlyOpex(chains[current]?.exps || []);
+  const _usingMonthly2 = !!(_monthlyKey2 && chains[current]?.exp_data?.[_monthlyKey2]);
+  const ed = (_usingMonthly2 && chains[current].exp_data[_monthlyKey2])
+    || chains[current]?.exp_data?.[MACRO_KEY]
+    || {};
   const spot = spotPrices[current] ?? chains[current]?.spot;
   const signal = chains[current]?.signal;
   const regime = chains[current]?.regime;
-  const king = ed.king;
+  // Monthly panel → constrained king; MACRO fallback → king_far (structural).
+  const king = (_usingMonthly2 ? ed.king : (ed.king_far || ed.king));
   const floor = ed.floor;
   const ceiling = ed.ceiling;
 

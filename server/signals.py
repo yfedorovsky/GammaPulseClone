@@ -2389,6 +2389,26 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
         if should_push and not sig.get("_suppress_telegram"):
             try:
                 from .telegram import send, format_soe_signal
+                # Re-stamp spot at dispatch time (2026-05-27). The signal
+                # was evaluated when the snapshot was taken at the top of
+                # the cycle; with a 60s eval cadence the snapshot can be
+                # 30-90s old by the time we send. Pull the live cached spot
+                # so the trader's `Entry:` field matches the price they see
+                # on the chart right now. Original eval-time spot stays in
+                # sig["spot_at_eval"] for the alert_outcomes DB log so
+                # outcome attribution uses the canonical fire-time state.
+                _eval_spot = sig.get("spot")
+                try:
+                    _fresh_state = await cache.get(ticker)
+                    _fresh_spot = (
+                        (_fresh_state or {}).get("actual_spot")
+                        or (_fresh_state or {}).get("_spot")
+                    )
+                    if _fresh_spot and _fresh_spot > 0:
+                        sig["spot_at_eval"] = _eval_spot
+                        sig["spot"] = _fresh_spot
+                except Exception:
+                    pass
                 # SOE A/A+ are the highest-conviction signals the engine
                 # produces. Use force=True for A+ to bypass ALL rate
                 # limits AND ticker cooldown — these can't be drowned by
@@ -2421,7 +2441,11 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
                         expiration=sig.get("expiration"),
                         option_type=sig.get("option_type", "").lower(),
                         dte=sig.get("dte"),
-                        spot_at_alert=sig.get("spot"),
+                        # Prefer eval-time spot if we re-stamped at dispatch
+                        # (2026-05-27 lag fix). spot_at_eval is the canonical
+                        # fire-time state used for outcome attribution; sig["spot"]
+                        # is now the dispatch-time refresh shown to the trader.
+                        spot_at_alert=sig.get("spot_at_eval") or sig.get("spot"),
                         entry_price=sig.get("mid_price"),
                         target_spot=sig.get("target"),
                         stop_spot=sig.get("stop"),
@@ -2885,15 +2909,28 @@ async def scan_setups() -> list[dict[str, Any]]:
 
 
 async def run_signal_engine(stop_event: asyncio.Event) -> None:
-    """Background loop: generate signals every 5 min, check outcomes every 1 min."""
+    """Background loop: generate signals every 60s, check outcomes every cycle.
+
+    History: was 300s (5 min) which produced 3-5 min Telegram lag on SOE
+    callouts — by the time the alert landed in chat, price had already
+    moved off the entry. Dropped to 60s on 2026-05-27 after NBIS 5/27
+    callout fired at 12:32 with Entry $207.75 while price was actually
+    $208.30+. generate_signals() is cache-only (no Tradier REST inside
+    the hot loop) so 5× more frequent execution adds no network calls,
+    just more CPU on the cached snapshot iteration.
+
+    Companion change in the dispatch block: spot is re-stamped from the
+    live cache at dispatch time so `Entry:` matches what the trader sees
+    when the message lands.
+    """
     await asyncio.sleep(60)  # Wait for GEX worker to populate cache
 
     last_gen = 0
     while not stop_event.is_set():
         try:
             now = time.time()
-            # Generate new signals every 5 minutes
-            if now - last_gen >= 300:
+            # Generate new signals every 60s (was 300s pre-2026-05-27)
+            if now - last_gen >= 60:
                 # Get confluence for scoring
                 confluence = {}
                 for t in ["SPY", "QQQ", "IWM"]:
@@ -2920,7 +2957,10 @@ async def run_signal_engine(stop_event: asyncio.Event) -> None:
         except Exception as e:
             print(f"[SOE] error: {e}")
 
+        # Outer loop pace: 15s tick so the inner 60s eval gate triggers
+        # promptly (was 60s tick → actual cadence was 60-120s). With
+        # 15s tick + 60s gate the worst-case eval-to-eval gap is ~75s.
         try:
-            await asyncio.wait_for(stop_event.wait(), timeout=60)
+            await asyncio.wait_for(stop_event.wait(), timeout=15)
         except asyncio.TimeoutError:
             pass

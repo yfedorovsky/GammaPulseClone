@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store.js';
 import { api } from '../api.js';
-import HeatmapPanel from '../components/HeatmapPanel.jsx';
+import HeatmapPanel, { findNearestMonthlyOpex } from '../components/HeatmapPanel.jsx';
 
 export default function HeatmapsTab() {
   const {
@@ -94,7 +94,15 @@ export default function HeatmapsTab() {
     if (!focus) return [];
     return Array.from({ length: focusPanelCount }).map((_, i) => {
       const userPick = exps[`${focusTicker}-${i}`];
-      const fallback = focusExps[Math.min(i, focusExps.length - 1)] || 'MACRO (ALL 200D)';
+      // king-selection-v3 fix #1 (2026-05-27): swap MACRO out of the
+      // panel-0 default for the nearest monthly OPEX. Panel idx 0 typically
+      // resolves to focusExps[0] which is the MACRO sentinel; replace with
+      // monthly OPEX so default king/floor/ceiling reflect intraday-relevant
+      // dealer hedging rather than the 200D aggregate.
+      const rawFallback = focusExps[Math.min(i, focusExps.length - 1)] || 'MACRO (ALL 200D)';
+      const fallback = String(rawFallback).startsWith('MACRO')
+        ? (findNearestMonthlyOpex(focusExps) || rawFallback)
+        : rawFallback;
       return userPick || fallback;
     });
   }, [focus, exps, focusTicker, focusExps, focusPanelCount]);
@@ -259,7 +267,13 @@ export default function HeatmapsTab() {
           {Array.from({ length: focusPanelCount }).map((_, i) => {
             // expLabelOverride is just the DEFAULT for this panel slot —
             // HeatmapPanel's user-dropdown choice wins if set.
-            const defaultExp = focusExps[Math.min(i, focusExps.length - 1)] || 'MACRO (ALL 200D)';
+            // king-selection-v3 fix #1: same monthly-OPEX swap as
+            // visiblePanelExps above. Panel slot 0 gets nearest 3rd-Friday
+            // instead of the 200D aggregate.
+            const _rawDefault = focusExps[Math.min(i, focusExps.length - 1)] || 'MACRO (ALL 200D)';
+            const defaultExp = String(_rawDefault).startsWith('MACRO')
+              ? (findNearestMonthlyOpex(focusExps) || _rawDefault)
+              : _rawDefault;
             // Use visiblePanelExps (which already respects user overrides)
             // to decide which panel the matrix-king star should land on.
             const actualExp = visiblePanelExps[i] || defaultExp;

@@ -455,6 +455,18 @@ def _detect_side(
         # shock at mid almost never prints randomly — it's the snapshot
         # catching a moment between buy waves.
         vol_oi_now = vol / max(oi, 1) if oi > 0 else 999.0
+
+        # P0 fix Bug #12 part 2 (2026-05-27, META 0DTE 620C):
+        # opening accumulation (vol > oi) at V/OI >= 10x is virtually
+        # always buyer-initiated regardless of where `last` sits in the
+        # spread. Override the last-vs-mid coin flip with the opening
+        # signal — closing rolls don't need 10x volume on stale OI.
+        # Without this, META 620C 0DTE 14:11 with last=$1.69 in
+        # [$1.61, $1.81] (just below mid $1.71) returned BID/BEARISH on
+        # what was the textbook insider call buy (151× peak the same hour).
+        if vol_oi_now >= 10.0 and vol > oi:
+            return "ASK"
+
         if vol_oi_now >= 5.0 and last > 0:
             # Use micro-distance from mid as direction proxy
             if last >= mid:
@@ -500,6 +512,42 @@ def _detect_side(
         # interprets call+ASK = bullish, put+ASK = bearish — both correct
         # priors for V/OI shock signature.
         return "ASK"
+
+    # OPENING-ACCUMULATION ASK bias (2026-05-27 P0 fix — META 0DTE 620C bug).
+    #
+    # 3rd confirmation today of the mid-of-spread coin-flip: META 620C 0DTE
+    # at 14:11:08 — vol=39,435 oi=3,096 (V/OI 12.7x) with bid=$1.61 ask=$1.81.
+    # Last drifted to ~$1.69 (slightly below mid $1.71), so the line ~511
+    # `last >= mid else BID` fallback tagged BID -> BEARISH on a CALL. The
+    # 25x extreme-layer threshold above didn't trigger (V/OI only 12.7).
+    # META then ran +3% on the paid-subscriptions news 5 min later and the
+    # 615C 0DTE went $0.14 -> $21.15 (151x). Mis-classifying that as BEARISH
+    # is exactly the insider catch we're paying ThetaData for.
+    #
+    # Rule: when V/OI >= 10x AND vol > oi (clear opening, not roll), the
+    # statistical prior is OVERWHELMINGLY buyer-initiated. Closers don't
+    # need to flood 10x daily volume; openers (insiders, institutionals
+    # front-running a catalyst) do. Set ASK as default unless last is
+    # convincingly below bid (stale-last path already handled it earlier).
+    #
+    # Prior fixes covered V/OI >= 25 + last-vs-spread heuristics. This
+    # widens the V/OI floor to 10 AND adds the opening-confirmation gate
+    # (vol > oi) so we don't false-positive on closing flow.
+    if vol_oi >= 10.0 and vol > oi and last > 0:
+        # Even with last slightly below mid, opening accumulation at 10x+
+        # V/OI is virtually always buyer-initiated. Only override when
+        # last is materially below bid (stale handled earlier) — at this
+        # point in the function `last` is within [bid, ask] by construction.
+        # Hold the ASK bias unless last is in the bottom 25% of the spread,
+        # which would indicate seller-initiated even on opening (rare —
+        # would require a large institution OPENING shorts at the bid).
+        if spread > 0 and last <= bid + spread * 0.25:
+            # Bottom quartile of spread on opening accumulation. Rare but
+            # real (call writes ahead of resistance). Defer to the existing
+            # last-vs-mid fallback below.
+            pass
+        else:
+            return "ASK"
 
     if spread > 0 and vol_oi >= 1.5:
         # Quarter-spread aggression line: above mid + spread*0.25 is "lean ask"
