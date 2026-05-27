@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { api } from '../api.js';
 import HitRateStrip from '../components/HitRateStrip.jsx';
 import InsiderStrip from '../components/InsiderStrip.jsx';
+import ClusterStrip from '../components/ClusterStrip.jsx';
 
 /**
  * BIG FLOW tab — UW-style per-contract DAILY option flow aggregates.
@@ -401,9 +402,15 @@ export default function BigFlowTab({ onClickTicker }) {
 
   return (
     <div style={{ padding: '12px 14px', fontFamily: 'var(--sans)' }}>
-      {/* INSIDER PATTERN strip (2026-05-27) — pinned alerts that match
-          the 6-criteria signature. MU 3/31, INTC 5/8, META 5/27 class
-          of trades. Shown when 1+ qualifying alert exists in last 6h. */}
+      {/* INFORMED CLUSTER strip — multi-strike ladder pattern (Batch 2,
+          2026-05-27 PM). Aggregates 2+ same-ticker/exp/direction INFORMED
+          FLOW fires in a 30-min rolling window. Top of the page because
+          clusters are highest signal-to-noise. */}
+      <ClusterStrip onClickTicker={onClickTicker} />
+
+      {/* INFORMED FLOW strip — individual 5+/6 fires per contract.
+          Renamed from INSIDER PATTERN 2026-05-27 PM after cross-LLM
+          validation. Pattern matches MU 3/31, INTC 5/8, META 5/27. */}
       <InsiderStrip onClickTicker={onClickTicker} />
 
       {/* Header */}

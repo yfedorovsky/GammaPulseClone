@@ -1,0 +1,187 @@
+[cache] Loaded 1 Mir signals from DB (survives restart)
+=== Loaded 334,209 flow_alerts rows from today ===
+
+=== HEADLINE NUMBERS ===
+  Total flow_alerts today:           334,209
+
+  Legacy 5+/6 (no gates, no dedup):  18,371
+  New 5+/6 (gates + dedup):          776
+  Reduction:                         95.8%
+
+  Sanity gate (oi<100 AND vol<500):  68,158
+  Notional gate (<$10K):             0
+  Dedup'd (repeat fires):            14,545
+
+  New pre-dedup 5+/6:                15,321
+  Dedup compression:                 94.9%
+
+=== SCORE DISTRIBUTIONS (legacy vs new) ===
+   score     legacy        new
+       0     58,467    291,582
+       1     92,351        867
+       2     80,057      3,949
+       3     52,470      9,419
+       4     32,493     13,071
+       5     14,190     11,125
+       6      4,181      4,196
+
+=== TOP TICKERS BY UNIQUE INFORMED-FLOW FIRES (new logic) ===
+       SPX:  128
+       QQQ:  117
+       SPY:   89
+       NDX:   54
+      TSLA:   51
+      META:   50
+       IWM:   35
+      NVDA:   16
+        ZS:   15
+      AMZN:   14
+      IREN:   14
+      AAPL:   13
+        MU:   13
+      MSFT:   10
+     GOOGL:    8
+
+=== TOP CONTRACTS — legacy fire count vs new ===
+    ticker   strike          exp  type  legacy   new
+       QQQ    731.0   2026-05-27  call     151     3
+       SPY    752.0   2026-05-27  call     150     3
+       SPY    748.0   2026-05-27   put     147     3
+       SPY    753.0   2026-05-27  call     146     3
+       SPY    747.0   2026-05-27   put     140     3
+       QQQ    732.0   2026-05-27  call     140     3
+       QQQ    725.0   2026-05-27   put     137     3
+       SPY    753.0   2026-05-28  call     136     3
+       QQQ    730.0   2026-05-27  call     135     3
+       QQQ    733.0   2026-05-27  call     134     3
+       QQQ    724.0   2026-05-27   put     130     3
+       QQQ    733.0   2026-05-28  call     130     3
+       IWM    289.0   2026-05-27   put     129     3
+       SPY    746.0   2026-05-28   put     126     3
+       SPY    749.0   2026-05-27   put     126     3
+       SPY    746.0   2026-05-27   put     126     3
+       QQQ    732.0   2026-05-28  call     123     3
+       SPY    751.0   2026-05-27  call     122     3
+       QQQ    726.0   2026-05-27   put     122     3
+       QQQ    727.0   2026-05-27   put     118     3
+
+=== META 0DTE CATCH VERIFICATION (all post-dedup fires) ===
+  Total META 0DTE INFORMED FLOW fires: 37
+  10:18:27 | $615.0C V/OI 11.4x | vol=18,606 oi=1,637 ask=$1.60 spot=$613.30 | score=6
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.38']
+  10:23:28 | $612.5P V/OI 16.6x | vol=2,770 oi=167 ask=$1.70 spot=$614.87 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.37']
+  10:29:13 | $612.5P V/OI 20.8x | vol=3,468 oi=167 ask=$1.30 spot=$616.05 | score=6
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.30']
+  10:29:13 | $617.5C V/OI 10.7x | vol=5,989 oi=562 ask=$1.81 spot=$616.05 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.40']
+  10:34:58 | $612.5P V/OI 27.5x | vol=4,586 oi=167 ask=$1.15 spot=$616.39 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.27']
+  10:34:58 | $617.5C V/OI 12.1x | vol=6,822 oi=562 ask=$2.03 spot=$616.39 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE']
+  10:40:04 | $615.0P V/OI 10.3x | vol=1,768 oi=171 ask=$2.40 spot=$614.89 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE']
+  10:50:19 | $615.0C V/OI 17.0x | vol=27,893 oi=1,637 ask=$1.52 spot=$612.71 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.39']
+  11:13:40 | $612.5C V/OI 10.4x | vol=9,140 oi=883 ask=$2.67 spot=$613.78 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE']
+  11:29:36 | $615.0C V/OI 20.2x | vol=33,062 oi=1,637 ask=$1.38 spot=$614.07 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.35']
+  11:35:29 | $617.5C V/OI 19.4x | vol=10,914 oi=562 ask=$0.67 spot=$613.67 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.24']
+  13:05:39 | $612.5C V/OI 15.1x | vol=13,377 oi=883 ask=$0.95 spot=$611.81 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.36']
+  13:10:26 | $607.5P V/OI 13.1x | vol=4,482 oi=342 ask=$0.60 spot=$610.21 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.24']
+  14:16:11 | $620.0C V/OI 14.3x | vol=44,379 oi=3,096 ask=$1.39 spot=$617.67 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.40']
+  14:28:54 | $625.0P V/OI 125.2x | vol=1,753 oi=14 ask=$1.46 spot=$629.68 | score=6
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.28']
+  14:28:54 | $635.0C V/OI 18.4x | vol=4,811 oi=261 ask=$1.40 spot=$629.68 | score=6
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.27']
+  14:33:21 | $627.5C V/OI 13.6x | vol=5,825 oi=427 ask=$3.70 spot=$629.68 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE']
+  14:33:21 | $640.0C V/OI 12.2x | vol=3,847 oi=316 ask=$0.75 spot=$629.68 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.15']
+  14:34:47 | $625.0P V/OI 231.9x | vol=3,246 oi=14 ask=$0.87 spot=$631.59 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.19']
+  14:34:47 | $635.0C V/OI 34.6x | vol=9,033 oi=261 ask=$1.77 spot=$631.59 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.32']
+  14:34:47 | $640.0C V/OI 21.9x | vol=6,932 oi=316 ask=$0.95 spot=$631.59 | score=6
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.18']
+  14:40:36 | $630.0C V/OI 21.0x | vol=19,505 oi=927 ask=$2.39 spot=$630.86 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE']
+  14:40:36 | $632.5C V/OI 14.9x | vol=6,128 oi=410 ask=$1.51 spot=$630.86 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.34']
+  14:40:36 | $640.0C V/OI 26.0x | vol=8,217 oi=316 ask=$0.46 spot=$630.86 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.11']
+  14:47:12 | $627.5P V/OI 208.6x | vol=2,503 oi=12 ask=$1.81 spot=$628.71 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE']
+  14:47:12 | $632.5C V/OI 20.2x | vol=8,273 oi=410 ask=$0.84 spot=$628.71 | score=6
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.23']
+  14:53:00 | $630.0P V/OI 71.6x | vol=3,223 oi=45 ask=$2.78 spot=$628.65 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE']
+  14:53:00 | $632.5C V/OI 22.9x | vol=9,371 oi=410 ask=$0.80 spot=$628.65 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.25']
+  14:53:00 | $635.0C V/OI 54.9x | vol=14,329 oi=261 ask=$0.47 spot=$628.65 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.15']
+  14:59:38 | $630.0P V/OI 85.3x | vol=3,838 oi=45 ask=$1.41 spot=$630.84 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.35']
+  15:09:51 | $637.5C V/OI 40.2x | vol=4,782 oi=119 ask=$1.57 spot=$634.75 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.35']
+  15:12:01 | $637.5C V/OI 76.6x | vol=9,111 oi=119 ask=$1.85 spot=$638.19 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE']
+  15:12:01 | $645.0C V/OI 11.6x | vol=6,273 oi=542 ask=$0.54 spot=$638.19 | score=6
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.13']
+  15:17:54 | $630.0P V/OI 167.7x | vol=7,545 oi=45 ask=$0.57 spot=$632.61 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.22']
+  15:47:18 | $635.0P V/OI 344.5x | vol=4,479 oi=13 ask=$0.86 spot=$635.68 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.36']
+  16:02:31 | $635.0P V/OI 495.0x | vol=6,435 oi=13 ask=$0.63 spot=$635.25 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE']
+  16:02:31 | $637.5C V/OI 127.9x | vol=15,224 oi=119 ask=$0.20 spot=$635.25 | score=5
+           reasons=['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.15']
+
+=== ALL 6/6 PERFECT-SCORE FIRES (post-dedup) — 128 total ===
+  09:41:23    SPX $7480.0P 2026-05-27 V/OI=10.1x ask=$3.80 notional=$3,426,460 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.22']
+  09:43:32    LLY $1130.0C 2026-05-29 V/OI=12.6x ask=$2.20 notional=$836,025 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'OTM+4.8%', '2DTE', 'Δ0.11']
+  09:48:52    QQQ $731.0C 2026-05-28 V/OI=17.4x ask=$2.67 notional=$1,780,270 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '1DTE', 'Δ0.37']
+  09:49:26    SPX $7280.0P 2026-06-01 V/OI=16.3x ask=$4.00 notional=$2,340,780 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'OTM+3.1%', '5DTE', 'Δ0.04']
+  09:53:10   TSLA $437.5P 2026-05-27 V/OI=55.6x ask=$2.56 notional=$3,845,120 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.39']
+  09:58:07    QQQ $733.0C 2026-05-28 V/OI=10.3x ask=$2.35 notional=$881,010 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '1DTE', 'Δ0.35']
+  09:58:08   MSFT $415.0C 2026-05-27 V/OI=15.6x ask=$0.68 notional=$1,400,702 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.25']
+  09:58:08   NVDA $212.5C 2026-05-27 V/OI=10.3x ask=$0.92 notional=$3,926,376 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.39']
+  09:58:09   TSLA $435.0P 2026-05-27 V/OI=16.4x ask=$1.63 notional=$4,273,208 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.29']
+  09:58:09   TSLA $445.0C 2026-05-27 V/OI=10.0x ask=$1.70 notional=$7,916,467 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.29']
+  09:59:14    QQQ $733.0C 2026-05-27 V/OI=10.4x ask=$0.95 notional=$3,191,525 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.26']
+  09:59:14    SPX $7485.0P 2026-05-27 V/OI=10.5x ask=$4.20 notional=$3,665,280 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.25']
+  10:01:22    IWM $289.0P 2026-05-27 V/OI=10.8x ask=$0.42 notional=$1,059,282 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.26']
+  10:02:26    NDX $29400.0P 2026-05-27 V/OI=13.3x ask=$4.30 notional=$340,000 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.09']
+  10:04:06    SPX $7290.0P 2026-06-01 V/OI=33.0x ask=$3.50 notional=$2,044,420 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'OTM+3.1%', '5DTE', 'Δ0.04']
+  10:06:22    SPX $7555.0C 2026-05-27 V/OI=10.4x ask=$3.50 notional=$3,993,300 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.22']
+  10:06:53    QQQ $732.0C 2026-05-27 V/OI=10.5x ask=$1.47 notional=$7,263,354 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.38']
+  10:07:57    SPY $747.0P 2026-05-27 V/OI=11.1x ask=$0.32 notional=$1,606,208 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.15']
+  10:08:00   TSLA $432.5P 2026-05-27 V/OI=12.3x ask=$0.92 notional=$1,334,424 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.19']
+  10:08:33    SPX $7455.0P 2026-05-27 V/OI=10.1x ask=$1.10 notional=$916,335 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.14']
+  10:08:33    SPX $7465.0P 2026-05-27 V/OI=11.8x ask=$1.50 notional=$1,645,500 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.16']
+  10:09:08   NVDA $210.0P 2026-05-27 V/OI=10.4x ask=$0.90 notional=$5,959,350 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.38']
+  10:10:14    QQQ $735.0C 2026-05-27 V/OI=10.3x ask=$0.53 notional=$2,402,331 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.18']
+  10:10:46    SPX $7490.0P 2026-05-27 V/OI=11.4x ask=$4.30 notional=$6,654,250 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.28']
+  10:11:48    QQQ $734.0C 2026-05-27 V/OI=10.7x ask=$0.74 notional=$2,390,625 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.24']
+  10:13:29    QQQ $722.0P 2026-05-27 V/OI=10.6x ask=$0.55 notional=$1,027,180 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.16']
+  10:14:08   AMZN $267.5P 2026-05-27 V/OI=19.2x ask=$0.48 notional=$278,880 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.25']
+  10:14:41    SPY $753.0C 2026-05-27 V/OI=12.1x ask=$0.41 notional=$4,137,160 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.21']
+  10:15:14    SPX $7445.0P 2026-05-27 V/OI=10.1x ask=$0.80 notional=$975,898 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.12']
+  10:17:53    QQQ $718.0P 2026-06-02 V/OI=20.0x ask=$3.25 notional=$918,450 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '6DTE', 'Δ0.27']
+
+=== SAMPLE 5+/6 FIRES (first 10, post-dedup) ===
+  09:30:46   QQQ $718.0P 2026-06-02 V/OI=19.5x ask=$2.82 | 5/6 | ['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '6DTE', 'Δ0.23']
+  09:37:41  TSLA $437.5P 2026-05-27 V/OI=17.6x ask=$2.35 | 5/6 | ['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.34']
+  09:38:47   TSM $470.0C 2026-07-02 V/OI=30.2x ask=$10.80 | 5/6 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'OTM+10.5%', 'Δ0.27']
+  09:41:23   SPX $7480.0P 2026-05-27 V/OI=10.1x ask=$3.80 | 6/6 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE', 'Δ0.22']
+  09:42:28   QQQ $718.0P 2026-06-02 V/OI=19.6x ask=$3.55 | 5/6 | ['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '6DTE', 'Δ0.28']
+  09:42:59   SPX $7480.0P 2026-05-27 V/OI=11.2x ask=$4.20 | 5/6 | ['V/OI≥10x', 'OPEN(vol>oi)', 'cheap≤$5', '0DTE', 'Δ0.22']
+  09:43:32   LLY $1130.0C 2026-05-29 V/OI=12.6x ask=$2.20 | 6/6 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'OTM+4.8%', '2DTE', 'Δ0.11']
+  09:45:07   BSX $46.0P 2026-06-26 V/OI=7352.0x ask=$0.60 | 5/6 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'OTM+11.3%', 'Δ0.01']
+  09:47:48   NDX $29350.0P 2026-05-27 V/OI=30.8x ask=$7.00 | 5/6 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', '0DTE', 'Δ0.08']
+  09:47:49  MSFT $410.0C 2026-05-27 V/OI=11.1x ask=$4.40 | 5/6 | ['V/OI≥10x', 'OPEN(vol>oi)', 'ASK-side', 'cheap≤$5', '0DTE']

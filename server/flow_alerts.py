@@ -319,8 +319,10 @@ def _compute_conviction(alert: dict[str, Any], gex_info: dict[str, Any] | None =
     return "LOW"
 
 
-def _classify_insider_signature(alert: dict[str, Any]) -> tuple[int, list[str]]:
-    """6-criteria insider-pattern scorer (2026-05-27).
+def _classify_insider_signature(
+    alert: dict[str, Any], spot_for_moneyness: float | None = None,
+) -> tuple[int, list[str]]:
+    """6-criteria INFORMED FLOW scorer (renamed from INSIDER PATTERN 2026-05-27 PM).
 
     Built from the pattern documented across our top catches:
       MU 3/31 whale ($111M → $1.5B intrinsic over 6 weeks)
@@ -328,15 +330,27 @@ def _classify_insider_signature(alert: dict[str, Any]) -> tuple[int, list[str]]:
       META 5/27 0DTE 615C/617.5C/620C ladder (paid-subs announcement)
 
     Returns (score 0..6, list of matched-criteria labels).
-    Score >= 5 → flag as INSIDER PATTERN (force-through Telegram + UI pin).
+    Score >= 5 → flag as is_insider=1 (force-through Telegram + UI pin).
+    Note: the underlying tag is INFORMED FLOW; the `is_insider` DB column
+    name is retained for backward compat — see telegram.py for the new
+    user-facing label.
 
     Criteria (each = 1 point):
-      1. V/OI >= 10x          — extreme opening accumulation
-      2. vol > oi             — clear OPEN, not roll/close
-      3. ASK side             — buyer-initiated (post-P0 side fix this is reliable)
-      4. Cheap premium ≤ $5.00 — lottery zone, high asymmetric payoff
-      5. Short-dated ≤ 7 DTE  — time-sensitive catalyst priced in
-      6. OTM |delta| ≤ 0.40   — leverage zone, insider sweet spot
+      1. V/OI ≥ 10x        — abnormal new positioning (paired with #2)
+      2. vol > oi          — clearly opening, not roll/close
+      3. ASK side          — buyer-initiated (post-P0 side fix reliable)
+      4. Cheap leverage    — 2/4 vote: (a) ask ≤ $5.00 OR (b) OTM ≥ 3%
+                             [moneyness ratio replaces absolute dollar
+                             threshold per Gemini/ChatGPT critique —
+                             $5 means 25% notional on $20 stock vs 0.5%
+                             on $1,000 stock]
+      5. Short-dated ≤ 7 DTE — time-sensitive catalyst priced in
+      6. OTM |delta| ≤ 0.40  — leverage zone, insider sweet spot
+
+    Hard sanity gates (apply BEFORE scoring):
+      - oi ≥ 100 OR vol ≥ 500  (denominator-vulnerability guard per ChatGPT/Gemini —
+        25-contract retail trade vs OI=2 producing V/OI=12.5x is meaningless)
+      - notional ≥ $10,000  (filter retail micro-spam per Gemini)
     """
     import datetime as _dt
     matched: list[str] = []
@@ -348,7 +362,43 @@ def _classify_insider_signature(alert: dict[str, Any]) -> tuple[int, list[str]]:
     last = alert.get("last") or alert.get("last_price") or 0
     delta = alert.get("delta", 0) or 0
     exp = alert.get("expiration") or ""
+    strike = alert.get("strike", 0) or 0
+    spot = spot_for_moneyness if spot_for_moneyness else (alert.get("spot", 0) or 0)
+    notional = alert.get("notional", 0) or 0
 
+    # ── Hard sanity gates (return 0 score, classifier cannot fire) ──
+    if oi < 100 and vol < 500:
+        # Denominator vulnerability: insufficient liquidity for V/OI ratio
+        # to be meaningful. 12.5x on OI=2 is noise. Score=0, won't fire.
+        return 0, []
+    if notional < 10_000:
+        # Retail micro-flow: even 6/6 score is meaningless at $200 trade size.
+        # Insiders deploy real capital; this gate cuts the spam without
+        # touching legitimate informed flow.
+        return 0, []
+
+    # Hard gate: V/OI >= 10x is REQUIRED (not just a vote).
+    # Discovered during 2026-05-27 PM backtest: SPX/SPY 0DTE liquidity at
+    # V/OI 2-3x was firing 5/6 because OPEN+ASK+cheap+0DTE+OTM = 5 even
+    # without abnormal volume. That's exactly the criteria-collapse problem
+    # ChatGPT flagged (6 criteria → ~3 latent dimensions). V/OI≥10x is the
+    # abnormality signal; without it, we're flagging normal opening flow
+    # with leverage, not informed accumulation.
+    if vol_oi < 10:
+        return 0, []
+
+    # Hard gate: expired contracts (DTE < 0) — should never fire INFORMED
+    # FLOW. SPY $749P 2026-05-26 was firing today (5/27) at V/OI 495.9x on
+    # ask $0.03 — stale-OI artifact from yesterday's expiration.
+    try:
+        if exp:
+            exp_date = _dt.date.fromisoformat(exp)
+            if (exp_date - _dt.date.today()).days < 0:
+                return 0, []
+    except (ValueError, TypeError):
+        pass
+
+    # ── 6-criteria scorer ──
     if vol_oi >= 10:
         matched.append("V/OI≥10x")
     if vol > 0 and oi > 0 and vol > oi:
@@ -356,10 +406,24 @@ def _classify_insider_signature(alert: dict[str, Any]) -> tuple[int, list[str]]:
     if side == "ASK":
         matched.append("ASK-side")
 
-    # Cheap premium — prefer ask, fall back to last
+    # Cheap-leverage criterion (replaces ask ≤ $5 absolute threshold).
+    # Either path satisfies: (a) very cheap absolute premium, OR
+    # (b) meaningfully OTM by moneyness ratio. Gemini called the absolute
+    # threshold "mathematically illiterate" — $5 on a $20 stock vs $1000 stock
+    # are completely different instruments.
     premium = ask if ask > 0 else last
-    if 0 < premium <= 5.00:
-        matched.append("cheap≤$5")
+    moneyness_otm = 0.0
+    if spot > 0 and strike > 0:
+        otype = (alert.get("option_type") or "").lower()
+        if otype == "call":
+            moneyness_otm = (strike - spot) / spot
+        else:
+            moneyness_otm = (spot - strike) / spot
+    if (0 < premium <= 5.00) or moneyness_otm >= 0.03:
+        if moneyness_otm >= 0.03:
+            matched.append(f"OTM+{moneyness_otm*100:.1f}%")
+        else:
+            matched.append("cheap≤$5")
 
     # DTE from expiration string YYYY-MM-DD
     try:
@@ -372,28 +436,109 @@ def _classify_insider_signature(alert: dict[str, Any]) -> tuple[int, list[str]]:
         pass
 
     if 0 < abs(delta) <= 0.40:
-        matched.append(f"OTM(Δ{abs(delta):.2f})")
+        matched.append(f"Δ{abs(delta):.2f}")
+
+    # Scheduled-catalyst demote (Batch 3a, 2026-05-27 PM, ChatGPT/Perplexity).
+    # 3/4 LLMs flagged this as a top precision booster. Reasoning: retail
+    # traders pre-position into KNOWN earnings/FDA/announcement dates and
+    # the resulting flow mirrors the informed-trade signature exactly —
+    # cheap OTM short-dated calls/puts. Without this gate, the classifier
+    # cannot distinguish "insider front-running an unscheduled catalyst"
+    # from "retail YOLOing a known catalyst." The META 5/27 catch was on
+    # an UNSCHEDULED catalyst (no earnings in window) so this rule doesn't
+    # affect it; it cuts the event-day false-positive population.
+    #
+    # Implementation: demote score by 1 point when ticker has earnings
+    # within the contract's DTE window. 6/6 with catalyst stays at 5 (still
+    # fires); 5/6 with catalyst drops to 4 (no fire). Surgical effect.
+    try:
+        from .earnings_calendar import er_in_window_sync
+        if exp:
+            exp_date = _dt.date.fromisoformat(exp)
+            dte = (exp_date - _dt.date.today()).days
+            if 0 <= dte <= 14:
+                ticker = alert.get("ticker", "")
+                in_window, _days = er_in_window_sync(ticker, dte)
+                if in_window:
+                    # Demote one point and tag the alert for audit
+                    matched.append("[catalyst-demote]")
+                    return max(len(matched) - 2, 0), matched
+                    # -2 because we appended one tag — net effect is -1
+    except Exception:
+        pass
 
     return len(matched), matched
+
+
+# Per-contract dedup TTL (2026-05-27 PM, ChatGPT P0).
+# Without this, hot contracts re-fire INFORMED FLOW on every snapshot tick —
+# the META 620C 0DTE today fired 312 times, all the same insider position.
+# Key on (ticker, strike, expiration, option_type, sentiment); 30-min TTL.
+_INFORMED_FLOW_DEDUP: dict[tuple[str, float, str, str, str], float] = {}
+INFORMED_FLOW_DEDUP_TTL_SEC = 30 * 60  # 30 min
+
+
+def _is_informed_flow_duplicate(alert: dict[str, Any]) -> bool:
+    """Check if this alert is a duplicate of one fired recently for the same
+    contract. Returns True if dedup'd (drop), False if fresh (fire).
+    """
+    key = (
+        alert.get("ticker", ""),
+        alert.get("strike", 0),
+        alert.get("expiration", ""),
+        (alert.get("option_type") or "").lower(),
+        (alert.get("sentiment") or "").upper(),
+    )
+    now = time.time()
+    last_fire = _INFORMED_FLOW_DEDUP.get(key, 0.0)
+    if now - last_fire < INFORMED_FLOW_DEDUP_TTL_SEC:
+        return True
+    _INFORMED_FLOW_DEDUP[key] = now
+    # GC: purge entries older than 2× TTL
+    cutoff = now - 2 * INFORMED_FLOW_DEDUP_TTL_SEC
+    stale = [k for k, ts in _INFORMED_FLOW_DEDUP.items() if ts < cutoff]
+    for k in stale:
+        _INFORMED_FLOW_DEDUP.pop(k, None)
+    return False
 
 
 def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) -> None:
     conviction = _compute_conviction(alert, gex_info)
     alert["conviction"] = conviction
 
-    # Insider-pattern score (0..6). >= 5 → INSIDER tag for force-Telegram + UI.
+    # INFORMED FLOW score (0..6). >= 5 → is_insider=1 for force-Telegram + UI.
+    # (Renamed from "INSIDER PATTERN" 2026-05-27 PM per ChatGPT validation —
+    # the actual signal is "informed-looking flow ahead of catalysts" rather
+    # than provably illegal insider trading. is_insider column name kept for
+    # backward DB compat; user-facing label is now "INFORMED FLOW".)
     insider_score, insider_reasons = _classify_insider_signature(alert)
     alert["insider_score"] = insider_score
     alert["insider_reasons"] = insider_reasons
-    alert["is_insider"] = 1 if insider_score >= 5 else 0
-    # INSIDER trades override conviction to HIGH so trade_tracker auto-tracks
-    # for exit signals (currently filtered to HIGH/SWEEP only — see line ~850
-    # auto-track gate). Without this, INSIDER alerts at LOW/MEDIUM conviction
-    # would fire Telegram but not show up in tracked_trades for the runner.
-    if alert["is_insider"] and conviction != "HIGH":
-        alert["_pre_insider_conviction"] = conviction
-        conviction = "HIGH"
-        alert["conviction"] = "HIGH"
+
+    # Hot-contract dedup: even when 5+/6, suppress is_insider for repeat
+    # fires on the same (ticker, strike, exp, type, sentiment) within 30
+    # min. The META 620C 0DTE today fired 312 times — same position, same
+    # contract, getting re-tagged on every snapshot cycle. Dedup gate
+    # collapses that to one fire per 30-min window. The underlying alert
+    # still persists to flow_alerts table; only the is_insider tag (and
+    # therefore Telegram + UI pin) is suppressed for duplicates.
+    if insider_score >= 5 and not _is_informed_flow_duplicate(alert):
+        alert["is_insider"] = 1
+        # INFORMED FLOW trades override conviction to HIGH so trade_tracker
+        # auto-tracks for exit signals (currently filtered to HIGH/SWEEP
+        # only — see line ~850 auto-track gate). Without this, INFORMED
+        # FLOW alerts at LOW/MEDIUM conviction would fire Telegram but
+        # not show up in tracked_trades for the runner.
+        if conviction != "HIGH":
+            alert["_pre_insider_conviction"] = conviction
+            conviction = "HIGH"
+            alert["conviction"] = "HIGH"
+    else:
+        alert["is_insider"] = 0
+        if insider_score >= 5:
+            # Was qualifying but dedup'd. Mark so backtest / audit tooling
+            # can distinguish "score too low" from "dedup'd repeat fire."
+            alert["_informed_flow_dedup"] = 1
     with _conn() as c:
         c.execute(
             """INSERT INTO flow_alerts
@@ -991,6 +1136,21 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                             priority=bool(a.get("is_insider")),
                             force=bool(a.get("is_insider")),
                         )
+                        # Cluster check on the OFF/legacy path too
+                        if a.get("is_insider"):
+                            try:
+                                from .informed_cluster import (
+                                    record_and_check, format_cluster_telegram,
+                                )
+                                cluster = record_and_check(a)
+                                if cluster:
+                                    await send(
+                                        format_cluster_telegram(cluster),
+                                        ticker=cluster["ticker"],
+                                        priority=True, force=True,
+                                    )
+                            except Exception as ce:
+                                print(f"[INFORMED_CLUSTER] error: {ce!r}", flush=True)
                 else:
                     # New 4-rule filter (LIGHT or FULL)
                     f = get_filter()
@@ -1023,6 +1183,29 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                                     force=bool(payload.get("is_insider")),
                                 )
                                 fired_singles += 1
+                                # INFORMED CLUSTER detector (Batch 2, 2026-05-27).
+                                # When 2+ strikes on same (ticker, exp, direction)
+                                # have fired INFORMED FLOW within 30 min, emit a
+                                # CLUSTER summary alert at higher priority. This
+                                # is the unanimous 4/4 LLM recommendation — pattern
+                                # matches Panuwat (3 strikes 70-84% of daily vol)
+                                # + META 5/27 ladder (615/617.5/620C 0DTE).
+                                if payload.get("is_insider"):
+                                    try:
+                                        from .informed_cluster import (
+                                            record_and_check,
+                                            format_cluster_telegram,
+                                        )
+                                        cluster = record_and_check(payload)
+                                        if cluster:
+                                            await send(
+                                                format_cluster_telegram(cluster),
+                                                ticker=cluster["ticker"],
+                                                priority=True,
+                                                force=True,
+                                            )
+                                    except Exception as ce:
+                                        print(f"[INFORMED_CLUSTER] error: {ce!r}", flush=True)
                                 # Performance database log (2026-05-20)
                                 try:
                                     from .alert_outcomes import log_alert
@@ -1099,6 +1282,21 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                             priority=bool(payload.get("is_insider")),
                             force=bool(payload.get("is_insider")),
                         )
+                        # Cluster check on flush path
+                        if payload.get("is_insider"):
+                            try:
+                                from .informed_cluster import (
+                                    record_and_check, format_cluster_telegram,
+                                )
+                                cluster = record_and_check(payload)
+                                if cluster:
+                                    await send(
+                                        format_cluster_telegram(cluster),
+                                        ticker=cluster["ticker"],
+                                        priority=True, force=True,
+                                    )
+                            except Exception as ce:
+                                print(f"[INFORMED_CLUSTER] error: {ce!r}", flush=True)
                     elif decision == "FIRE_SUMMARY":
                         if payload.get("kind") == "CLUSTER":
                             text = format_cluster_summary(payload)

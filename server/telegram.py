@@ -188,12 +188,13 @@ def format_flow_alert(alert: dict[str, Any]) -> str:
     conv = alert.get("conviction", "")
     conv_badge = f" [{conv}]" if conv else ""
 
-    # 🚨 INSIDER PATTERN banner (2026-05-27 P0). Score >= 5 means we matched
-    # 5+ of the 6 criteria documented in _classify_insider_signature: V/OI
-    # ≥10x, opening accumulation, ASK side, cheap premium, short-dated, OTM.
-    # That's the textbook MU/INTC/META insider signature — these are the
-    # alerts that can 100x in hours. Render a huge banner at the top so
-    # you can't miss it.
+    # ⚡ INFORMED FLOW banner (renamed from INSIDER PATTERN 2026-05-27 PM).
+    # Score >= 5 means we matched 5+ of the 6 criteria documented in
+    # _classify_insider_signature. The actual signal is "informed-looking
+    # flow ahead of catalysts" — not provably illegal insider trading.
+    # Per ChatGPT cross-LLM validation: the prior INSIDER PATTERN label
+    # was "materially overconfident" given our 3-15% expected precision
+    # range. Softer-but-still-prominent visual + accurate naming.
     insider_banner = ""
     if alert.get("is_insider"):
         reasons = alert.get("insider_reasons") or []
@@ -202,7 +203,7 @@ def format_flow_alert(alert: dict[str, Any]) -> str:
         score = alert.get("insider_score", len(reasons))
         crit_str = " | ".join(reasons)
         insider_banner = (
-            f"🚨🚨🚨 <b>INSIDER PATTERN</b> ({score}/6) 🚨🚨🚨\n"
+            f"⚡⚡⚡ <b>INFORMED FLOW</b> ({score}/6) ⚡⚡⚡\n"
             f"<i>{crit_str}</i>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
         )

@@ -2,15 +2,20 @@ import React, { useEffect, useState, useRef } from 'react';
 import { api } from '../api.js';
 
 /**
- * Pinned strip of INSIDER-PATTERN flow alerts (is_insider=1).
+ * Pinned strip of INFORMED FLOW alerts (is_insider=1).
+ *
+ * Renamed from "INSIDER PATTERN" 2026-05-27 PM after cross-LLM validation
+ * (Perplexity/Gemini/Grok/ChatGPT). The actual signal is "informed-looking
+ * flow ahead of catalysts" — not provably illegal insider trading.
  *
  * Score >= 5/6 on the 6-criteria signature (server/flow_alerts.py
- * `_classify_insider_signature`): V/OI ≥ 10x | opening | ASK | cheap ≤ $5
- * | short-dated ≤ 7 DTE | OTM |delta| ≤ 0.40.
+ * `_classify_insider_signature`): V/OI ≥ 10x | opening | ASK | cheap-or-OTM
+ * | short-dated ≤ 7 DTE | OTM |delta| ≤ 0.40. Now gated by oi≥100/vol≥500
+ * sanity floors + $10K min notional + 30-min per-contract dedup.
  *
  * Pattern matches MU 3/31 whale, INTC 5/8, META 5/27 — the trades that
  * can 100× in hours. Pinned at the top of BigFlow tab so they don't get
- * lost in the daily flow firehose. 2026-05-27.
+ * lost in the daily flow firehose.
  */
 const REFRESH_MS = 10_000;
 const SHOW_HOURS = 6; // only show alerts from the last 6 hours
@@ -51,20 +56,20 @@ export default function InsiderStrip({ onClickTicker }) {
   return (
     <div style={{
       marginBottom: 14,
-      border: '2px solid #ff3e3e',
+      border: '2px solid #f4c430',
       borderRadius: 6,
-      background: 'rgba(255,62,62,0.08)',
+      background: 'rgba(244,196,48,0.08)',
       padding: '10px 12px',
-      boxShadow: '0 0 14px rgba(255,62,62,0.25)',
+      boxShadow: '0 0 14px rgba(244,196,48,0.25)',
     }}>
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8,
         cursor: 'pointer',
       }} onClick={() => setCollapsed((c) => !c)}>
         <div style={{
-          fontSize: 13, fontWeight: 800, color: '#ff3e3e', letterSpacing: 0.8,
+          fontSize: 13, fontWeight: 800, color: '#f4c430', letterSpacing: 0.8,
         }}>
-          🚨 INSIDER PATTERN — {alerts.length} active
+          ⚡ INFORMED FLOW — {alerts.length} active
         </div>
         <div style={{ fontSize: 9, color: 'var(--text-3)', fontFamily: 'var(--mono)' }}>
           score ≥ 5/6 · last {SHOW_HOURS}h
@@ -93,7 +98,7 @@ export default function InsiderStrip({ onClickTicker }) {
               <div key={a.id || `${a.ticker}-${a.ts}-${i}`}
                 onClick={() => onClickTicker && onClickTicker(a.ticker)}
                 style={{
-                  border: '1px solid rgba(255,62,62,0.4)',
+                  border: '1px solid rgba(244,196,48,0.4)',
                   borderRadius: 4,
                   padding: '7px 9px',
                   background: 'var(--bg-1)',
@@ -124,8 +129,8 @@ export default function InsiderStrip({ onClickTicker }) {
                 }}>
                   {reasons.map((r) => (
                     <span key={r} style={{
-                      background: 'rgba(255,62,62,0.15)',
-                      border: '1px solid rgba(255,62,62,0.3)',
+                      background: 'rgba(244,196,48,0.15)',
+                      border: '1px solid rgba(244,196,48,0.3)',
                       padding: '1px 5px', borderRadius: 2,
                     }}>{r}</span>
                   ))}
