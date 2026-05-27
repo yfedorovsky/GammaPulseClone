@@ -565,16 +565,57 @@ async def alerts(since: int = 0, limit: int = 100, ticker: str = ""):
     return {"alerts": rows, "count": len(rows)}
 
 
+@app.get("/api/alerts/cluster")
+async def alerts_cluster(since: int = 0, limit: int = 50):
+    """INFORMED CLUSTER fires — N+ strikes same ticker/exp/direction in 30min.
+
+    Renders the cluster detector's in-memory rolling roster (server/
+    informed_cluster.py). Auto-refreshes every 10s on the UI. 2026-05-27.
+    """
+    def _query() -> list[dict]:
+        from .informed_cluster import _recent_fires, CLUSTER_WINDOW_SEC
+        import time as _time
+        now = _time.time()
+        cutoff = max(since, int(now - CLUSTER_WINDOW_SEC))
+        results: list[dict] = []
+        for (ticker, exp, direction), fires in _recent_fires.items():
+            recent = [f for f in fires if f["ts"] >= cutoff]
+            if len(recent) < 2:
+                continue
+            strikes_sorted = sorted({f["strike"] for f in recent})
+            if len(strikes_sorted) < 2:
+                continue
+            first_ts = min(f["ts"] for f in recent)
+            last_ts = max(f["ts"] for f in recent)
+            results.append({
+                "ticker": ticker,
+                "expiration": exp,
+                "direction": direction,
+                "strikes": strikes_sorted,
+                "n_strikes": len(strikes_sorted),
+                "first_ts": int(first_ts),
+                "last_ts": int(last_ts),
+                "total_notional": sum(f["notional"] for f in recent),
+                "max_score": max(f["score"] for f in recent),
+                "avg_vol_oi": sum(f["vol_oi"] for f in recent) / max(len(recent), 1),
+                "duration_min": (last_ts - first_ts) / 60.0,
+            })
+        results.sort(key=lambda c: -c["total_notional"])
+        return results[:limit]
+    rows = await asyncio.to_thread(_query)
+    return {"clusters": rows, "count": len(rows)}
+
+
 @app.get("/api/alerts/insider")
 async def alerts_insider(since: int = 0, limit: int = 50, ticker: str = ""):
-    """INSIDER-pattern alerts only (is_insider=1).
+    """INFORMED FLOW alerts (renamed from INSIDER PATTERN 2026-05-27 PM).
 
     Score 5+/6 on the 6-criteria signature:
-      V/OI ≥ 10x | opening (vol > oi) | ASK side | cheap ≤ $5 |
+      V/OI ≥ 10x | opening (vol > oi) | ASK side | cheap-or-OTM |
       short-dated ≤ 7 DTE | OTM |delta| ≤ 0.40
 
-    Pattern matches MU 3/31 whale, INTC 5/8, META 5/27 — the trades that
-    can 100× in hours. Pinned at top of BigFlow tab. 2026-05-27.
+    Hard gates: oi≥100/vol≥500 + notional≥$10K + V/OI≥10x + DTE≥0.
+    Pattern matches MU 3/31 whale, INTC 5/8, META 5/27.
     """
     import sqlite3
     def _query() -> list[dict]:

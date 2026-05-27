@@ -1107,6 +1107,21 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                             priority=bool(a.get("is_insider")),
                             force=bool(a.get("is_insider")),
                         )
+                        # Cluster check on the OFF/legacy path too
+                        if a.get("is_insider"):
+                            try:
+                                from .informed_cluster import (
+                                    record_and_check, format_cluster_telegram,
+                                )
+                                cluster = record_and_check(a)
+                                if cluster:
+                                    await send(
+                                        format_cluster_telegram(cluster),
+                                        ticker=cluster["ticker"],
+                                        priority=True, force=True,
+                                    )
+                            except Exception as ce:
+                                print(f"[INFORMED_CLUSTER] error: {ce!r}", flush=True)
                 else:
                     # New 4-rule filter (LIGHT or FULL)
                     f = get_filter()
@@ -1139,6 +1154,29 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                                     force=bool(payload.get("is_insider")),
                                 )
                                 fired_singles += 1
+                                # INFORMED CLUSTER detector (Batch 2, 2026-05-27).
+                                # When 2+ strikes on same (ticker, exp, direction)
+                                # have fired INFORMED FLOW within 30 min, emit a
+                                # CLUSTER summary alert at higher priority. This
+                                # is the unanimous 4/4 LLM recommendation — pattern
+                                # matches Panuwat (3 strikes 70-84% of daily vol)
+                                # + META 5/27 ladder (615/617.5/620C 0DTE).
+                                if payload.get("is_insider"):
+                                    try:
+                                        from .informed_cluster import (
+                                            record_and_check,
+                                            format_cluster_telegram,
+                                        )
+                                        cluster = record_and_check(payload)
+                                        if cluster:
+                                            await send(
+                                                format_cluster_telegram(cluster),
+                                                ticker=cluster["ticker"],
+                                                priority=True,
+                                                force=True,
+                                            )
+                                    except Exception as ce:
+                                        print(f"[INFORMED_CLUSTER] error: {ce!r}", flush=True)
                                 # Performance database log (2026-05-20)
                                 try:
                                     from .alert_outcomes import log_alert
@@ -1215,6 +1253,21 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                             priority=bool(payload.get("is_insider")),
                             force=bool(payload.get("is_insider")),
                         )
+                        # Cluster check on flush path
+                        if payload.get("is_insider"):
+                            try:
+                                from .informed_cluster import (
+                                    record_and_check, format_cluster_telegram,
+                                )
+                                cluster = record_and_check(payload)
+                                if cluster:
+                                    await send(
+                                        format_cluster_telegram(cluster),
+                                        ticker=cluster["ticker"],
+                                        priority=True, force=True,
+                                    )
+                            except Exception as ce:
+                                print(f"[INFORMED_CLUSTER] error: {ce!r}", flush=True)
                     elif decision == "FIRE_SUMMARY":
                         if payload.get("kind") == "CLUSTER":
                             text = format_cluster_summary(payload)
