@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { api } from '../api.js';
 import HitRateStrip from '../components/HitRateStrip.jsx';
+import InsiderStrip from '../components/InsiderStrip.jsx';
 
 /**
  * BIG FLOW tab — UW-style per-contract DAILY option flow aggregates.
@@ -182,7 +183,14 @@ export default function BigFlowTab({ onClickTicker }) {
   const [tailOnly, setTailOnly] = useState(false);
   const [hideExpired, setHideExpired] = useState(true);  // default on — show only tradeable contracts
 
+  // Single-flight guard — same fix as SweepsTab. Without this, slow /api/flow/daily
+  // queries (limit=10000 + WAL contention from live worker) cause the auto-refresh
+  // interval to pile up requests and the tab gets stuck on "Loading..." forever.
+  const inFlightRef = useRef(false);
+
   const load = useCallback(async () => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     try {
       let sinceDate = '';
       if (timeframe.days === 0) {
@@ -220,6 +228,7 @@ export default function BigFlowTab({ onClickTicker }) {
       setError(e.message || 'Failed to load flow');
     } finally {
       setLoading(false);
+      inFlightRef.current = false;
     }
   }, [timeframe, minNotional, minOI, sideFilter]);
 
@@ -392,6 +401,11 @@ export default function BigFlowTab({ onClickTicker }) {
 
   return (
     <div style={{ padding: '12px 14px', fontFamily: 'var(--sans)' }}>
+      {/* INSIDER PATTERN strip (2026-05-27) — pinned alerts that match
+          the 6-criteria signature. MU 3/31, INTC 5/8, META 5/27 class
+          of trades. Shown when 1+ qualifying alert exists in last 6h. */}
+      <InsiderStrip onClickTicker={onClickTicker} />
+
       {/* Header */}
       <div style={{
         display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10,
