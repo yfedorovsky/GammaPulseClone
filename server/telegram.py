@@ -187,6 +187,25 @@ def format_flow_alert(alert: dict[str, Any]) -> str:
     emoji = "🟢" if sentiment == "BULLISH" else "🔴" if sentiment == "BEARISH" else "🟡"
     conv = alert.get("conviction", "")
     conv_badge = f" [{conv}]" if conv else ""
+
+    # 🚨 INSIDER PATTERN banner (2026-05-27 P0). Score >= 5 means we matched
+    # 5+ of the 6 criteria documented in _classify_insider_signature: V/OI
+    # ≥10x, opening accumulation, ASK side, cheap premium, short-dated, OTM.
+    # That's the textbook MU/INTC/META insider signature — these are the
+    # alerts that can 100x in hours. Render a huge banner at the top so
+    # you can't miss it.
+    insider_banner = ""
+    if alert.get("is_insider"):
+        reasons = alert.get("insider_reasons") or []
+        if isinstance(reasons, str):
+            reasons = [r for r in reasons.split(",") if r]
+        score = alert.get("insider_score", len(reasons))
+        crit_str = " | ".join(reasons)
+        insider_banner = (
+            f"🚨🚨🚨 <b>INSIDER PATTERN</b> ({score}/6) 🚨🚨🚨\n"
+            f"<i>{crit_str}</i>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        )
     otype = (alert.get("option_type") or "").upper()
     side = alert.get("side", "?")
 
@@ -278,6 +297,7 @@ def format_flow_alert(alert: dict[str, Any]) -> str:
         pass
 
     return (
+        f"{insider_banner}"
         f"{emoji} <b>FLOW{conv_badge}</b>: {alert['ticker']}\n"
         f"<b>{action}</b>\n"
         f"${alert['strike']} {otype} {alert.get('expiration', '')}\n"

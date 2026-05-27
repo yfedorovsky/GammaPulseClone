@@ -585,7 +585,15 @@ def _check_reclaim_entry(ticker: str, state: dict, today: str) -> dict | None:
         return None
 
     pct_change = (spot - prevclose) / prevclose * 100
-    avg_vol = max(state.get("_avg_volume") or 1, 1)
+    # Guard against missing _avg_volume — `or 1` fallback was producing
+    # bogus rvol like 19,535,143x for APLD when avg wasn't populated.
+    # When we don't have real avg-volume data, the rvol gate is
+    # meaningless — skip the ticker instead of firing a phantom alert.
+    # 2026-05-27 bug fix.
+    avg_vol_raw = state.get("_avg_volume") or 0
+    if avg_vol_raw < 10_000:  # below typical equities baseline → treat as missing
+        return None
+    avg_vol = avg_vol_raw
     today_vol = state.get("_today_volume") or 0
     rvol = today_vol / avg_vol
 
@@ -1157,9 +1165,16 @@ def _finalize_day(runner: dict, state: dict, day_prefix: str) -> None:
     runner[f"{day_prefix}_low"] = state.get("_today_low") or runner.get(f"{day_prefix}_low")
     runner[f"{day_prefix}_close"] = state.get("actual_spot") or state.get("_spot") or runner.get(f"{day_prefix}_close")
     runner[f"{day_prefix}_volume"] = state.get("_today_volume") or runner.get(f"{day_prefix}_volume")
-    avg = state.get("_avg_volume") or 1
+    # rvol only meaningful when we have real avg-volume data. Same guard as
+    # the runner-detection / scan_runners sites — `or 1` fallback was
+    # producing 19M+ rvol stored to DB. 2026-05-27 fix.
+    avg = state.get("_avg_volume") or 0
     vol = runner.get(f"{day_prefix}_volume") or 0
-    runner[f"{day_prefix}_rvol"] = round(vol / max(avg, 1), 2)
+    if avg >= 10_000:
+        runner[f"{day_prefix}_rvol"] = round(vol / avg, 2)
+    else:
+        # Preserve prior value if we had one; otherwise None signals "unknown"
+        runner[f"{day_prefix}_rvol"] = runner.get(f"{day_prefix}_rvol")
 
 
 def _persist(runner: dict) -> int | None:
@@ -1344,7 +1359,13 @@ async def update_runners() -> None:
             continue
 
         pct_change = (spot - prevclose) / prevclose * 100
-        avg_vol = max(state.get("_avg_volume") or 1, 1)
+        # Guard against missing _avg_volume — see fix at line ~588.
+        # 2026-05-27 bug: APLD fired rvol=19,535,143x when _avg_volume
+        # was None and the `or 1` fallback divided by 1.
+        avg_vol_raw = state.get("_avg_volume") or 0
+        if avg_vol_raw < 10_000:
+            continue
+        avg_vol = avg_vol_raw
         today_vol = state.get("_today_volume") or 0
         rvol = today_vol / avg_vol
         rts = swing.get("rts_score") or 0
@@ -1476,7 +1497,11 @@ async def _finalize_day_transitions(snapshot: dict[str, dict]) -> None:
     for ticker, runner in list(_runners.items()):
         state_data = snapshot.get(ticker, {})
         cur = runner["state"]
-        avg_vol = max(state_data.get("_avg_volume") or 1, 1)
+        # Use None when avg-volume is missing — downstream rvol stores
+        # preserve prior value rather than store a divide-by-1 bogus.
+        # See fix at line ~588. 2026-05-27 fix.
+        _avg_raw = state_data.get("_avg_volume") or 0
+        avg_vol: float | None = _avg_raw if _avg_raw >= 10_000 else None
 
         if cur == "DAY1_BREAKOUT":
             # Day 1 is finalized. Now check Day 2 opening conditions.
@@ -1493,7 +1518,10 @@ async def _finalize_day_transitions(snapshot: dict[str, dict]) -> None:
             runner["d2_low"] = state_data.get("_today_low") or d2_open
             runner["d2_close"] = state_data.get("actual_spot") or state_data.get("_spot") or d2_open
             runner["d2_volume"] = state_data.get("_today_volume") or 0
-            runner["d2_rvol"] = round((runner["d2_volume"] or 0) / avg_vol, 2)
+            runner["d2_rvol"] = (
+                round((runner["d2_volume"] or 0) / avg_vol, 2)
+                if avg_vol else runner.get("d2_rvol")
+            )
             runner["d2_gap_pct"] = round(gap_pct, 2)
 
             # Gap-down = immediate fail
@@ -1555,7 +1583,10 @@ async def _finalize_day_transitions(snapshot: dict[str, dict]) -> None:
             runner["d3_low"] = state_data.get("_today_low") or d3_open
             runner["d3_close"] = state_data.get("actual_spot") or state_data.get("_spot") or d3_open
             runner["d3_volume"] = state_data.get("_today_volume") or 0
-            runner["d3_rvol"] = round((runner["d3_volume"] or 0) / avg_vol, 2)
+            runner["d3_rvol"] = (
+                round((runner["d3_volume"] or 0) / avg_vol, 2)
+                if avg_vol else runner.get("d3_rvol")
+            )
             runner["d3_gap_pct"] = round(
                 ((d3_open - d2_close) / d2_close * 100) if d2_close else 0, 2
             )

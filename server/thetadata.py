@@ -27,11 +27,22 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+
+# Tier-aware local stream budget (2026-05-27).
+# Theta tier limits are pre-stream-count, not per-call rate:
+#   - Standard $80/mo: documented 15K but server enforces lower in practice.
+#     Empirical 5/27 logs: MAX_STREAMS_REACHED at well below 1000 active subs
+#     suggests effective cap closer to ~500. Set via env to make it tweakable
+#     without code change.
+#   - Pro $160/mo: documented 50K, but again practical cap may be lower.
+# Override via THETA_MAX_STREAMS env var (default 500 for Standard).
+THETA_MAX_STREAMS = int(os.environ.get("THETA_MAX_STREAMS", "500"))
 
 import httpx
 import websockets
@@ -594,7 +605,11 @@ class ThetaStream:
         except Exception:
             pass  # fail-open on parse errors — let existing logic handle
 
-        if len(self._subscriptions) >= 14_500:  # stay under 15K hard cap
+        # Stay under tier-configured cap (THETA_MAX_STREAMS env var).
+        # 95% threshold gives a small buffer for resubscribe bursts on
+        # reconnect — keeps us off the server-side MAX_STREAMS_REACHED edge.
+        cap_threshold = int(THETA_MAX_STREAMS * 0.95)
+        if len(self._subscriptions) >= cap_threshold:
             # Rate-limit log: once per 60s regardless of how many specs fail.
             now = time.time()
             last = getattr(self, "_last_budget_log_ts", 0.0)
@@ -602,8 +617,8 @@ class ThetaStream:
                 self._last_budget_log_ts = now
                 print(
                     f"[THETA_STREAM] subscription budget hit "
-                    f"({len(self._subscriptions)}/15000) — rejecting new subs. "
-                    f"Last rejected: {spec.key}"
+                    f"({len(self._subscriptions)}/{THETA_MAX_STREAMS}) — "
+                    f"rejecting new subs. Last rejected: {spec.key}"
                 )
             return False
         self._subscriptions[spec.key] = spec
@@ -672,9 +687,14 @@ class ThetaStream:
                     self._reconnect_delay = 1.0  # reset on successful connect
                     print(f"[THETA_STREAM] connected, resubscribing {len(self._subscriptions)} contracts")
 
-                    # Resubscribe everything we had before the drop
+                    # Resubscribe everything we had before the drop. Throttled
+                    # to 50/sec (20ms gap) to avoid Theta's server-side burst
+                    # rate limit which surfaces as MAX_STREAMS_REACHED spam
+                    # when we flood thousands of subscribes in the same tick.
+                    # 2026-05-27 fix.
                     for spec in list(self._subscriptions.values()):
                         await self._send_subscribe(spec)
+                        await asyncio.sleep(0.02)
 
                     await self._read_loop(ws)
 
@@ -775,7 +795,24 @@ class ThetaStream:
             elif mtype == "REQ_RESPONSE":
                 resp = header.get("response")
                 if resp and resp != "SUBSCRIBED":
-                    print(f"[THETA_STREAM] req response: {resp} id={header.get('req_id')}")
+                    # Rate-limit the noisy responses — esp. MAX_STREAMS_REACHED
+                    # which can fire hundreds of times per reconnect when we
+                    # exceed the tier's concurrent-stream cap. Bucket by
+                    # response code; print once per 60s per code with a tally.
+                    self._req_resp_counts = getattr(self, "_req_resp_counts", {})
+                    self._req_resp_last_log = getattr(self, "_req_resp_last_log", {})
+                    self._req_resp_counts[resp] = self._req_resp_counts.get(resp, 0) + 1
+                    now = time.time()
+                    last = self._req_resp_last_log.get(resp, 0.0)
+                    if now - last >= 60.0:
+                        self._req_resp_last_log[resp] = now
+                        count = self._req_resp_counts[resp]
+                        self._req_resp_counts[resp] = 0  # reset window
+                        print(
+                            f"[THETA_STREAM] req response: {resp} "
+                            f"(×{count} in last 60s) "
+                            f"latest id={header.get('req_id')}"
+                        )
             else:
                 self._msg_count_other += 1
 

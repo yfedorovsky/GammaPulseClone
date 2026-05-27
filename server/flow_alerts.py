@@ -88,6 +88,12 @@ _SWEEP_MIGRATIONS = [
     # we can ask "did sweep-followed trades degrade in HARD regime?"
     # alongside SOE WR. Uses 60s cache (cached_macro_regime_tag).
     "ALTER TABLE flow_alerts ADD COLUMN macro_regime_tag TEXT DEFAULT 'NONE'",
+    # 2026-05-27: insider-pattern score (0-6). When >= 5 → INSIDER tag,
+    # force-through Telegram + UI pin. See _classify_insider_signature.
+    "ALTER TABLE flow_alerts ADD COLUMN insider_score INTEGER DEFAULT 0",
+    "ALTER TABLE flow_alerts ADD COLUMN is_insider INTEGER DEFAULT 0",
+    "ALTER TABLE flow_alerts ADD COLUMN insider_reasons TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_flow_insider ON flow_alerts(is_insider, ts) WHERE is_insider = 1",
 ]
 
 
@@ -313,17 +319,89 @@ def _compute_conviction(alert: dict[str, Any], gex_info: dict[str, Any] | None =
     return "LOW"
 
 
+def _classify_insider_signature(alert: dict[str, Any]) -> tuple[int, list[str]]:
+    """6-criteria insider-pattern scorer (2026-05-27).
+
+    Built from the pattern documented across our top catches:
+      MU 3/31 whale ($111M → $1.5B intrinsic over 6 weeks)
+      INTC 5/8 $120C ($5M+ ASK sweep ahead of AAPL deal news)
+      META 5/27 0DTE 615C/617.5C/620C ladder (paid-subs announcement)
+
+    Returns (score 0..6, list of matched-criteria labels).
+    Score >= 5 → flag as INSIDER PATTERN (force-through Telegram + UI pin).
+
+    Criteria (each = 1 point):
+      1. V/OI >= 10x          — extreme opening accumulation
+      2. vol > oi             — clear OPEN, not roll/close
+      3. ASK side             — buyer-initiated (post-P0 side fix this is reliable)
+      4. Cheap premium ≤ $5.00 — lottery zone, high asymmetric payoff
+      5. Short-dated ≤ 7 DTE  — time-sensitive catalyst priced in
+      6. OTM |delta| ≤ 0.40   — leverage zone, insider sweet spot
+    """
+    import datetime as _dt
+    matched: list[str] = []
+    vol = alert.get("volume", 0) or 0
+    oi = alert.get("oi", 0) or 0
+    vol_oi = alert.get("vol_oi", 0) or 0
+    side = (alert.get("side") or "").upper()
+    ask = alert.get("ask", 0) or 0
+    last = alert.get("last") or alert.get("last_price") or 0
+    delta = alert.get("delta", 0) or 0
+    exp = alert.get("expiration") or ""
+
+    if vol_oi >= 10:
+        matched.append("V/OI≥10x")
+    if vol > 0 and oi > 0 and vol > oi:
+        matched.append("OPEN(vol>oi)")
+    if side == "ASK":
+        matched.append("ASK-side")
+
+    # Cheap premium — prefer ask, fall back to last
+    premium = ask if ask > 0 else last
+    if 0 < premium <= 5.00:
+        matched.append("cheap≤$5")
+
+    # DTE from expiration string YYYY-MM-DD
+    try:
+        if exp:
+            exp_date = _dt.date.fromisoformat(exp)
+            dte = (exp_date - _dt.date.today()).days
+            if 0 <= dte <= 7:
+                matched.append(f"{dte}DTE")
+    except (ValueError, TypeError):
+        pass
+
+    if 0 < abs(delta) <= 0.40:
+        matched.append(f"OTM(Δ{abs(delta):.2f})")
+
+    return len(matched), matched
+
+
 def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) -> None:
     conviction = _compute_conviction(alert, gex_info)
     alert["conviction"] = conviction
+
+    # Insider-pattern score (0..6). >= 5 → INSIDER tag for force-Telegram + UI.
+    insider_score, insider_reasons = _classify_insider_signature(alert)
+    alert["insider_score"] = insider_score
+    alert["insider_reasons"] = insider_reasons
+    alert["is_insider"] = 1 if insider_score >= 5 else 0
+    # INSIDER trades override conviction to HIGH so trade_tracker auto-tracks
+    # for exit signals (currently filtered to HIGH/SWEEP only — see line ~850
+    # auto-track gate). Without this, INSIDER alerts at LOW/MEDIUM conviction
+    # would fire Telegram but not show up in tracked_trades for the runner.
+    if alert["is_insider"] and conviction != "HIGH":
+        alert["_pre_insider_conviction"] = conviction
+        conviction = "HIGH"
+        alert["conviction"] = "HIGH"
     with _conn() as c:
         c.execute(
             """INSERT INTO flow_alerts
             (ts, ticker, strike, expiration, option_type, volume, oi, vol_oi,
              last_price, bid, ask, side, sentiment, iv, delta, notional, spot,
              conviction, status, king, floor_level, ceiling_level, signal, regime,
-             macro_regime_tag)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             macro_regime_tag, insider_score, is_insider, insider_reasons)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 int(time.time()),
                 alert["ticker"],
@@ -350,6 +428,9 @@ def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) 
                 gex_info.get("signal") if gex_info else None,
                 gex_info.get("regime") if gex_info else None,
                 _safe_regime_tag(),
+                insider_score,
+                alert["is_insider"],
+                ",".join(insider_reasons) if insider_reasons else None,
             ),
         )
 
@@ -455,6 +536,18 @@ def _detect_side(
         # shock at mid almost never prints randomly — it's the snapshot
         # catching a moment between buy waves.
         vol_oi_now = vol / max(oi, 1) if oi > 0 else 999.0
+
+        # P0 fix Bug #12 part 2 (2026-05-27, META 0DTE 620C):
+        # opening accumulation (vol > oi) at V/OI >= 10x is virtually
+        # always buyer-initiated regardless of where `last` sits in the
+        # spread. Override the last-vs-mid coin flip with the opening
+        # signal — closing rolls don't need 10x volume on stale OI.
+        # Without this, META 620C 0DTE 14:11 with last=$1.69 in
+        # [$1.61, $1.81] (just below mid $1.71) returned BID/BEARISH on
+        # what was the textbook insider call buy (151× peak the same hour).
+        if vol_oi_now >= 10.0 and vol > oi:
+            return "ASK"
+
         if vol_oi_now >= 5.0 and last > 0:
             # Use micro-distance from mid as direction proxy
             if last >= mid:
@@ -500,6 +593,42 @@ def _detect_side(
         # interprets call+ASK = bullish, put+ASK = bearish — both correct
         # priors for V/OI shock signature.
         return "ASK"
+
+    # OPENING-ACCUMULATION ASK bias (2026-05-27 P0 fix — META 0DTE 620C bug).
+    #
+    # 3rd confirmation today of the mid-of-spread coin-flip: META 620C 0DTE
+    # at 14:11:08 — vol=39,435 oi=3,096 (V/OI 12.7x) with bid=$1.61 ask=$1.81.
+    # Last drifted to ~$1.69 (slightly below mid $1.71), so the line ~511
+    # `last >= mid else BID` fallback tagged BID -> BEARISH on a CALL. The
+    # 25x extreme-layer threshold above didn't trigger (V/OI only 12.7).
+    # META then ran +3% on the paid-subscriptions news 5 min later and the
+    # 615C 0DTE went $0.14 -> $21.15 (151x). Mis-classifying that as BEARISH
+    # is exactly the insider catch we're paying ThetaData for.
+    #
+    # Rule: when V/OI >= 10x AND vol > oi (clear opening, not roll), the
+    # statistical prior is OVERWHELMINGLY buyer-initiated. Closers don't
+    # need to flood 10x daily volume; openers (insiders, institutionals
+    # front-running a catalyst) do. Set ASK as default unless last is
+    # convincingly below bid (stale-last path already handled it earlier).
+    #
+    # Prior fixes covered V/OI >= 25 + last-vs-spread heuristics. This
+    # widens the V/OI floor to 10 AND adds the opening-confirmation gate
+    # (vol > oi) so we don't false-positive on closing flow.
+    if vol_oi >= 10.0 and vol > oi and last > 0:
+        # Even with last slightly below mid, opening accumulation at 10x+
+        # V/OI is virtually always buyer-initiated. Only override when
+        # last is materially below bid (stale handled earlier) — at this
+        # point in the function `last` is within [bid, ask] by construction.
+        # Hold the ASK bias unless last is in the bottom 25% of the spread,
+        # which would indicate seller-initiated even on opening (rare —
+        # would require a large institution OPENING shorts at the bid).
+        if spread > 0 and last <= bid + spread * 0.25:
+            # Bottom quartile of spread on opening accumulation. Rare but
+            # real (call writes ahead of resistance). Defer to the existing
+            # last-vs-mid fallback below.
+            pass
+        else:
+            return "ASK"
 
     if spread > 0 and vol_oi >= 1.5:
         # Quarter-spread aggression line: above mid + spread*0.25 is "lean ask"
@@ -859,6 +988,8 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                         await send(
                             format_flow_alert(a),
                             ticker=a.get("ticker", ""),
+                            priority=bool(a.get("is_insider")),
+                            force=bool(a.get("is_insider")),
                         )
                 else:
                     # New 4-rule filter (LIGHT or FULL)
@@ -880,11 +1011,16 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                                 _vol_oi = payload.get("vol_oi", 0) or 0
                                 _notional = payload.get("notional", 0) or 0
                                 _is_weak = _vol_oi < 1.0 and _notional < 10_000_000
-                                if _is_weak:
+                                if _is_weak and not payload.get("is_insider"):
+                                    # weak alerts dropped — UNLESS INSIDER flag
+                                    # is set, in which case the 6-criteria
+                                    # match overrides the V/OI < 1 mute.
                                     continue
                                 await send(
                                     format_flow_alert(payload),
                                     ticker=payload.get("ticker", ""),
+                                    priority=bool(payload.get("is_insider")),
+                                    force=bool(payload.get("is_insider")),
                                 )
                                 fired_singles += 1
                                 # Performance database log (2026-05-20)
@@ -955,11 +1091,13 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                         _vol_oi = payload.get("vol_oi", 0) or 0
                         _notional = payload.get("notional", 0) or 0
                         _is_weak = _vol_oi < 1.0 and _notional < 10_000_000
-                        if _is_weak:
+                        if _is_weak and not payload.get("is_insider"):
                             continue
                         await send(
                             format_flow_alert(payload),
                             ticker=payload.get("ticker", ""),
+                            priority=bool(payload.get("is_insider")),
+                            force=bool(payload.get("is_insider")),
                         )
                     elif decision == "FIRE_SUMMARY":
                         if payload.get("kind") == "CLUSTER":

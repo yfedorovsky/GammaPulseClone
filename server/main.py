@@ -565,6 +565,38 @@ async def alerts(since: int = 0, limit: int = 100, ticker: str = ""):
     return {"alerts": rows, "count": len(rows)}
 
 
+@app.get("/api/alerts/insider")
+async def alerts_insider(since: int = 0, limit: int = 50, ticker: str = ""):
+    """INSIDER-pattern alerts only (is_insider=1).
+
+    Score 5+/6 on the 6-criteria signature:
+      V/OI ≥ 10x | opening (vol > oi) | ASK side | cheap ≤ $5 |
+      short-dated ≤ 7 DTE | OTM |delta| ≤ 0.40
+
+    Pattern matches MU 3/31 whale, INTC 5/8, META 5/27 — the trades that
+    can 100× in hours. Pinned at top of BigFlow tab. 2026-05-27.
+    """
+    import sqlite3
+    def _query() -> list[dict]:
+        conn = sqlite3.connect("snapshots.db")
+        conn.row_factory = sqlite3.Row
+        sql = (
+            "SELECT * FROM flow_alerts "
+            "WHERE is_insider = 1 AND ts > ? "
+        )
+        params: tuple = (since,)
+        if ticker:
+            sql += "AND ticker = ? "
+            params = params + (ticker.upper(),)
+        sql += "ORDER BY ts DESC LIMIT ?"
+        params = params + (limit,)
+        rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+        conn.close()
+        return rows
+    rows = await asyncio.to_thread(_query)
+    return {"alerts": rows, "count": len(rows)}
+
+
 @app.get("/api/sweeps")
 async def sweeps(
     since: int = 0, limit: int = 100, ticker: str = "", min_notional: float = 0

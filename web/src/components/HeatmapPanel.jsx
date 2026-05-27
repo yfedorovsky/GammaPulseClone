@@ -37,6 +37,42 @@ function findNearestExpiration(expList) {
   return best;
 }
 
+// king-selection-v3 fix #1 (2026-05-27) — nearest monthly OPEX (3rd Friday).
+// The MACRO (ALL 200D) aggregation pulls king/floor/ceiling toward strikes
+// where long-dated OI dominates (LEAPs + quarterly OPEX). That's too far
+// from intraday spot to be tradeable — OG GammaPulse Pro defaults to the
+// nearest monthly OPEX, which is where dealer hedging actually concentrates
+// for intraday flow. This helper finds that expiration.
+//
+// Selection: 3rd Friday of the month (standard equity options monthly OPEX),
+// future-dated, within 60 days. Falls back to findNearestExpiration if no
+// monthly is within window — captures the "only weeklies are listed" case
+// for thinly traded names.
+export function findNearestMonthlyOpex(expList) {
+  if (!Array.isArray(expList)) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const maxAheadMs = 60 * 24 * 3600 * 1000; // 60 days
+  let best = null;
+  let bestDist = Infinity;
+  for (const e of expList) {
+    if (!isRealExpiration(e)) continue;
+    const d = new Date(e + 'T00:00:00');
+    if (d < today) continue;
+    const dom = d.getDate();
+    const dow = d.getDay();
+    // 3rd Friday: dow=Friday(5) AND day-of-month in [15, 21]
+    if (dow !== 5 || dom < 15 || dom > 21) continue;
+    const dist = d - today;
+    if (dist > maxAheadMs) continue;
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = e;
+    }
+  }
+  return best || findNearestExpiration(expList);
+}
+
 function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
   const {
     chains,
@@ -66,10 +102,21 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
   }, [zeroDte, expList]);
 
   // Precedence: 0DTE mode forces today's exp > user's dropdown choice >
-  // parent's default > MACRO fallback.
+  // parent's default > nearest monthly OPEX > MACRO sentinel fallback.
   // User choice MUST beat expLabelOverride, otherwise the dropdown in FOCUS
   // mode appears dead (store updates but this derived value ignores it).
-  const currentExp = todayExp || exps[expKey] || expLabelOverride || MACRO_KEY;
+  //
+  // king-selection-v3 fix #1 (2026-05-27): nearest monthly OPEX now sits
+  // ahead of MACRO_KEY in the fallback. MACRO is still selectable via the
+  // dropdown but is no longer the silent default — it pulls king/floor too
+  // far from intraday spot (SMH compare: MACRO king $600 round-number vs
+  // OG monthly king $585 from concentrated 3rd-Friday OI).
+  const nearestMonthlyOpex = useMemo(
+    () => findNearestMonthlyOpex(expList),
+    [expList]
+  );
+  const currentExp = todayExp || exps[expKey] || expLabelOverride
+    || nearestMonthlyOpex || MACRO_KEY;
 
   // Nearest real (YYYY-MM-DD) expiration — used by the MACRO hint to offer
   // a one-click jump to a tactical view. Null if the chain only has the
@@ -100,7 +147,10 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
     // For MACRO (many strikes), use the strike window to limit.
     const isMacro = currentExp.startsWith('MACRO');
     if (!isMacro || strikesWindow >= sorted.length) return sorted;
-    const king = exp_data.king || spot || 0;
+    // king-selection-v3 (2026-05-27): on MACRO use king_far (unconstrained)
+    // for the window-anchor — MACRO is the structural view; far-OTM kings
+    // matter here. Per-expiration panels use the constrained king (5% cap).
+    const king = exp_data.king_far || exp_data.king || spot || 0;
     const kingIdx = sorted.findIndex((s) => s.strike === king);
     const half = Math.floor(strikesWindow / 2);
     const lo = Math.max(
@@ -111,7 +161,10 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
     return sorted.slice(Math.max(0, hi - strikesWindow), hi);
   }, [rawStrikes, strikesWindow, exp_data.king, spot]);
 
-  const king = exp_data.king || 0;
+  // MACRO panel surfaces king_far (unconstrained); per-expiration panels
+  // surface king (constrained to 5% of spot). king-selection-v3 2026-05-27.
+  const _isMacroPanel = currentExp.startsWith('MACRO');
+  const king = (_isMacroPanel ? exp_data.king_far : exp_data.king) || 0;
   const kingRow = rawStrikes.find((s) => s.strike === king);
   const kingIsPositive = kingRow ? kingRow.net_gex >= 0 : true;
 
