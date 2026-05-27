@@ -438,6 +438,35 @@ def _classify_insider_signature(
     if 0 < abs(delta) <= 0.40:
         matched.append(f"Δ{abs(delta):.2f}")
 
+    # Scheduled-catalyst demote (Batch 3a, 2026-05-27 PM, ChatGPT/Perplexity).
+    # 3/4 LLMs flagged this as a top precision booster. Reasoning: retail
+    # traders pre-position into KNOWN earnings/FDA/announcement dates and
+    # the resulting flow mirrors the informed-trade signature exactly —
+    # cheap OTM short-dated calls/puts. Without this gate, the classifier
+    # cannot distinguish "insider front-running an unscheduled catalyst"
+    # from "retail YOLOing a known catalyst." The META 5/27 catch was on
+    # an UNSCHEDULED catalyst (no earnings in window) so this rule doesn't
+    # affect it; it cuts the event-day false-positive population.
+    #
+    # Implementation: demote score by 1 point when ticker has earnings
+    # within the contract's DTE window. 6/6 with catalyst stays at 5 (still
+    # fires); 5/6 with catalyst drops to 4 (no fire). Surgical effect.
+    try:
+        from .earnings_calendar import er_in_window_sync
+        if exp:
+            exp_date = _dt.date.fromisoformat(exp)
+            dte = (exp_date - _dt.date.today()).days
+            if 0 <= dte <= 14:
+                ticker = alert.get("ticker", "")
+                in_window, _days = er_in_window_sync(ticker, dte)
+                if in_window:
+                    # Demote one point and tag the alert for audit
+                    matched.append("[catalyst-demote]")
+                    return max(len(matched) - 2, 0), matched
+                    # -2 because we appended one tag — net effect is -1
+    except Exception:
+        pass
+
     return len(matched), matched
 
 
