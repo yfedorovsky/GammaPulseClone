@@ -26,8 +26,15 @@ from typing import Any
 # Rolling window: how far back we look for sibling fires
 CLUSTER_WINDOW_SEC = 30 * 60  # 30 minutes
 
-# Minimum strikes to form a cluster
+# Minimum strikes to RECORD a cluster (persist for audit/UI display)
 MIN_CLUSTER_STRIKES = 2
+
+# Minimum strikes to FIRE Telegram alert (production threshold).
+# 2026-05-27 PM backtest finding: 2-strike clusters have ~49.5% hit rate
+# (coin flip), while 4-strike are 88.9% and 5-strike are 80%. Telegram
+# fires at 3+ to suppress the low-conviction tier. The 2-strike clusters
+# still surface in the UI strip (audit visibility) but don't ping phone.
+MIN_CLUSTER_TELEGRAM_STRIKES = 3
 
 # Per-cluster dedup TTL (prevents the same (ticker, exp, direction)
 # cluster from re-firing as new strikes accumulate within the window)

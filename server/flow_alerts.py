@@ -1141,9 +1141,10 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                             try:
                                 from .informed_cluster import (
                                     record_and_check, format_cluster_telegram,
+                                    MIN_CLUSTER_TELEGRAM_STRIKES,
                                 )
                                 cluster = record_and_check(a)
-                                if cluster:
+                                if cluster and cluster["n_strikes"] >= MIN_CLUSTER_TELEGRAM_STRIKES:
                                     await send(
                                         format_cluster_telegram(cluster),
                                         ticker=cluster["ticker"],
@@ -1195,9 +1196,16 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                                         from .informed_cluster import (
                                             record_and_check,
                                             format_cluster_telegram,
+                                            MIN_CLUSTER_TELEGRAM_STRIKES,
                                         )
                                         cluster = record_and_check(payload)
-                                        if cluster:
+                                        # Backtest finding 2026-05-27 PM:
+                                        # 2-strike clusters are coin-flip
+                                        # (49.5% WR); 3+ are the signal tier
+                                        # (4-strike: 89%, 5-strike: 80%).
+                                        # Persist 2-strike for audit but
+                                        # only fire Telegram for 3+.
+                                        if cluster and cluster["n_strikes"] >= MIN_CLUSTER_TELEGRAM_STRIKES:
                                             await send(
                                                 format_cluster_telegram(cluster),
                                                 ticker=cluster["ticker"],
@@ -1287,9 +1295,10 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                             try:
                                 from .informed_cluster import (
                                     record_and_check, format_cluster_telegram,
+                                    MIN_CLUSTER_TELEGRAM_STRIKES,
                                 )
                                 cluster = record_and_check(payload)
-                                if cluster:
+                                if cluster and cluster["n_strikes"] >= MIN_CLUSTER_TELEGRAM_STRIKES:
                                     await send(
                                         format_cluster_telegram(cluster),
                                         ticker=cluster["ticker"],
