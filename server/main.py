@@ -810,19 +810,30 @@ async def flow_net_movers(
         conn = sqlite3.connect("snapshots.db")
         conn.row_factory = sqlite3.Row
 
-        # Per-ticker aggregation. Use is_sweep + notional_floor for noise
-        # filtering — we want institutional flow, not retail micro-prints.
+        # Per-contract dedup BEFORE summing: flow_alerts has repeated rows
+        # for the same contract as the day progresses (each snapshot adds
+        # a row with the running day-cumulative notional). Sum-as-is
+        # over-counts 30-40x. Fix: GROUP BY contract first, take MAX(notional)
+        # which is the latest snapshot's cumulative value, THEN sum per
+        # ticker. This matches OG GammaPulse's per-ticker aggregate behavior.
         sql = (
+            "WITH per_contract AS ( "
+            "  SELECT ticker, strike, expiration, option_type, "
+            "    MAX(COALESCE(notional, 0)) AS contract_notional, "
+            "    MAX(ts) AS latest_ts "
+            "  FROM flow_alerts "
+            "  WHERE ts >= ? AND COALESCE(notional, 0) >= ? "
+            "  GROUP BY ticker, strike, expiration, option_type "
+            ") "
             "SELECT ticker, "
-            "  SUM(CASE WHEN option_type = 'call' THEN COALESCE(notional,0) ELSE 0 END) AS call_dollars, "
-            "  SUM(CASE WHEN option_type = 'put'  THEN COALESCE(notional,0) ELSE 0 END) AS put_dollars, "
+            "  SUM(CASE WHEN option_type = 'call' THEN contract_notional ELSE 0 END) AS call_dollars, "
+            "  SUM(CASE WHEN option_type = 'put'  THEN contract_notional ELSE 0 END) AS put_dollars, "
             "  SUM(CASE WHEN option_type = 'call' THEN 1 ELSE 0 END) AS call_count, "
             "  SUM(CASE WHEN option_type = 'put'  THEN 1 ELSE 0 END) AS put_count, "
-            "  MAX(ts) AS latest_ts "
-            "FROM flow_alerts "
-            "WHERE ts >= ? AND COALESCE(notional,0) >= ? "
+            "  MAX(latest_ts) AS latest_ts "
+            "FROM per_contract "
             "GROUP BY ticker "
-            "HAVING (call_dollars + put_dollars) > 0 "
+            "HAVING (call_dollars + put_dollars) > 0"
         )
         rows = [dict(r) for r in conn.execute(sql, (cutoff, min_notional)).fetchall()]
 
