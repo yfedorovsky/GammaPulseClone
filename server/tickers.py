@@ -331,6 +331,12 @@ TIER_3 = [
     # RR is Richtech (service robots in food service / hospitality).
     "SERV",  # Serve Robotics — autonomous sidewalk delivery, ~$9 small-cap
     "RR",    # Richtech Robotics — F&B service robots, ~$3 microcap
+    # Robotics theme expansion (5/28 PM): adds June-conference exposure.
+    # Mir's research mapped: Boston (TER, already covered), Tokyo (TSLA/NVDA
+    # already covered), Vienna ICRA (NVDA), Munich EMEA (Schaeffler/Siemens
+    # ADRs have no listed options — can't add). KOID is the cleanest ETF
+    # proxy but has no options. Only CGNX has a real chain.
+    "CGNX",  # Cognex — machine vision for industrial robotics
 ]
 
 
