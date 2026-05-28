@@ -18,7 +18,10 @@ import { api } from '../api.js';
  * lost in the daily flow firehose.
  */
 const REFRESH_MS = 10_000;
-const SHOW_HOURS = 6; // only show alerts from the last 6 hours
+// 24h window so the strip remains useful after-hours when reviewing the day's
+// catches. Was 6h originally — too short to see anything once market closed.
+// Live during RTH, the limit=20 + DESC sort means you still see the freshest.
+const SHOW_HOURS = 24;
 
 export default function InsiderStrip({ onClickTicker }) {
   const [alerts, setAlerts] = useState([]);
