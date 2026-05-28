@@ -515,9 +515,33 @@ def compute_exp_data(
             continue
         otype = (opt.get("option_type") or "").lower()
         sign = 1.0 if otype == "call" else -1.0
+
+        # Synth gamma fallback for 0DTE bug (2026-05-28).
+        # Tradier (and ThetaData) report gamma=0 for 0DTE contracts by
+        # midday because their BSM solver underflows when T → 0. Without
+        # gamma, the entire GEX calc collapses to zero on the 0DTE chain
+        # while MACRO and 1+ DTE work fine.
+        #
+        # Fix: when provider gamma==0 but we have spot/strike/IV/DTE,
+        # fall back to our own _bsm_gamma() with T floored at 0.5 days
+        # (1/720 yrs). That gives non-zero gamma for late-session 0DTE
+        # while staying numerically stable.
+        gamma = f["gamma"]
+        if gamma == 0.0 and f["iv"] > 0 and spot > 0 and strike > 0:
+            try:
+                exp_str = opt.get("expiration_date") or opt.get("expiration") or ""
+                if exp_str:
+                    exp_d = date.fromisoformat(exp_str)
+                    days = max((exp_d - today).days, 0)
+                    # T floor 0.5 days = 0.001389 yrs (prevents underflow)
+                    T = max(days / 365.0, 0.5 / 365.0)
+                    gamma = _bsm_gamma(spot, strike, f["iv"], T)
+            except (ValueError, TypeError):
+                pass
+
         # GEX = gamma * OI * 100 * spot^2 * 0.01 (per 1% move), signed by dealer side
         gamma_dollar = (
-            f["gamma"] * f["oi"] * CONTRACT_SIZE * spot * spot * 0.01 * sign
+            gamma * f["oi"] * CONTRACT_SIZE * spot * spot * 0.01 * sign
         )
         # VEX = vanna * OI * 100 * spot * 1 (per 1 vol point); signed likewise
         vanna_dollar = f["vanna"] * f["oi"] * CONTRACT_SIZE * spot * sign
