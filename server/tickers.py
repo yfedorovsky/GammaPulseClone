@@ -325,6 +325,12 @@ TIER_3 = [
     "SPCE",  # Virgin Galactic — space tourism
     # Quantum cohort:
     "INFQ",  # Infleqtion (or similar) — quantum
+    # ── 5/28 PM TraderMir robotics theme (added 2026-05-28) ───────────
+    # Mir's go-to robotics names for "next month" (June). Both have
+    # actively-traded options chains. SERV is autonomous delivery,
+    # RR is Richtech (service robots in food service / hospitality).
+    "SERV",  # Serve Robotics — autonomous sidewalk delivery, ~$9 small-cap
+    "RR",    # Richtech Robotics — F&B service robots, ~$3 microcap
 ]
 
 
