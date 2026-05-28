@@ -297,6 +297,17 @@ def format_flow_alert(alert: dict[str, Any]) -> str:
     except Exception:
         pass
 
+    # Intraday vol regime tag (2026-05-28 PM). Surfaces time-of-day vol
+    # context — LULL signals risk false-positive, OPENING/CLOSING_PEAK
+    # signals carry higher reversal risk, RECOVERY_* signals are best for
+    # taking profits on open winners. Cross-validated against today's
+    # INFORMED FLOW peak data: 44% peaked in RECOVERY_LATE window.
+    try:
+        from .vol_regime import format_for_telegram as _vr
+        regime_line = _vr() + "\n"
+    except Exception:
+        regime_line = ""
+
     return (
         f"{insider_banner}"
         f"{emoji} <b>FLOW{conv_badge}</b>: {alert['ticker']}\n"
@@ -307,6 +318,7 @@ def format_flow_alert(alert: dict[str, Any]) -> str:
         f"{trade}"
         f"{tag_line}"
         f"{er_line}"
+        f"{regime_line}"
     )
 
 
@@ -438,6 +450,14 @@ def format_soe_signal(sig: dict[str, Any]) -> str:
         drift_warning,
         regime_footer,
     ]
+    # Intraday vol regime tag (2026-05-28 PM). Same rationale as flow_alert
+    # — OPENING_PEAK signals higher reversal risk, LULL signals false-positive
+    # risk, RECOVERY_* is the take-profit window for already-open winners.
+    try:
+        from .vol_regime import format_for_telegram as _vr
+        lines.append(_vr())
+    except Exception:
+        pass
     return "\n".join(l for l in lines if l is not None)
 
 
