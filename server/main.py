@@ -775,6 +775,118 @@ async def flow_daily(
     return {"flow": rows, "count": len(rows)}
 
 
+@app.get("/api/flow/net_movers")
+async def flow_net_movers(
+    limit: int = 25, since_hours: float = 6.5, min_notional: float = 0,
+):
+    """Net-flow leaderboard — per-ticker net (call $ − put $) for today.
+
+    Inspired by OG GammaPulse's Top Movers view. Returns aggregated
+    call vs put dollar flow per ticker over the trailing N hours
+    (default 6.5 = full RTH). JOINs with latest snapshot for structural
+    levels (king/floor/ceiling/regime).
+
+    Sort order: net descending (most bullish first).
+    Frontend can re-sort client-side to see most bearish.
+
+    Returns:
+      {
+        "movers": [
+          {ticker, spot, king, floor, ceiling, signal, regime,
+           call_dollars, put_dollars, net_dollars,
+           call_count, put_count, latest_ts, age_s},
+          ...
+        ],
+        "total_call_dollars": <sum across all tickers>,
+        "total_put_dollars":  <sum across all tickers>,
+        "as_of_ts": <epoch>
+      }
+    """
+    def _query() -> dict:
+        import sqlite3
+        import time as _time
+        now = int(_time.time())
+        cutoff = now - int(since_hours * 3600)
+        conn = sqlite3.connect("snapshots.db")
+        conn.row_factory = sqlite3.Row
+
+        # Per-ticker aggregation. Use is_sweep + notional_floor for noise
+        # filtering — we want institutional flow, not retail micro-prints.
+        sql = (
+            "SELECT ticker, "
+            "  SUM(CASE WHEN option_type = 'call' THEN COALESCE(notional,0) ELSE 0 END) AS call_dollars, "
+            "  SUM(CASE WHEN option_type = 'put'  THEN COALESCE(notional,0) ELSE 0 END) AS put_dollars, "
+            "  SUM(CASE WHEN option_type = 'call' THEN 1 ELSE 0 END) AS call_count, "
+            "  SUM(CASE WHEN option_type = 'put'  THEN 1 ELSE 0 END) AS put_count, "
+            "  MAX(ts) AS latest_ts "
+            "FROM flow_alerts "
+            "WHERE ts >= ? AND COALESCE(notional,0) >= ? "
+            "GROUP BY ticker "
+            "HAVING (call_dollars + put_dollars) > 0 "
+        )
+        rows = [dict(r) for r in conn.execute(sql, (cutoff, min_notional)).fetchall()]
+
+        # Pull latest snapshot per ticker for structural context
+        snap_map: dict[str, dict] = {}
+        if rows:
+            tickers = tuple({r["ticker"] for r in rows})
+            placeholders = ",".join("?" * len(tickers))
+            snap_sql = (
+                "SELECT s.ticker, s.spot, s.king, s.floor, s.ceiling, "
+                "  s.signal, s.regime, s.ts "
+                f"FROM snapshots s "
+                f"INNER JOIN ( "
+                f"  SELECT ticker, MAX(ts) AS max_ts FROM snapshots "
+                f"  WHERE ticker IN ({placeholders}) GROUP BY ticker "
+                f") latest ON s.ticker = latest.ticker AND s.ts = latest.max_ts"
+            )
+            for s in conn.execute(snap_sql, tickers).fetchall():
+                snap_map[s["ticker"]] = dict(s)
+        conn.close()
+
+        # Merge + compute net
+        movers: list[dict] = []
+        total_call = 0.0
+        total_put = 0.0
+        for r in rows:
+            t = r["ticker"]
+            snap = snap_map.get(t, {})
+            call_d = float(r["call_dollars"] or 0)
+            put_d = float(r["put_dollars"] or 0)
+            net_d = call_d - put_d
+            total_call += call_d
+            total_put += put_d
+            movers.append({
+                "ticker": t,
+                "spot": snap.get("spot"),
+                "king": snap.get("king"),
+                "floor": snap.get("floor"),
+                "ceiling": snap.get("ceiling"),
+                "signal": snap.get("signal"),
+                "regime": snap.get("regime"),
+                "call_dollars": call_d,
+                "put_dollars": put_d,
+                "net_dollars": net_d,
+                "call_count": int(r["call_count"] or 0),
+                "put_count": int(r["put_count"] or 0),
+                "latest_ts": int(r["latest_ts"] or 0),
+                "age_s": now - int(r["latest_ts"] or now),
+            })
+
+        movers.sort(key=lambda x: -x["net_dollars"])
+
+        return {
+            "movers": movers[:limit],
+            "total_call_dollars": total_call,
+            "total_put_dollars": total_put,
+            "as_of_ts": now,
+            "since_hours": since_hours,
+            "n_tickers": len(movers),
+        }
+
+    return await asyncio.to_thread(_query)
+
+
 @app.get("/api/trades")
 async def trades(limit: int = 50):
     """Get tracked trades with their exit signals."""

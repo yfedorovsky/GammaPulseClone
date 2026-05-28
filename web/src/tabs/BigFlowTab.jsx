@@ -3,6 +3,7 @@ import { api } from '../api.js';
 import HitRateStrip from '../components/HitRateStrip.jsx';
 import InsiderStrip from '../components/InsiderStrip.jsx';
 import ClusterStrip from '../components/ClusterStrip.jsx';
+import NetFlowLeaderboard from '../components/NetFlowLeaderboard.jsx';
 
 /**
  * BIG FLOW tab — UW-style per-contract DAILY option flow aggregates.
@@ -402,10 +403,15 @@ export default function BigFlowTab({ onClickTicker }) {
 
   return (
     <div style={{ padding: '12px 14px', fontFamily: 'var(--sans)' }}>
+      {/* NET FLOW LEADERBOARD — per-ticker call $ - put $ aggregated for
+          today. Inspired by OG GammaPulse's Top Movers (5/28 build).
+          Top of page because the broad-market thermometer + per-name
+          aggregate is the highest-context view. */}
+      <NetFlowLeaderboard onClickTicker={onClickTicker} />
+
       {/* INFORMED CLUSTER strip — multi-strike ladder pattern (Batch 2,
           2026-05-27 PM). Aggregates 2+ same-ticker/exp/direction INFORMED
-          FLOW fires in a 30-min rolling window. Top of the page because
-          clusters are highest signal-to-noise. */}
+          FLOW fires in a 30-min rolling window. */}
       <ClusterStrip onClickTicker={onClickTicker} />
 
       {/* INFORMED FLOW strip — individual 5+/6 fires per contract.
