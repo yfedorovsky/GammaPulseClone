@@ -2398,6 +2398,7 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
                 # sig["spot_at_eval"] for the alert_outcomes DB log so
                 # outcome attribution uses the canonical fire-time state.
                 _eval_spot = sig.get("spot")
+                _fresh_state = None
                 try:
                     _fresh_state = await cache.get(ticker)
                     _fresh_spot = (
@@ -2407,6 +2408,46 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
                     if _fresh_spot and _fresh_spot > 0:
                         sig["spot_at_eval"] = _eval_spot
                         sig["spot"] = _fresh_spot
+                except Exception:
+                    pass
+
+                # STALE-SPOT SUPPRESSION (2026-05-28 PM open bug).
+                # Pre-market NBIS cached at $208.37 fired SOE at 09:31:26 with
+                # the stale price after a significant gap-up open. Same story
+                # on ~10 other names (ONDS/HIMS/TEAM/SWKS/NXPI/WULF/CIFR).
+                # Root cause: worker hasn't completed first post-open scan
+                # (still on cycle 50/459) so cache holds pre-market values
+                # for TIER_2/3 names. SOE eval runs every 60s and burst-fires
+                # alerts against the stale cache.
+                #
+                # Gate: suppress when snapshot is >120s old AND it's the first
+                # 10 min of the trading day. Outside the first 10 min, allow
+                # the alert (gaps mid-session are rare and the trader can see
+                # current price on the chart).
+                try:
+                    import datetime as _dt
+                    _now_dt = _dt.datetime.now()
+                    _et_min = _now_dt.hour * 60 + _now_dt.minute
+                    _is_first_10min = 570 <= _et_min <= 580  # 9:30 - 9:40 ET
+                    if _is_first_10min and _fresh_state:
+                        _snap_ts = (
+                            _fresh_state.get("_updated_ts")
+                            or _fresh_state.get("_snap_ts")
+                            or _fresh_state.get("snap_ts")
+                            or _fresh_state.get("_ts")
+                            or 0
+                        )
+                        # Only suppress when we can MEASURE staleness AND
+                        # it's clearly stale. Fail-open if no timestamp.
+                        if _snap_ts:
+                            _staleness = time.time() - _snap_ts
+                            if _staleness > 120:
+                                print(
+                                    f"[SOE] suppress stale-spot fire: {ticker} "
+                                    f"snapshot {_staleness:.0f}s old at open",
+                                    flush=True,
+                                )
+                                continue
                 except Exception:
                     pass
                 # SOE A/A+ are the highest-conviction signals the engine

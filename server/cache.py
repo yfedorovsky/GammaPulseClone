@@ -26,6 +26,10 @@ class TickerCache:
         async with self._lock:
             state["_ticker"] = ticker
             state["_updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            # Numeric timestamp so downstream staleness checks (e.g. SOE
+            # dispatch-time gate added 2026-05-28 for NBIS gap-up stale
+            # spot bug) can compare with time.time() directly.
+            state["_updated_ts"] = time.time()
             self._data[ticker] = state
 
     async def get(self, ticker: str) -> dict[str, Any] | None:
