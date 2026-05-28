@@ -302,6 +302,29 @@ TIER_3 = [
     "LAR",   # Lithium Argentina — A-setup, lithium cycle revival after 2-yr drawdown
     "TROX",  # Tronox — TiO2 chemicals leader, A- setup, +60% 63d
     "AESI",  # Atlas Energy Solutions — frac sand leader, OFS pure-play (gap fill)
+    # ── 5/28 morning watchlist coverage gaps (added 2026-05-27 PM) ─────
+    # Cross-referenced trader's morning watchlist against universe; 13
+    # names were uncovered. Added all to TIER_3 (every-4-cycle refresh).
+    # Promote individual names to TIER_2 if they show repeated edge.
+    # Drone / defense (Trump admin financing deal news):
+    "UMAC",  # Unusual Machines — drone
+    "ONDS",  # Ondas — drone communications
+    "SWMR",  # Salmar / Swarm? — drone
+    "DPRO",  # Draganfly — drone manufacturer
+    # Mid-caps with discrete catalysts:
+    "ASTC",  # Astrotech — lunar mining + quantum + semis announcement
+    "DASH",  # DoorDash — DLTR partnership news
+    # Sideways setup names (Mir watchlist 5/28):
+    "DOCN",  # DigitalOcean — cloud infra
+    "MXL",   # MaxLinear — semis / connectivity
+    # Memory / photonics — user thesis name:
+    "SIMO",  # Silicon Motion — NAND controllers, memory cycle play
+    # Space cohort:
+    "LUNR",  # Intuitive Machines — lunar lander
+    "RDW",   # Redwire Space — satellite infra
+    "SPCE",  # Virgin Galactic — space tourism
+    # Quantum cohort:
+    "INFQ",  # Infleqtion (or similar) — quantum
 ]
 
 
