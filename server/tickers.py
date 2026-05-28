@@ -337,6 +337,10 @@ TIER_3 = [
     # ADRs have no listed options — can't add). KOID is the cleanest ETF
     # proxy but has no options. Only CGNX has a real chain.
     "CGNX",  # Cognex — machine vision for industrial robotics
+    # OG GammaPulse scorecard audit gap (5/28 PM): only ticker from their
+    # recurring winners list NOT in our universe. AppLovin = adtech +
+    # AI ad-targeting story.
+    "APP",   # AppLovin — adtech/AI ads, OG recurring still-open + winner
 ]
 
 
