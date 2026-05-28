@@ -1086,6 +1086,15 @@ async def run_worker(stop_event: asyncio.Event) -> None:
                     await maybe_fire_eod_leaderboard()
                 except Exception as lb_err:
                     print(f"[worker] leaderboard failed: {lb_err}")
+                # Mir TP Window alert — daily 1:00-1:30 PM ET ping listing
+                # open INFORMED FLOW + SOE A/A+ positions. Self-dedups to
+                # once per ET calendar day. Cheap no-op outside window or
+                # after first fire. 2026-05-28.
+                try:
+                    from .mir_tp_window import maybe_fire_mir_tp_alert
+                    await maybe_fire_mir_tp_alert()
+                except Exception as mir_err:
+                    print(f"[worker] mir_tp_window failed: {mir_err}")
                 # Intraday spike detector (P0.6, 2026-05-12). Fires when a
                 # ticker's 5-min flow bucket >= 10x today's baseline and
                 # >= $5M absolute. Catches Fidget-style "18x surge" alerts
