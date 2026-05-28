@@ -1,0 +1,60 @@
+[cache] Loaded 1 Mir signals from DB (survives restart)
+=== Forward-return backtest: 334,209 flow_alerts replayed ===
+
+Loading snapshot timeline per ticker...
+  Loaded 70,817 snapshot points across 443 tickers
+
+Total INFORMED FLOW fires for backtest: 768
+
+=== HIT RATES + RETURN DISTRIBUTIONS ===
+ horizon      n    hit%    median      mean       p10       p90       min       max
+   30min    768   47.9%    -0.00%    -0.01%    -0.41%    +0.44%    -5.77%    +2.91%
+      1h    768   47.9%    -0.00%    -0.00%    -0.49%    +0.50%    -6.45%    +3.77%
+      2h    768   47.7%    +0.00%    +0.01%    -0.50%    +0.58%    -7.60%    +4.59%
+      4h    763   51.5%    +0.01%    +0.07%    -0.58%    +0.73%    -7.77%    +8.19%
+     EOD    768   52.7%    +0.01%    +0.09%    -0.50%    +0.70%    -7.60%    +8.02%
+
+=== TOP TICKERS BY 4h WIN RATE (n>=5 fires) ===
+     LLY n=  6  win=100.0%  median= +0.15%
+    SNDK n=  8  win= 87.5%  median= +1.87%
+    RKLB n=  5  win= 80.0%  median= +0.69%
+    IREN n= 14  win= 78.6%  median= +2.23%
+      MU n= 13  win= 76.9%  median= +0.55%
+    AMZN n= 14  win= 71.4%  median= +0.12%
+     RUT n=  6  win= 66.7%  median= +0.15%
+     SPY n= 83  win= 59.0%  median= +0.03%
+     IWM n= 33  win= 57.6%  median= +0.03%
+     SMH n=  7  win= 57.1%  median= +0.31%
+    NVDA n= 16  win= 56.2%  median= +0.12%
+     NDX n= 52  win= 55.8%  median= +0.13%
+    AAPL n= 13  win= 53.8%  median= +0.14%
+     QQQ n=113  win= 53.1%  median= +0.00%
+    META n= 52  win= 51.9%  median= +0.08%
+
+=== BEST 10 SINGLE FIRES (by 4h return) ===
+  10:04:40     BB $13.0C 2026-09-18 BULL V/OI=18.2x score=5/6 entry=$8.05  4h ret=+8.19%
+  12:16:24   IREN $62.0P 2026-06-18 BULL V/OI=517.5x score=5/6 entry=$64.39  4h ret=+5.36%
+  10:14:42   IREN $62.0P 2026-05-29 BULL V/OI=12.7x score=5/6 entry=$62.59  4h ret=+5.30%
+  10:36:43   RIOT $20.0P 2026-07-17 BULL V/OI=32.6x score=5/6 entry=$25.98  4h ret=+4.83%
+  12:39:54   IREN $62.0P 2026-05-29 BULL V/OI=16.1x score=5/6 entry=$64.85  4h ret=+4.61%
+  13:17:45   IREN $64.0P 2026-05-29 BULL V/OI=61.1x score=6/6 entry=$64.93  4h ret=+4.48%
+  13:17:45   IREN $54.0P 2026-06-05 BULL V/OI=32.5x score=5/6 entry=$64.93  4h ret=+4.48%
+  10:46:24   RKLB $139.0P 2026-05-29 BULL V/OI=12.4x score=6/6 entry=$142.09  4h ret=+4.11%
+  13:10:26   META $607.5P 2026-05-27 BULL V/OI=13.1x score=6/6 entry=$610.21  4h ret=+4.10%
+  13:28:00   IREN $59.0P 2026-06-05 BULL V/OI=39.3x score=5/6 entry=$65.38  4h ret=+3.76%
+
+=== WORST 10 SINGLE FIRES (by 4h return) ===
+  09:39:18     ZS $144.0C 2026-06-05 BULL V/OI=73.9x score=5/6 entry=$136.80  4h ret=-7.77%
+  13:26:37   META $607.5P 2026-05-27 BEAR V/OI=13.9x score=5/6 entry=$609.32  4h ret=-4.26%
+  14:00:09   META $612.5C 2026-05-27 BEAR V/OI=21.2x score=5/6 entry=$610.85  4h ret=-4.00%
+  11:57:39   META $615.0C 2026-05-27 BEAR V/OI=21.5x score=5/6 entry=$611.79  4h ret=-3.95%
+  13:28:00   IREN $64.0P 2026-05-29 BEAR V/OI=62.0x score=5/6 entry=$65.38  4h ret=-3.76%
+  12:56:04   IREN $62.0P 2026-05-29 BEAR V/OI=25.4x score=5/6 entry=$65.42  4h ret=-3.70%
+  12:38:03   META $612.5P 2026-05-27 BEAR V/OI=148.6x score=5/6 entry=$613.35  4h ret=-3.57%
+  11:35:29   META $617.5C 2026-05-27 BEAR V/OI=19.4x score=5/6 entry=$613.67  4h ret=-3.15%
+  11:29:36   META $615.0C 2026-05-27 BEAR V/OI=20.2x score=5/6 entry=$614.07  4h ret=-2.99%
+  11:07:14    VIX $33.0C 2026-10-21 BULL V/OI=18.4x score=5/6 entry=$17.00  4h ret=-2.88%
+
+=== 6/6 vs 5/6 SCORE COMPARISON (1h horizon) ===
+  score=5: n=636 win=49.5% median=+0.00%
+  score=6: n=132 win=40.2% median=-0.04%
