@@ -2389,25 +2389,79 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
         if should_push and not sig.get("_suppress_telegram"):
             try:
                 from .telegram import send, format_soe_signal
-                # Re-stamp spot at dispatch time (2026-05-27). The signal
-                # was evaluated when the snapshot was taken at the top of
-                # the cycle; with a 60s eval cadence the snapshot can be
-                # 30-90s old by the time we send. Pull the live cached spot
-                # so the trader's `Entry:` field matches the price they see
-                # on the chart right now. Original eval-time spot stays in
-                # sig["spot_at_eval"] for the alert_outcomes DB log so
-                # outcome attribution uses the canonical fire-time state.
+                # Re-stamp spot at dispatch time (2026-05-27 v1; 2026-05-28 v2).
+                # The signal was evaluated when the snapshot was taken at
+                # the top of the cycle; with a 60s eval cadence the snapshot
+                # can be 30-90s old by the time we send. Pull a fresh spot
+                # so the trader's `Entry:` field matches the chart.
+                #
+                # 2026-05-28 v2 (USAR 12:01 bug):
+                #   USAR (TIER_3) snapshot at 11:49:43 was the only cache
+                #   data when SOE evaluated at 12:01:16 — a 12-min stale
+                #   window. The v1 cache-only re-stamp returned the same
+                #   stale price because the CACHE itself was stale (not
+                #   just the eval-time snapshot).
+                #
+                #   v2 fix: if cache _updated_ts is >180s old, force a
+                #   live 1-ticker Tradier quote at dispatch. Costs ~100ms
+                #   per signal that needs refetch — acceptable for SOE A/A+
+                #   conviction tier. Falls back to cache value if Tradier
+                #   call fails or times out.
+                #
+                # Original eval-time spot stays in sig["spot_at_eval"] for
+                # the alert_outcomes DB log so outcome attribution uses
+                # the canonical fire-time state.
                 _eval_spot = sig.get("spot")
                 _fresh_state = None
+                _dispatch_spot = None
                 try:
                     _fresh_state = await cache.get(ticker)
-                    _fresh_spot = (
-                        (_fresh_state or {}).get("actual_spot")
-                        or (_fresh_state or {}).get("_spot")
-                    )
-                    if _fresh_spot and _fresh_spot > 0:
+                    if _fresh_state:
+                        _cache_spot = (
+                            _fresh_state.get("actual_spot")
+                            or _fresh_state.get("_spot")
+                        )
+                        _updated_ts = _fresh_state.get("_updated_ts") or 0
+                        _cache_age = (
+                            time.time() - _updated_ts if _updated_ts else 9999
+                        )
+                        if _cache_spot and _cache_spot > 0 and _cache_age < 180:
+                            # Cache fresh enough — use it
+                            _dispatch_spot = _cache_spot
+                        else:
+                            # Cache stale (>180s) — force live Tradier refetch
+                            try:
+                                from .tradier import TradierClient
+                                _cli = TradierClient()
+                                _live_qs = await _cli.quotes([ticker])
+                                _live_spot = (
+                                    _live_qs.get(ticker)
+                                    if isinstance(_live_qs, dict)
+                                    else None
+                                )
+                                if _live_spot and _live_spot > 0:
+                                    _dispatch_spot = _live_spot
+                                    print(
+                                        f"[SOE] live-refetch {ticker}: cache "
+                                        f"{_cache_age:.0f}s stale, "
+                                        f"eval=${_eval_spot:.2f} → "
+                                        f"live=${_live_spot:.2f}",
+                                        flush=True,
+                                    )
+                                elif _cache_spot and _cache_spot > 0:
+                                    # Tradier returned nothing, fall back
+                                    _dispatch_spot = _cache_spot
+                            except Exception as _le:
+                                print(
+                                    f"[SOE] live-refetch {ticker} failed: "
+                                    f"{_le!r}, falling back to cache",
+                                    flush=True,
+                                )
+                                if _cache_spot and _cache_spot > 0:
+                                    _dispatch_spot = _cache_spot
+                    if _dispatch_spot and _dispatch_spot > 0:
                         sig["spot_at_eval"] = _eval_spot
-                        sig["spot"] = _fresh_spot
+                        sig["spot"] = _dispatch_spot
                 except Exception:
                     pass
 
