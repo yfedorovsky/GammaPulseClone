@@ -798,13 +798,26 @@ def _detect_side(
         # V/OI is virtually always buyer-initiated. Only override when
         # last is materially below bid (stale handled earlier) — at this
         # point in the function `last` is within [bid, ask] by construction.
-        # Hold the ASK bias unless last is in the bottom 25% of the spread,
-        # which would indicate seller-initiated even on opening (rare —
-        # would require a large institution OPENING shorts at the bid).
+        #
+        # 2026-06-04 PM (task #43, RKLB 121C 6/18 miss): the old "bottom
+        # quartile = seller-initiated" deferral fired far more often on
+        # stale-snapshot post-sweep prints than on real sellers. RKLB 121C
+        # was a 750-contract ASK sweep at 15:50 ET, but our 16:04 snapshot
+        # read bid=$10.30 ask=$10.55 last=$10.32 (V/OI 21x). The deferral
+        # path tagged it BID/BEARISH on what FL0WG0D's tape confirms was
+        # pure call-buying. The "call writes ahead of resistance" exception
+        # the deferral was protecting is vanishingly rare at extreme V/OI;
+        # the dominant pattern is "snapshot caught the wrong moment after
+        # a sweep" — exactly what's happening here.
+        #
+        # New rule:
+        #   V/OI >= 15x AND vol > oi → ASK unconditionally
+        #   V/OI 10-15x AND last in bottom 25% → preserve old deferral
+        #     (these are the borderline cases where the old logic worked)
+        if vol_oi >= 15.0:
+            return "ASK"
         if spread > 0 and last <= bid + spread * 0.25:
-            # Bottom quartile of spread on opening accumulation. Rare but
-            # real (call writes ahead of resistance). Defer to the existing
-            # last-vs-mid fallback below.
+            # Bottom quartile + V/OI only 10-15x — preserve old deferral.
             pass
         else:
             return "ASK"

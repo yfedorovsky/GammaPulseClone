@@ -46,10 +46,19 @@ from .thetadata import ThetaTrade
 #   2. Soften DOMINANCE_RATIO 1.5 -> 1.3 so a 130:100 split still classifies.
 # The fallback_rate is logged in TickSideTracker.stats() — audit weekly to
 # confirm we didn't trade accuracy for noise.
-WINDOW_SECONDS = 60.0
+#
+# 2026-06-04 PM (task #43): WINDOW_SECONDS extended from 60 → 1800 (30 min).
+# RKLB 121C 6/18 sweep at 15:50 ET was classified ASK by sweep_detector
+# in real-time, but our chain-snapshot scanner runs every 5-15 min. By
+# 16:04 (14 min after sweep), the 60s window was long-empty, falling
+# back to the buggy snapshot detector that returned BID. Extending the
+# window to 30 min ensures the tracker retains the sweep history through
+# the entire snapshot lifecycle. MAX_TRADES_PER_BUCKET bumped 200 → 500
+# to handle higher per-bucket trade volume over the longer window.
+WINDOW_SECONDS = 30 * 60.0  # was 60.0 — covers full chain-snapshot lifecycle
 MIN_WINDOW_SIZE = 20  # was 50; relaxed 2026-05-12
 DOMINANCE_RATIO = 1.3  # was 1.5; relaxed 2026-05-12
-MAX_TRADES_PER_BUCKET = 200
+MAX_TRADES_PER_BUCKET = 500  # was 200 — 30-min window holds more trades
 
 # (ticker_upper, strike_float, exp_str, right_lower)
 BucketKey = tuple[str, float, str, str]
