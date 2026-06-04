@@ -63,6 +63,41 @@ CASES = [
         "ITM + $8M+ notional. Pre-stale-last fix returned BEARISH; "
         "post-fix should return ASK via line 691 institutional bias.",
     ),
+    # === NEW 2026-06-04 PM cases ===
+    (
+        "INTC 120C 5/15 (AAPL deal 5/8 — Bug #11)",
+        4.85, 5.15, 5.05, 12504, 856, 0.55, 6311520, "ASK",
+        "V/OI 14.6x, last $5.05 within tight band. Old code defaulted "
+        "to BID coin-flip when last was slightly below mid. The AAPL-"
+        "deal call buyer paid 5,000+ contracts at ASK that morning per "
+        "FL0WG0D + AnthonySandford audit. With V/OI>=10 + vol>oi the "
+        "new 'opening accumulation' override fires.",
+    ),
+    (
+        "MU 760C 5/15 (3/31 whale add-back)",
+        15.50, 16.20, 15.80, 8200, 740, 0.42, 12956000, "ASK",
+        "V/OI 11.1x with $12.9M notional. Last $15.80 in [$15.50, $16.20] "
+        "= within band but below mid $15.85. Per the 3/31 FL0WG0D thread "
+        "this was the 'phase 2' MU buyer extending the original whale "
+        "thesis. New 15x rule does NOT apply (V/OI 11.1) so the line 796 "
+        "vol>oi + V/OI>=10 path is what catches it.",
+    ),
+    # === NEGATIVE CASES — these should STAY BID ===
+    (
+        "BID-side negative: low V/OI + last at bid",
+        2.10, 2.30, 2.10, 250, 200, 0.30, 50000, "BID",
+        "V/OI 1.25x — well below all aggression gates. Last EXACTLY at "
+        "bid. This is a real sell-initiated trade and should be tagged "
+        "BID. Negative test ensures the fix doesn't over-flip.",
+    ),
+    (
+        "BID-side negative: moderate V/OI but last clearly below bid",
+        5.40, 5.80, 5.25, 800, 300, 0.40, 420000, "MID",
+        "Last $5.25 strictly below bid $5.40 = stale-snapshot fires. "
+        "Notional $420K below the $5M institutional-bias threshold + "
+        "delta 0.40 below 0.70 deep-ITM threshold. Falls through to "
+        "MID rather than confidently mis-classifying.",
+    ),
 ]
 
 
