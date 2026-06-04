@@ -207,6 +207,25 @@ def format_flow_alert(alert: dict[str, Any]) -> str:
             f"<i>{crit_str}</i>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
         )
+
+    # 🐋 WHALE banner (task #41, 2026-06-04 PM). Tagged when the alert
+    # cleared the dollar-driven accumulation gates ($1M+ ASK, vol >= 500,
+    # vol >= 30% of OI). Distinct from INFORMED FLOW — catches the CVS-
+    # class signature (long-dated, moderate V/OI, big-dollar add to
+    # existing OI) that INFORMED FLOW misses by design.
+    #
+    # When BOTH is_insider and is_whale fire, this banner appears AFTER
+    # the INFORMED FLOW one so the more specific signal sits on top.
+    whale_banner = ""
+    if alert.get("is_whale"):
+        wreasons = alert.get("whale_reasons") or ""
+        if isinstance(wreasons, list):
+            wreasons = ", ".join(wreasons)
+        whale_banner = (
+            f"🐋🐋🐋 <b>WHALE ACCUMULATION</b> 🐋🐋🐋\n"
+            f"<i>{wreasons}</i>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        )
     otype = (alert.get("option_type") or "").upper()
     side = alert.get("side", "?")
 
@@ -310,6 +329,7 @@ def format_flow_alert(alert: dict[str, Any]) -> str:
 
     return (
         f"{insider_banner}"
+        f"{whale_banner}"
         f"{emoji} <b>FLOW{conv_badge}</b>: {alert['ticker']}\n"
         f"<b>{action}</b>\n"
         f"${alert['strike']} {otype} {alert.get('expiration', '')}\n"

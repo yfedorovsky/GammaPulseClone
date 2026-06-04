@@ -94,6 +94,14 @@ _SWEEP_MIGRATIONS = [
     "ALTER TABLE flow_alerts ADD COLUMN is_insider INTEGER DEFAULT 0",
     "ALTER TABLE flow_alerts ADD COLUMN insider_reasons TEXT",
     "CREATE INDEX IF NOT EXISTS idx_flow_insider ON flow_alerts(is_insider, ts) WHERE is_insider = 1",
+    # 2026-06-04 PM (task #41): dollar-driven whale accumulation tag.
+    # Catches the CVS-class signature (long-dated, moderate V/OI, $1M+
+    # ASK single-tick) that INFORMED FLOW misses by design. Distinct
+    # from is_insider so both can coexist on a single contract; a
+    # whale-tagged INFORMED FLOW alert is the highest-conviction state.
+    "ALTER TABLE flow_alerts ADD COLUMN is_whale INTEGER DEFAULT 0",
+    "ALTER TABLE flow_alerts ADD COLUMN whale_reasons TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_flow_whale ON flow_alerts(is_whale, ts) WHERE is_whale = 1",
 ]
 
 
@@ -502,6 +510,114 @@ def _is_informed_flow_duplicate(alert: dict[str, Any]) -> bool:
     return False
 
 
+# ── Whale-strike classifier (task #41, 2026-06-04 PM) ─────────────────────
+#
+# Catches the dollar-driven institutional accumulation signature that
+# INFORMED FLOW (5/6 score classifier) misses by design.
+#
+# Motivating case study (CVS 100C 8/21, 6/4 14:40 ET, FL0WG0D screenshot):
+#   - 3,000 contracts ASK at $3.41 avg = $1.02M single-print sweep
+#   - Pre-existing OI 2,090 (whale doubling an existing position)
+#   - V/OI 2.3x at our snapshot (well below the 10x INFORMED FLOW gate)
+#   - 78 DTE (well outside the ≤7 DTE INFORMED FLOW gate)
+#   - Spot $94, strike $100 = 6.3% OTM
+#
+# Our system tagged it BULLISH ASK MEDIUM/HIGH conviction correctly but
+# never escalated to a Telegram alert because INFORMED FLOW score was 0/6.
+# This is a separate signature from META-0DTE / RKLB-7DTE V/OI shocks —
+# it's "informed accumulation" where a smart-money desk adds to a
+# conviction position via near-ATM medium-dated calls at $1M+ dollar size.
+#
+# Detector gates:
+#   1. Notional >= $1M (single-snapshot, not aggregate)
+#   2. ASK side (buyer-initiated, post-P0 fix this is reliable)
+#   3. vol >= 500 (filter retail noise)
+#   4. vol >= 0.3 × oi (proves real accumulation, not just rolling)
+#   5. Direction aligned: call+BULLISH or put+BEARISH
+#   6. Ticker NOT in index ETF exclusion list (routine MM hedging)
+#   7. Ticker NOT in CHOP state (two-way flow == no signal)
+#
+# Each gate is independently necessary — together they catch the CVS-class
+# whale without triggering on retail flow or index-ETF MM activity.
+WHALE_MIN_NOTIONAL = 1_000_000        # $1M — DB tag floor (audit + backtest)
+WHALE_TELEGRAM_NOTIONAL = 3_000_000   # $3M — Telegram-push floor (high signal only)
+WHALE_MIN_VOL = 500                   # filter retail
+WHALE_MIN_VOL_OI_RATIO = 0.30         # at least 30% of OI = real accumulation
+
+# Same exclusion set as triple_confluence / informed_cluster / tracker
+# carve-out. Index ETFs trip every classifier on baseline MM activity.
+_WHALE_EXCLUDED_TICKERS = frozenset({
+    "SPY", "SPX", "SPXW", "QQQ", "IWM", "DIA", "VIX", "NDX",
+    "SOXL", "TQQQ", "SQQQ", "UPRO", "TSLL", "NVDL",
+})
+
+
+def _classify_whale_signature(
+    alert: dict[str, Any],
+) -> tuple[int, list[str]]:
+    """Detect dollar-driven institutional accumulation.
+
+    Returns (is_whale: 0 or 1, reasons: list[str]). is_whale=1 fires a
+    high-conviction Telegram alert with WHALE tag. The reasons list is
+    persisted to whale_reasons for audit / backtest.
+
+    Each gate that fails returns 0 immediately to avoid wasted work
+    on the 95%+ of alerts that don't qualify.
+    """
+    reasons: list[str] = []
+    ticker = (alert.get("ticker") or "").upper()
+    if not ticker or ticker in _WHALE_EXCLUDED_TICKERS:
+        return 0, []
+
+    # Gate 1: dollar size floor
+    notional = float(alert.get("notional") or 0)
+    if notional < WHALE_MIN_NOTIONAL:
+        return 0, []
+
+    # Gate 2: ASK side (post-P0 fix, this is reliable)
+    side = (alert.get("side") or "").upper()
+    if side != "ASK":
+        return 0, []
+
+    # Gate 3: volume floor (filter retail)
+    vol = int(alert.get("volume") or 0)
+    if vol < WHALE_MIN_VOL:
+        return 0, []
+
+    # Gate 4: vol / oi ratio (accumulation, not routine rolling)
+    oi = int(alert.get("oi") or 0)
+    if oi > 0 and vol < oi * WHALE_MIN_VOL_OI_RATIO:
+        return 0, []
+
+    # Gate 5: direction alignment
+    sentiment = (alert.get("sentiment") or "").upper()
+    otype = (alert.get("option_type") or "").lower()
+    if otype == "call" and sentiment != "BULLISH":
+        return 0, []
+    if otype == "put" and sentiment != "BEARISH":
+        return 0, []
+
+    # Gate 7: chop suppression. If the ticker is in two-way flow chop,
+    # individual whale prints lose their directional meaning — suppress.
+    try:
+        from .flow_noise_filter import is_ticker_in_chop
+        if is_ticker_in_chop(ticker):
+            # Return reasons with the suppression note so audit logs show
+            # WHY we didn't tag (vs silently dropping).
+            return 0, [f"CHOP_SUPPRESSED ${notional/1e6:.1f}M ASK"]
+    except Exception:
+        pass
+
+    # All gates passed — build human-readable reasons string
+    reasons.append(f"${notional/1e6:.1f}M ASK")
+    reasons.append(f"vol={vol}")
+    if oi > 0:
+        reasons.append(f"vol/oi={vol/oi:.1f}x")
+    if vol > oi:
+        reasons.append("vol>oi")
+    return 1, reasons
+
+
 def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) -> None:
     conviction = _compute_conviction(alert, gex_info)
     alert["conviction"] = conviction
@@ -573,14 +689,31 @@ def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) 
             # Was qualifying but dedup'd. Mark so backtest / audit tooling
             # can distinguish "score too low" from "dedup'd repeat fire."
             alert["_informed_flow_dedup"] = 1
+
+    # Whale-strike classification (task #41, 2026-06-04 PM). Distinct from
+    # INFORMED FLOW — catches the dollar-driven CVS-class accumulation
+    # signature that the V/OI-shock-tuned insider classifier misses by
+    # design. Both flags can coexist on a single contract; a whale-tagged
+    # INFORMED FLOW alert is the maximum-conviction state.
+    is_whale, whale_reasons = _classify_whale_signature(alert)
+    alert["is_whale"] = is_whale
+    alert["whale_reasons"] = ",".join(whale_reasons) if whale_reasons else None
+    # Whale alerts also promote conviction to HIGH so the tracker auto-
+    # tracks them for exit-signal monitoring (mirrors the INFORMED FLOW
+    # promotion path above).
+    if is_whale and conviction != "HIGH":
+        alert["_pre_whale_conviction"] = conviction
+        conviction = "HIGH"
+        alert["conviction"] = "HIGH"
     with _conn() as c:
         c.execute(
             """INSERT INTO flow_alerts
             (ts, ticker, strike, expiration, option_type, volume, oi, vol_oi,
              last_price, bid, ask, side, sentiment, iv, delta, notional, spot,
              conviction, status, king, floor_level, ceiling_level, signal, regime,
-             macro_regime_tag, insider_score, is_insider, insider_reasons)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             macro_regime_tag, insider_score, is_insider, insider_reasons,
+             is_whale, whale_reasons)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 int(time.time()),
                 alert["ticker"],
@@ -610,6 +743,8 @@ def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) 
                 insider_score,
                 alert["is_insider"],
                 ",".join(insider_reasons) if insider_reasons else None,
+                alert.get("is_whale", 0),
+                alert.get("whale_reasons"),
             ),
         )
 
@@ -1192,11 +1327,24 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                             )
                             if otm_pct < 1.0:
                                 continue
+                        # 2026-06-04 PM (task #41): whale-tagged alerts also
+                        # force through, but only at the higher $3M Telegram
+                        # threshold. The $1M DB tag is for audit/backtest;
+                        # only $3M+ deserves a force-Telegram push so we
+                        # don't drown the user in 0DTE V/OI-shock repeats
+                        # that INFORMED FLOW already covers separately.
+                        _whale_tg = (
+                            a.get("is_whale")
+                            and (a.get("notional", 0) or 0) >= WHALE_TELEGRAM_NOTIONAL
+                        )
+                        _priority_force = bool(
+                            a.get("is_insider") or _whale_tg
+                        )
                         await send(
                             format_flow_alert(a),
                             ticker=a.get("ticker", ""),
-                            priority=bool(a.get("is_insider")),
-                            force=bool(a.get("is_insider")),
+                            priority=_priority_force,
+                            force=_priority_force,
                         )
                         # Cluster check on the OFF/legacy path too
                         if a.get("is_insider"):
@@ -1234,16 +1382,28 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                                 _vol_oi = payload.get("vol_oi", 0) or 0
                                 _notional = payload.get("notional", 0) or 0
                                 _is_weak = _vol_oi < 1.0 and _notional < 10_000_000
-                                if _is_weak and not payload.get("is_insider"):
-                                    # weak alerts dropped — UNLESS INSIDER flag
-                                    # is set, in which case the 6-criteria
-                                    # match overrides the V/OI < 1 mute.
+                                _is_tg_whale = (
+                                    payload.get("is_whale")
+                                    and (payload.get("notional", 0) or 0)
+                                        >= WHALE_TELEGRAM_NOTIONAL
+                                )
+                                if (_is_weak
+                                        and not payload.get("is_insider")
+                                        and not _is_tg_whale):
+                                    # weak alerts dropped — UNLESS INSIDER or
+                                    # $3M+ WHALE flag is set.
                                     continue
+                                # 2026-06-04 PM (task #41): WHALE forces
+                                # Telegram only at the higher $3M threshold.
+                                # Avoids 0DTE V/OI-shock double-pings.
+                                _priority_force = bool(
+                                    payload.get("is_insider") or _is_tg_whale
+                                )
                                 await send(
                                     format_flow_alert(payload),
                                     ticker=payload.get("ticker", ""),
-                                    priority=bool(payload.get("is_insider")),
-                                    force=bool(payload.get("is_insider")),
+                                    priority=_priority_force,
+                                    force=_priority_force,
                                 )
                                 fired_singles += 1
                                 # INFORMED CLUSTER detector (Batch 2, 2026-05-27).
