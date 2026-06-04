@@ -506,6 +506,23 @@ def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) 
     conviction = _compute_conviction(alert, gex_info)
     alert["conviction"] = conviction
 
+    # 2026-06-02 PM: noise filter gate. Drops LOW conviction, small-dollar
+    # MID side, and repeat-fire dedup. See server/flow_noise_filter.py
+    # for the full rule list. Audit showed 327K alerts/day from only 7K
+    # unique contracts (46x repeat). Filter reduces stored noise ~95%
+    # while preserving every meaningful state change.
+    try:
+        from .flow_noise_filter import should_insert
+        keep, reason = should_insert(alert)
+        if not keep:
+            # Silent drop — too noisy to log every dropped row. Sampling
+            # can be added if we want visibility on what's being filtered.
+            return
+    except Exception as _filter_err:
+        # Fail-open: if the filter errors, fall through to insert. Don't
+        # silently lose alerts due to a filter bug.
+        print(f"[FLOW_FILTER] error (fail-open): {_filter_err!r}", flush=True)
+
     # INFORMED FLOW score (0..6). >= 5 → is_insider=1 for force-Telegram + UI.
     # (Renamed from "INSIDER PATTERN" 2026-05-27 PM per ChatGPT validation —
     # the actual signal is "informed-looking flow ahead of catalysts" rather
@@ -522,7 +539,24 @@ def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) 
     # collapses that to one fire per 30-min window. The underlying alert
     # still persists to flow_alerts table; only the is_insider tag (and
     # therefore Telegram + UI pin) is suppressed for duplicates.
-    if insider_score >= 5 and not _is_informed_flow_duplicate(alert):
+    #
+    # 2026-06-02 PM: chop-ticker gate. When today's bull-buy/bear-buy
+    # notional balance is within ±10% on the dominant expiration, the
+    # ticker is in textbook chop (TSLA 6/5 today: $9.2B / $9.2B = 0.1%
+    # bias). INFORMED FLOW dispatch is suppressed for chop tickers
+    # until the balance breaks. Audit trail preserved — the alert
+    # still inserts with insider_score on it, just is_insider=0.
+    _ticker = alert.get("ticker", "")
+    _in_chop = False
+    try:
+        from .flow_noise_filter import is_ticker_in_chop
+        _in_chop = is_ticker_in_chop(_ticker)
+    except Exception:
+        pass
+    if insider_score >= 5 and _in_chop:
+        alert["is_insider"] = 0
+        alert["_informed_flow_chop_suppressed"] = 1
+    elif insider_score >= 5 and not _is_informed_flow_duplicate(alert):
         alert["is_insider"] = 1
         # INFORMED FLOW trades override conviction to HIGH so trade_tracker
         # auto-tracks for exit signals (currently filtered to HIGH/SWEEP
@@ -1072,13 +1106,28 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
             # Filter: only SWEEP and HIGH tiers get auto-tracked. LOW/MEDIUM
             # alerts are still inserted to flow_alerts table (insert_alert
             # above), just not added to the active exit-tracking queue.
+            #
+            # 2026-06-02: Index ETFs (SPY/SPX/QQQ/IWM/NDX/DIA/VIX) were
+            # dominating HIGH conviction because their base volume + notional
+            # auto-clears the score >= 5 threshold even on routine MM
+            # hedging. ~1,200/day of these were polluting tracker — only ~7%
+            # were genuine INFORMED FLOW. Exclude them from tracker creation
+            # unless explicitly insider-tagged.
+            _INDEX_TICKERS = {
+                "SPY", "SPX", "SPXW", "QQQ", "IWM", "DIA", "VIX", "NDX",
+            }
             conviction = (alert.get("conviction") or "").upper()
             if conviction in ("HIGH", "SWEEP"):
-                try:
-                    from .trade_tracker import create_trade
-                    create_trade(alert, gex_info)
-                except Exception:
-                    pass
+                is_index = ticker in _INDEX_TICKERS
+                is_insider = bool(alert.get("is_insider"))
+                if is_index and not is_insider:
+                    pass  # skip routine index MM flow
+                else:
+                    try:
+                        from .trade_tracker import create_trade
+                        create_trade(alert, gex_info)
+                    except Exception:
+                        pass
 
     return new_alerts
 

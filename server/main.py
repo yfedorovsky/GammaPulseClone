@@ -943,6 +943,30 @@ async def mtf(ticker: str):
     return {"ticker": t, "spot": state.get("actual_spot"), "table": table}
 
 
+@app.get("/api/flow/bias/{ticker}")
+async def flow_directional_bias(ticker: str, lookback_hours: float = 6.5):
+    """Cross-expiration directional bias for a ticker (Fix #5, 2026-06-02 PM).
+
+    Surfaces patterns the raw flow_alerts table buries — e.g. TSLA today:
+      6/5 weekly:   BALANCED ($9.2B / $9.2B)   CHOP
+      6/8 weekly:   BULL +27% ($1.3B / $0.7B)  BULL
+      6/12 weekly:  BULL +35% ($0.8B / $0.4B)  BULL
+      7/17 monthly: BEAR -27% ($0.3B / $0.5B)  BEAR
+
+    Each expiration gets bull-buy ($), bear-buy ($), net ($), bias%, and
+    verdict (CHOP / MILD / BULL / STRONG_BULL / BEAR / STRONG_BEAR).
+    """
+    from .flow_noise_filter import compute_directional_bias_by_expiration
+    rows = compute_directional_bias_by_expiration(
+        ticker, lookback_hours=int(lookback_hours)
+    )
+    return {
+        "ticker": ticker.upper(),
+        "lookback_hours": lookback_hours,
+        "expirations": rows,
+    }
+
+
 @app.get("/api/flow/{ticker}")
 async def flow_detail(ticker: str):
     """Enhanced flow detail: scans first N expirations for unusual volume,
