@@ -78,7 +78,11 @@ CREATE TABLE IF NOT EXISTS soe_signals (
   -- Apr 27 (Perplexity feedback): persist the factor blob so postmortems
   -- can answer "was HARD driven by event pressure, weak breadth, or
   -- concentration?" instead of only seeing the label. JSON blob.
-  macro_regime_factors TEXT
+  macro_regime_factors TEXT,
+  -- 2026-06-02 PM: mark 1 after successful Telegram dispatch so the Mir
+  -- TP window query can filter to signals the user actually received.
+  -- Default 0 = not sent (broken-A blocks, regime gates, IV gates).
+  telegram_sent INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_soe_ts ON soe_signals(ts);
 CREATE INDEX IF NOT EXISTS idx_soe_ticker ON soe_signals(ticker, ts);
@@ -238,6 +242,16 @@ def _conn():
 def init_signals_db() -> None:
     with _conn() as c:
         c.executescript(SIGNAL_SCHEMA)
+        # Idempotent ALTERs for columns added after initial schema.
+        # Each wrapped in try/except since SQLite ALTER raises if the
+        # column already exists (no IF NOT EXISTS for ALTER).
+        for ddl in (
+            "ALTER TABLE soe_signals ADD COLUMN telegram_sent INTEGER DEFAULT 0",
+        ):
+            try:
+                c.execute(ddl)
+            except Exception:
+                pass  # column already present
 
 
 def get_signals(limit: int = 50, status: str = "", grade: str = "") -> list[dict[str, Any]]:
@@ -2282,6 +2296,9 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
             if sig_rr > 2.5:
                 risk_factors_fired.append(f"R:R>{2.5} ({sig_rr:.1f})")
             is_broken_a_combo = len(risk_factors_fired) >= 2
+            # Persist on sig for downstream consumers (Telegram boost block
+            # needs to display these alongside the override factors).
+            sig["risk_factors_fired"] = risk_factors_fired
 
         # Auto-open paper position:
         #   - MIR_MOMENTUM: always (frozen spec v1.0)
@@ -2343,10 +2360,53 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
                 print(f"[SOE] Paper auto-open error: {e}")
 
         # Telegram push: A/A+ always EXCEPT broken signal_types,
-        # B+ only if solid (flow or volume quality)
+        # B+ only if solid (flow or volume quality).
+        #
+        # 2026-06-02 PM: Added conviction_booster override path. Audit
+        # found 4 A signals today (CRDO/HOOD/HIMS/SHOP) silently blocked
+        # by is_broken_a_combo despite perfect multi-factor conviction
+        # (daily EMA stack, sector strength, multi-day SOE repeat,
+        # pre-fire INFORMED FLOW). Estimated suppression cost: ~$9.1K
+        # realized P/L on 6/2 alone. Override fires when conviction
+        # score >= 70 — telegram dispatch only, auto-trade gates still
+        # respect is_broken_a_combo.
         should_push = False
         if sig.get("grade") in ("A+", "A") and not is_broken_a_combo:
             should_push = True
+        elif sig.get("grade") in ("A+", "A") and is_broken_a_combo:
+            # Try conviction booster override
+            try:
+                from .conviction_booster import (
+                    compute_conviction_boost,
+                    CONVICTION_OVERRIDE_THRESHOLD,
+                )
+                boost_score, boost_factors = await compute_conviction_boost(
+                    ticker, sig
+                )
+                sig["_boost_score"] = boost_score
+                sig["_boost_factors"] = boost_factors
+                if boost_score >= CONVICTION_OVERRIDE_THRESHOLD:
+                    sig["_broken_a_overridden"] = True
+                    should_push = True
+                    print(
+                        f"[CONVICTION] {ticker} {sig.get('grade')} "
+                        f"{sig.get('signal_type','')} OVERRIDE: "
+                        f"score={boost_score} factors={len(boost_factors)}",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"[CONVICTION] {ticker} {sig.get('grade')} "
+                        f"{sig.get('signal_type','')} "
+                        f"boost={boost_score} < {CONVICTION_OVERRIDE_THRESHOLD} "
+                        f"— stays blocked",
+                        flush=True,
+                    )
+            except Exception as e:
+                print(
+                    f"[CONVICTION] {ticker} boost failed (fail-closed): {e!r}",
+                    flush=True,
+                )
         elif sig.get("grade") == "B+" and contract:
             # B+ needs quality confirmation: tight spread + decent OI + good R:R
             spread_ok = contract.get("spread_pct", 99) < 5
@@ -2513,12 +2573,30 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
                 # whenever any other detector fired on the same ticker
                 # first (Bug #11 fix, 2026-05-13).
                 _grade = sig.get("grade", "")
-                await send(
+                _tg_ok = await send(
                     format_soe_signal(sig),
                     ticker=ticker,
                     priority=(_grade == "A+"),
                     force=(_grade in ("A", "A+")),
                 )
+                # Stamp dispatch on the row so Mir TP query can filter to
+                # signals actually sent (2026-06-02 PM — Mir TP was showing
+                # broken-A signals that never reached Telegram as "open
+                # winners"). Best-effort; failure here doesn't gate the
+                # alert.
+                try:
+                    if _tg_ok and sig.get("id"):
+                        import sqlite3 as _sql3
+                        _c = _sql3.connect("snapshots.db", timeout=3)
+                        _c.execute(
+                            "UPDATE soe_signals SET telegram_sent = 1 "
+                            "WHERE id = ?",
+                            (sig["id"],),
+                        )
+                        _c.commit()
+                        _c.close()
+                except Exception as _stamp_err:
+                    print(f"[SOE] tg-sent stamp failed: {_stamp_err!r}", flush=True)
                 # Performance database log (2026-05-20). Logs even if
                 # suppressed; future analysis needs to know what would-have-
                 # fired vs what did. Set _suppress_telegram for the UI-only

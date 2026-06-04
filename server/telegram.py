@@ -415,6 +415,27 @@ def format_soe_signal(sig: dict[str, Any]) -> str:
         except Exception:
             pass
 
+    # Conviction Booster block (2026-06-02 PM). When is_broken_a_combo
+    # would have suppressed this signal but multi-factor conviction
+    # overrode the gate (score ≥ 70), surface the override + the
+    # contributing factors AND the original risk factors so the trader
+    # can decide manually. See server/conviction_booster.py.
+    boost_block = None
+    if sig.get("_broken_a_overridden"):
+        boost_score = sig.get("_boost_score", 0)
+        boost_factors = sig.get("_boost_factors") or []
+        risk_str = ", ".join(sig.get("risk_factors_fired") or [])
+        boost_lines = [
+            f"✅ <b>CONVICTION OVERRIDE</b> — {boost_score}/100",
+        ]
+        if risk_str:
+            boost_lines.append(f"  ⚠️ Risk factors: {risk_str}")
+        boost_lines.append("  <b>Confirming factors:</b>")
+        for f in boost_factors[:6]:
+            boost_lines.append(f"    ↳ {f}")
+        boost_lines.append("  <i>Auto-trade still blocked — manual review</i>")
+        boost_block = "\n".join(boost_lines)
+
     # Macro regime footer — Apr 27 shadow mode. Compact one-liner so
     # the trader sees regime context at the moment of decision, not just
     # in postmortem. NONE = no badge (avoid clutter on normal days).
@@ -447,6 +468,7 @@ def format_soe_signal(sig: dict[str, Any]) -> str:
         er_ivr_block,  # ER-in-window + IVR pct (2026-05-20)
         high_score_fade_block,  # Above convergence so the warning lands first
         convergence_block,
+        boost_block,  # Conviction Override info (2026-06-02 PM)
         drift_warning,
         regime_footer,
     ]

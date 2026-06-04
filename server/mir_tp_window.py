@@ -133,11 +133,17 @@ def _collect_open_alerts() -> dict[str, list[dict[str, Any]]]:
             "notional": r["notional"] or 0,
         })
 
-    # SOE A/A+ — open if neither target nor stop hit yet
+    # SOE A/A+ — open if neither target nor stop hit yet AND signal
+    # actually reached Telegram. 2026-06-02 PM: previously included
+    # signals blocked by is_broken_a_combo IV gate — the user got Mir TP
+    # "take profits on open winners" messages for trades they were never
+    # alerted to. Filter to telegram_sent = 1 so what we surface as "open
+    # winners" matches what we actually sent.
     soe_rows = conn.execute(
         """SELECT ts, ticker, signal_type, grade, spot, target, stop, direction
            FROM soe_signals
            WHERE ts >= ? AND grade IN ('A', 'A+') AND status = 'PENDING'
+             AND telegram_sent = 1
            ORDER BY ts""",
         (today_start,),
     ).fetchall()
