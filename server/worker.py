@@ -1095,6 +1095,19 @@ async def run_worker(stop_event: asyncio.Event) -> None:
                     await maybe_fire_mir_tp_alert()
                 except Exception as mir_err:
                     print(f"[worker] mir_tp_window failed: {mir_err}")
+                # Triple Confluence alert (2026-06-02) — fires when
+                # INFORMED FLOW + king migration + SOE A/A+ all converge
+                # on a ticker in same direction within a 4-hour rolling
+                # window. Motivated by MRVL 5/28 missed signal: 4× INFORMED
+                # FLOW + 4× A/A+ SOE + king migration all bullish in same
+                # afternoon, but each fired separately. Composite alert
+                # surfaces the convergence loudly. Once-per-ticker-per-
+                # direction-per-day dedup.
+                try:
+                    from .triple_confluence import maybe_fire_triple_confluence
+                    await maybe_fire_triple_confluence()
+                except Exception as tc_err:
+                    print(f"[worker] triple_confluence failed: {tc_err}")
                 # Intraday spike detector (P0.6, 2026-05-12). Fires when a
                 # ticker's 5-min flow bucket >= 10x today's baseline and
                 # >= $5M absolute. Catches Fidget-style "18x surge" alerts
