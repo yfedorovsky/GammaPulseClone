@@ -622,6 +622,27 @@ def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) 
     conviction = _compute_conviction(alert, gex_info)
     alert["conviction"] = conviction
 
+    # 2026-06-04 PM (task #41): classify whale FIRST so we can bypass the
+    # LOW-conviction drop in the noise filter. CVS/NBIS-class whale
+    # signatures (long-dated big-dollar ASK adds) typically score LOW
+    # conviction because vol < 2000 AND V/OI < 10 — those are the
+    # short-dated lottery thresholds, not the institutional-accumulation
+    # ones. Without this promote-before-filter ordering, every whale
+    # fire would be dropped by the noise filter before the whale
+    # classifier even ran. NBIS 350C 9/18 ($2.6M FL0WG0D, 6/4 13:40)
+    # was the canonical missed case.
+    is_whale, whale_reasons = _classify_whale_signature(alert)
+    alert["is_whale"] = is_whale
+    alert["whale_reasons"] = ",".join(whale_reasons) if whale_reasons else None
+    if is_whale and conviction == "LOW":
+        # Promote LOW -> MEDIUM so it survives the noise filter's LOW gate.
+        # The next promotion to HIGH (for tracker auto-tracking) happens
+        # AFTER the noise filter survives, so we don't accidentally HIGH-
+        # promote dedup'd repeat fires.
+        alert["_pre_whale_low_conviction"] = "LOW"
+        conviction = "MEDIUM"
+        alert["conviction"] = "MEDIUM"
+
     # 2026-06-02 PM: noise filter gate. Drops LOW conviction, small-dollar
     # MID side, and repeat-fire dedup. See server/flow_noise_filter.py
     # for the full rule list. Audit showed 327K alerts/day from only 7K
@@ -690,18 +711,12 @@ def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) 
             # can distinguish "score too low" from "dedup'd repeat fire."
             alert["_informed_flow_dedup"] = 1
 
-    # Whale-strike classification (task #41, 2026-06-04 PM). Distinct from
-    # INFORMED FLOW — catches the dollar-driven CVS-class accumulation
-    # signature that the V/OI-shock-tuned insider classifier misses by
-    # design. Both flags can coexist on a single contract; a whale-tagged
-    # INFORMED FLOW alert is the maximum-conviction state.
-    is_whale, whale_reasons = _classify_whale_signature(alert)
-    alert["is_whale"] = is_whale
-    alert["whale_reasons"] = ",".join(whale_reasons) if whale_reasons else None
-    # Whale alerts also promote conviction to HIGH so the tracker auto-
-    # tracks them for exit-signal monitoring (mirrors the INFORMED FLOW
-    # promotion path above).
-    if is_whale and conviction != "HIGH":
+    # Whale tracker promotion (task #41, 2026-06-04 PM).
+    # The is_whale flag was set at the TOP of insert_alert (before the
+    # noise filter) so LOW-scoring whale signatures could survive. Now
+    # that we've made it past dedup, promote to HIGH so the tracker
+    # auto-tracks for exit-signal monitoring (mirrors INFORMED FLOW).
+    if alert.get("is_whale") and conviction != "HIGH":
         alert["_pre_whale_conviction"] = conviction
         conviction = "HIGH"
         alert["conviction"] = "HIGH"
