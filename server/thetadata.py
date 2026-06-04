@@ -40,9 +40,12 @@ from typing import Any
 #     Empirical 5/27 logs: MAX_STREAMS_REACHED at well below 1000 active subs
 #     suggests effective cap closer to ~500. Set via env to make it tweakable
 #     without code change.
-#   - Pro $160/mo: documented 50K, but again practical cap may be lower.
-# Override via THETA_MAX_STREAMS env var (default 500 for Standard).
-THETA_MAX_STREAMS = int(os.environ.get("THETA_MAX_STREAMS", "500"))
+#   - Pro $160/mo: documented "stream every option trade" — no doc'd cap.
+#     2026-06-02 PM upgrade. Default raised 500 → 45,000 to match Pro tier.
+#     If empirical MAX_STREAMS_REACHED appears, lower via THETA_MAX_STREAMS
+#     env var (preferred — no code change needed).
+# Override via THETA_MAX_STREAMS env var.
+THETA_MAX_STREAMS = int(os.environ.get("THETA_MAX_STREAMS", "45000"))
 
 import httpx
 import websockets

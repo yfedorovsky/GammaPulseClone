@@ -843,10 +843,23 @@ async def warmup_indexes() -> None:
     indexes = ["SPY", "QQQ", "IWM", "SPX", "NDX", "RUT", "DIA", "VIX"]
     # Import here to avoid circular dependency at module load
     from .tickers import TIER_1
-    # Index tickers first, then rest of TIER_1 in declared order, dedup
+    # 2026-06-02 PM: also prime Tier2 thematic names (RKLB, COIN, MSTR,
+    # CRDO, ALAB, etc.) so the sweep_detector subscription planner has
+    # spot prices when it runs. Without this, Tier2/flow_top/flow_mid/
+    # flow_tail all show 0 contracts in the first cycle because
+    # _subscribe_root() returns 0 when snapshot.get(root) has no spot.
+    # This bug was masked at the old ±10% radius but became visible after
+    # the Pro-tier upgrade widened Tier2 to ±50%.
+    tier2_warmup: list[str] = []
+    try:
+        from .sweep_detector import TIER2_THEMATIC_ROOTS
+        tier2_warmup = list(TIER2_THEMATIC_ROOTS)
+    except Exception:
+        pass
+    # Index tickers first, then TIER_1, then TIER2 thematic, dedup
     seen: set[str] = set()
     ordered: list[str] = []
-    for t in indexes + list(TIER_1):
+    for t in indexes + list(TIER_1) + tier2_warmup:
         if t not in seen and t in set(all_tickers()):
             ordered.append(t)
             seen.add(t)
@@ -908,8 +921,10 @@ async def warmup_indexes() -> None:
                     print(f"[WARMUP] {t} failed: {e!r}", flush=True)
 
         t0 = time.time()
+        n_tier2 = len(tier2_warmup) if tier2_warmup else 0
+        n_tier1 = len(ordered) - 8 - n_tier2
         print(f"[WARMUP] Priming cache for {len(ordered)} tickers "
-              f"(8 indexes + {len(ordered) - 8} TIER_1); concurrency=4")
+              f"(8 indexes + {n_tier1} TIER_1 + {n_tier2} TIER_2); concurrency=4")
         await asyncio.gather(*(warm(t) for t in ordered), return_exceptions=True)
         print(f"[WARMUP] Done in {time.time() - t0:.1f}s — "
               f"warmed={completed}, skipped_already_cached={skipped}")

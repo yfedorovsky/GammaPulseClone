@@ -358,9 +358,11 @@ TIER2_THEMATIC_ROOTS = [
 # names (AMAT/TSM/KLAC) hit the strike cap and consumed 5,700 specs of
 # budget alone, leaving nothing for the prior-day flow-weighted tiers.
 # 10% still covers the UPSIDE_BET reach for ~90% of historical Tier2 alerts.
-TIER2_OTM_COVERAGE_PCT = 0.10  # ±10% of spot
+TIER2_OTM_COVERAGE_PCT = 0.50  # ±50% of spot (Pro upgrade 2026-06-02
+                                # — was 0.10 ±10%; caught RKLB whale-class
+                                # misses on far-OTM strikes)
 # Cap to prevent runaway strike counts on very high-priced tickers
-TIER2_MAX_RADIUS = 20
+TIER2_MAX_RADIUS = 60          # was 20 — Pro tier headroom for full whale chain
 
 
 # ── Budget + flow-weighted tier bands (added 2026-05-08) ──────────────
@@ -385,32 +387,38 @@ TIER2_MAX_RADIUS = 20
 # tier prioritization (the actual win) while pulling the cap back to a
 # safe value Theta will accept.
 
-SUBSCRIPTION_BUDGET = 7_500         # hard ceiling — empirically below Theta cap
-SUBSCRIPTION_TARGET = 7_400         # target — 100 headroom for intra-session expansion (2026-05-22)
-SUBSCRIPTION_MAX_PLANNED = 7_400    # 2026-05-22: bumped 7000->7400 to fit MVP monthly radius bump
+# 2026-06-02 PM: Upgraded ThetaData Standard → Pro ($80 → $160/mo) after
+# RKLB 7/17 $210C miss (whale paid $170K+ for strike 78% OTM, outside our
+# ±10% Tier-2 radius). Pro tier streams every OPRA trade — no 15K cap.
+# All three subscription ceilings lifted in tandem so the planner actually
+# uses the new headroom (it took the MIN of these, not the MAX). The
+# TIER2 radius was also lifted 0.10 → 0.50 in the same commit.
+SUBSCRIPTION_BUDGET = 50_000        # Pro tier — was 7_500 on Standard
+SUBSCRIPTION_TARGET = 45_000        # was 7_400 — planner stops here
+SUBSCRIPTION_MAX_PLANNED = 45_000   # was 7_400 — hard loop cap in plan()
 
 # Per-tier soft budgets. Compress agent 2's 5-tier prio scheme into a tighter
 # envelope. flow_top kept at material size so AAPL-deal-style insider flow
 # on rank-11 names like INTC/QCOM/RBLX/MSTR/COIN actually has subscription
 # coverage.
 #
-# 2026-05-20 PM (post-NVDA-earnings audit): 7-of-12 named whale trades from
-# salmaogs/bullflow board MISSED today. Pattern: small-cap + monthly/quarterly
-# expiration (AAOI 175C 7/17 $9.4M, HIVE 4C 9/18 $995K, PL 47C 8/21 $1.4M,
-# IOT 30C 1/15/27 $1.8M). flow_tail=0 was the structural blocker. Bumped
-# 0 -> 400 to cover rank 101-300 tickers at narrow strike radius. Total
-# budget rises 6850 -> 7250, still well within the 7500 ceiling.
+# 2026-06-02 PM (Pro upgrade): tier budgets scaled 6x to use the new
+# capacity. MVP carries most of the increase since that's where you trade.
+# flow_tail gets a big bump too — that's where the small-cap whale lottos
+# live (AAOI/HIVE/PL/IOT/RKLB-class).
 TIER_BUDGETS = {
-    "mvp": 4_400,         # 2026-05-22: 4000->4400 (+400) for monthly OTM radius bump
-    "tier2": 1_500,
-    "flow_top": 1_000,    # rank 1-30 gap-fillers (QCOM, RBLX, WFC, etc.)
-    "flow_mid": 500,      # rank 31-100 (5/20: 350->500 to fit monthly coverage)
-    "flow_tail": 400,     # 2026-05-20: rank 101-300 long-tail (AAOI/HIVE/PL/IOT)
+    "mvp":       25_000,   # was 4,400 — full chains on watchlist names
+    "tier2":      8_000,   # was 1,500 — far-OTM RKLB-class lottos now covered
+    "flow_top":   5_000,   # was 1,000 — top-30 by prior-day notional
+    "flow_mid":   3_500,   # was 500 — rank 31-100
+    "flow_tail":  3_500,   # was 400 — rank 101-300 long-tail whales
 }
 
-FLOW_FULL_COVERAGE_PCT = 0.10       # ±10% of spot for top-30 (bumped 5/12)
-FLOW_REDUCED_COVERAGE_PCT = 0.05    # ±5% for rank 31-100 (bumped 5/12)
-FLOW_MIN_COVERAGE_PCT = 0.025       # ±2.5% for long-tail (101+) (bumped 5/12)
+# Strike radius percentages also expanded with the budget headroom. The
+# old 5-10% radii missed every whale trade documented since 5/20.
+FLOW_FULL_COVERAGE_PCT = 0.25       # was 0.10 — top-30 names
+FLOW_REDUCED_COVERAGE_PCT = 0.15    # was 0.05 — rank 31-100
+FLOW_MIN_COVERAGE_PCT = 0.08        # was 0.025 — rank 101-300
 
 # 2026-05-22: differentiated MVP coverage on monthly expirations. The
 # 10% near-term radius leaves whales like SPY 805C 8/21 ($2.7M FL0WG0D
@@ -670,7 +678,7 @@ async def _build_subscription_plan(
         f"(MVP={tier_counts['mvp']}, Tier2={tier_counts['tier2']}, "
         f"flow_top={tier_counts['flow_top']}, flow_mid={tier_counts['flow_mid']}, "
         f"flow_tail={tier_counts['flow_tail']}) "
-        f"— budget {SUBSCRIPTION_BUDGET}, {headroom} headroom "
+        f"- budget {SUBSCRIPTION_BUDGET}, {headroom} headroom "
         f"(target {SUBSCRIPTION_TARGET})",
         flush=True,
     )
@@ -1163,9 +1171,14 @@ async def run_sweep_detector(stop_event: asyncio.Event) -> None:
                     print(f"[SWEEP] {label} subscribe failed: {e}")
             await asyncio.sleep(0.005)
         subscribed_roots.update(new_roots)
+        # 2026-06-02 PM: ASCII hyphen instead of em-dash because Windows
+        # cp1252 console crashes on unicode here. Same fix applied to the
+        # subscription-plan log line below. Crash here used to swallow the
+        # success message and look like phase2 was failing.
         print(
             f"[SWEEP] {label}: added {len(new_roots)} roots ({sorted(new_roots)[:8]}"
-            f"{'...' if len(new_roots)>8 else ''}) — {sent} specs sent, {failed} failed"
+            f"{'...' if len(new_roots)>8 else ''}) - {sent} specs sent, {failed} failed",
+            flush=True,
         )
         return sent, len(new_roots)
 
