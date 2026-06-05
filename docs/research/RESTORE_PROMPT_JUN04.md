@@ -1,5 +1,13 @@
 # Restoration Prompt — Post-Compact Continuation (June 4, 2026 PM)
 
+> **⚠️ SUPERSEDED (2026-06-05).** The priority task this prompt describes
+> (#44 beat-FL0WG0D latency) is DONE, plus #45/#47/#48/#49/#50. For current
+> state read **[SESSION_JUN04_05_DETECTION_HARDENING.md](SESSION_JUN04_05_DETECTION_HARDENING.md)**
+> instead — it has the full commit list, the 6/4 full-stack validation
+> (426 alerts/day, NEE arb killed), the pre-bell restart SOP, and the open
+> backlog. Final HEAD `cd9cbdc` + Tier A docs commit. The block below is
+> kept only for historical context.
+
 Paste the block below into a fresh Claude session to resume exactly where
 we left off. The first message after restoration triggers the priority
 task: **beat FL0WG0D's latency on whale alerts.**
