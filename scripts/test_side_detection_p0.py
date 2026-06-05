@@ -82,6 +82,33 @@ CASES = [
         "thesis. New 15x rule does NOT apply (V/OI 11.1) so the line 796 "
         "vol>oi + V/OI>=10 path is what catches it.",
     ),
+    # === task #47 — large-notional moderate-V/OI ASK override ===
+    (
+        "NVDA 215C 7/2 (task #47 canonical, 6/4)",
+        11.30, 11.50, 11.40, 4824, 3202, 0.55, 5500000, "ASK",
+        "V/OI 1.5x (below every shock gate), last EXACTLY at mid $11.40, "
+        "delta 0.55 (below 0.70 deep-ITM rule). Old code returned MID -> "
+        "tagged NEUTRAL/BEARISH. OPRA tape (theta_v3_query) confirms 61 "
+        "prints at $11.25 = the ask, condition=18 ISO sweep. The new "
+        "large-notional rule ($5.5M + vol>oi + last>=mid) catches it.",
+    ),
+    (
+        "NBIS 250C 6/18 (multi-tenor ladder leg, 6/4)",
+        30.30, 30.90, 30.60, 6328, 1864, 0.62, 19150000, "ASK",
+        "V/OI 3.4x, last at mid $30.60, delta 0.62. $19.15M notional leg "
+        "of the NBIS 6/4 institutional ladder (Cheddar Flow flagged it "
+        "1:40 PM). Old code mis-sided 71% of the $3M+ NBIS rows to MID/"
+        "BID. Large-notional rule fires (vol 6328 > oi 1864, last>=mid).",
+    ),
+    # === task #47 GUARD — large notional but last BELOW mid stays MID ===
+    (
+        "GUARD: $2M vol>oi but last below mid",
+        5.00, 5.40, 5.15, 1000, 500, 0.40, 2000000, "MID",
+        "Large notional ($2M) and vol>oi BUT last $5.15 is below mid "
+        "$5.20. The last>=mid guard must keep this MID (don't over-flip "
+        "to ASK on genuine sub-mid prints). Proves the override is "
+        "surgical, not a blanket large-notional=ASK rule.",
+    ),
     # === NEGATIVE CASES — these should STAY BID ===
     (
         "BID-side negative: low V/OI + last at bid",

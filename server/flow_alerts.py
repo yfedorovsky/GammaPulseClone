@@ -575,6 +575,20 @@ WHALE_PARITY_EXTRINSIC_PCT = 0.003     # extrinsic <= 0.3% of spot = parity
 WHALE_PARITY_DEEP_ITM_DELTA = 0.85     # |delta| >= this = deep ITM
 WHALE_PARITY_DEEP_ITM_STRIKE_PCT = 0.95  # strike <= 95% of spot = deep ITM
 
+# Side-detection v2 (task #47, 2026-06-04 PM): dollar-size override for the
+# moderate-V/OI near-mid case. The snapshot `last` drifts to mid AFTER a
+# sweep's prints clear, so spread position is uninformative — but a large-
+# notional trade with vol > oi (opening, not a closing roll) is statistically
+# buyer-initiated. Two documented misses motivated this:
+#   - NVDA 215C 7/2: $5.5M, V/OI 1.5, last exactly at mid → tagged MID/BID,
+#     OPRA tape (61 prints at the ask, condition=18 ISO sweep) confirms ASK
+#   - NBIS 6/4 multi-tenor ladder: 71% of $3M+ call rows mis-sided away from
+#     ASK, corrupting whale tags + bias aggregations on a real institutional
+#     accumulation ladder
+# Only applies when last >= mid (respects genuine bid-side prints) so it
+# resolves the ambiguous mid-drift case without overriding clear selling.
+SIDE_LARGE_NOTIONAL = 1_000_000        # $ — institutional-size prior floor
+
 
 def _is_parity_arb_call(alert: dict[str, Any]) -> bool:
     """Detect deep-ITM calls trading at/below intrinsic — the dividend-
@@ -948,6 +962,15 @@ def _detect_side(
             if last >= mid:
                 return "ASK"
             return "BID"
+        # Large-notional opening accumulation (task #47, 2026-06-04 PM).
+        # Below the V/OI shock thresholds the near-mid case defaults to
+        # MID — but a $1M+ trade with vol > oi and last at/above mid is
+        # statistically buyer-initiated. The snapshot `last` drifted to
+        # mid after the sweep prints cleared (NVDA 215C 7/2: $5.5M, V/OI
+        # 1.5, last exactly at mid; NBIS 6/4 ladder: 71% mis-sided). The
+        # `last >= mid` guard keeps genuine bid-side prints as MID/BID.
+        if notional >= SIDE_LARGE_NOTIONAL and vol > oi and last >= mid:
+            return "ASK"
         return "MID"
 
     # P0 fix (Bug #12, 2026-05-13 PM): MID-of-spread aggression bias.
