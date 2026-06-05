@@ -373,6 +373,36 @@ def test_pin_min_slow_expirations():
     assert wc.MIN_WHALE_SLOW_CLUSTER_EXPIRATIONS == 2
 
 
+def test_span_guard_blocks_sub_window_multi_exp_burst():
+    """Span guard: a multi-expiration burst landing entirely within the
+    fast window must NOT fire a slow cluster — that's fast's domain.
+
+    Without the span guard, this would double-fire (fast + slow). With it,
+    only fast fires. On the 2026-06-04 backtest the guard eliminated 18
+    redundant slow banners (71 → 53 slow fires)."""
+    _reset()
+    # First leg fires nothing
+    wc.record_and_check(_alert(strike=215.0, expiration="2026-07-02"))
+    # Second leg on a DIFFERENT expiration, but same instant (span ~0).
+    # Fast fires (2 distinct legs in 30-min window). Slow must NOT fire
+    # because the roster span is far below the 30-min fast window.
+    cluster = wc.record_and_check(_alert(strike=210.0, expiration="2027-01-15"))
+    assert cluster is not None
+    assert cluster["tier"] == "fast", \
+        f"Sub-window multi-exp burst must be fast-only, got {cluster['tier']}"
+    # Now expire the fast dedup and add a 3rd same-instant leg. Slow still
+    # must not fire (span still ~0 even with 3 expirations).
+    key = ("NVDA", "BULL")
+    wc._whale_cluster_dedup[key] = time.time() - wc.WHALE_CLUSTER_DEDUP_TTL_SEC - 1
+    wc._whale_slow_cluster_dedup[key] = 0.0  # slow dedup clear
+    cluster2 = wc.record_and_check(_alert(strike=300.0, expiration="2026-09-18"))
+    # Fast re-arms and fires again (3 legs, dedup expired) — still fast,
+    # because span is ~0 so the slow guard blocks even though 3 expirations
+    assert cluster2 is not None
+    assert cluster2["tier"] == "fast", \
+        f"Span still sub-window, must stay fast-only, got {cluster2['tier']}"
+
+
 # === Window expiry ===
 
 def test_old_entries_excluded_from_fast_cluster():
@@ -423,6 +453,7 @@ TESTS = [
     test_pin_slow_window_sec,
     test_pin_slow_dedup_ttl_sec,
     test_pin_min_slow_expirations,
+    test_span_guard_blocks_sub_window_multi_exp_burst,
 ]
 
 

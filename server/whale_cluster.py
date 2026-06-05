@@ -211,11 +211,23 @@ def record_and_check(alert: dict[str, Any]) -> dict[str, Any] | None:
             _whale_cluster_dedup[key] = now
             return _build_cluster_dict(ticker, direction, fast_roster, "fast")
 
-    # ── SLOW TIER: 4-hour window, 2+ distinct EXPIRATIONS ────────────
-    # Only fires if fast didn't fire to avoid double-banners on patterns
-    # the fast tier also catches.
+    # ── SLOW TIER: 4-hour window, 2+ distinct EXPIRATIONS, span > 30 min ──
+    # Two guards keep this mutually exclusive with the fast tier:
+    #   1. We only reach here if fast did NOT fire THIS call (early return
+    #      above). Note this is per-call, not "fast never fired" — after a
+    #      fast cooldown a later call can fall through to slow.
+    #   2. SPAN GUARD: the roster must span MORE than the fast window. A
+    #      multi-expiration burst that lands entirely within 30 min is the
+    #      fast tier's domain (and already carries a "📐 + MULTI-TENOR"
+    #      badge in the fast banner when 3+ expirations). The slow tier is
+    #      ONLY for ladders that genuinely build over hours — the NBIS 6/4
+    #      case (10:14 → 13:51 = 217 min). Without this guard, backtest on
+    #      2026-06-04 fired 18 redundant slow banners on sub-30-min bursts
+    #      that fast already covered (71 slow → 53 genuine cross-window).
     slow_expirations = {f["expiration"] for f in roster}
-    if len(slow_expirations) >= MIN_WHALE_SLOW_CLUSTER_EXPIRATIONS:
+    roster_span = max(f["ts"] for f in roster) - min(f["ts"] for f in roster)
+    if (len(slow_expirations) >= MIN_WHALE_SLOW_CLUSTER_EXPIRATIONS
+            and roster_span > WHALE_CLUSTER_WINDOW_SEC):
         last_slow = _whale_slow_cluster_dedup.get(key, 0.0)
         if now - last_slow >= WHALE_CLUSTER_SLOW_DEDUP_TTL_SEC:
             _whale_slow_cluster_dedup[key] = now
