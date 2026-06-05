@@ -16,9 +16,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from server.flow_alerts import (  # noqa: E402
     _classify_whale_signature,
+    _is_parity_arb_call,
     WHALE_MIN_NOTIONAL,
     WHALE_MIN_VOL,
     WHALE_MIN_VOL_OI_RATIO,
+    WHALE_PARITY_EXTRINSIC_PCT,
+    WHALE_PARITY_DEEP_ITM_DELTA,
 )
 import server.flow_noise_filter as nf  # noqa: E402
 
@@ -224,6 +227,101 @@ def test_threshold_volume_floor():
 
 def test_threshold_voi_ratio():
     assert WHALE_MIN_VOL_OI_RATIO == 0.30
+
+
+# === Dividend-arb / parity filter (task #49) ===
+
+def _parity_alert(
+    ticker="NEE", strike=40.0, expiration="2027-01-15",
+    spot=85.65, last=45.62, delta=1.0, notional=327_000_000,
+    volume=3000, oi=5000, option_type="call",
+    side="ASK", sentiment="BULLISH",
+):
+    return {
+        "ticker": ticker, "strike": strike, "expiration": expiration,
+        "option_type": option_type, "side": side, "sentiment": sentiment,
+        "volume": volume, "oi": oi, "notional": notional,
+        "spot": spot, "last": last, "delta": delta,
+    }
+
+
+def test_parity_nee_40c_canonical():
+    """NEE $40 Jan'27 call — the canonical dividend-arb case from 6/4.
+    Intrinsic $45.65, last $45.62, extrinsic -$0.03 → parity."""
+    _reset_chop()
+    a = _parity_alert()
+    assert _is_parity_arb_call(a) is True
+    is_whale, reasons = _classify_whale_signature(a)
+    assert is_whale == 0, "NEE dividend-arb must NOT be whale-tagged"
+    assert any("PARITY_ARB" in r for r in reasons)
+
+
+def test_parity_nee_65c():
+    """NEE $65 6/18 — intrinsic $20.65, last $20.49, extrinsic -$0.16."""
+    _reset_chop()
+    a = _parity_alert(strike=65.0, expiration="2026-06-18", last=20.49,
+                      notional=62_800_000)
+    assert _is_parity_arb_call(a) is True
+
+
+def test_parity_realtime_path_no_delta():
+    """Realtime WHALE-RT path has delta=0 — strike-vs-spot proxy must
+    still catch the dividend-arb signature."""
+    _reset_chop()
+    a = _parity_alert(strike=65.0, last=20.45, delta=0.0)
+    # strike 65 <= spot 85.65 * 0.95 = 81.4 → deep ITM via proxy
+    assert _is_parity_arb_call(a) is True
+
+
+def test_parity_legit_directional_deep_itm_kept():
+    """A real directional deep-ITM buy pays POSITIVE time premium —
+    must NOT be flagged. NVDA 200C, spot 217, last 25.50, extrinsic
+    8.50 = 3.9% of spot."""
+    _reset_chop()
+    a = _parity_alert(ticker="NVDA", strike=200.0, expiration="2026-08-21",
+                      spot=217.0, last=25.50, delta=0.78, notional=5_000_000,
+                      oi=2000)
+    assert _is_parity_arb_call(a) is False
+    is_whale, _ = _classify_whale_signature(a)
+    assert is_whale == 1, "legit directional deep-ITM must stay whale-tagged"
+
+
+def test_parity_otm_call_not_flagged():
+    """OTM call has intrinsic=0 so extrinsic=full premium — never parity."""
+    _reset_chop()
+    a = _parity_alert(ticker="TSLA", strike=450.0, expiration="2026-06-18",
+                      spot=425.0, last=12.0, delta=0.35, oi=2000)
+    assert _is_parity_arb_call(a) is False
+
+
+def test_parity_put_not_flagged():
+    """Filter only applies to calls — deep-ITM puts pass through."""
+    _reset_chop()
+    a = _parity_alert(ticker="NEE", strike=130.0, expiration="2026-06-18",
+                      spot=85.65, last=44.40, delta=-1.0,
+                      option_type="put", sentiment="BEARISH")
+    assert _is_parity_arb_call(a) is False
+
+
+def test_parity_missing_spot_returns_false():
+    """No spot data → can't compute parity → don't suppress (fail open)."""
+    _reset_chop()
+    a = _parity_alert(spot=0)
+    assert _is_parity_arb_call(a) is False
+
+
+def test_parity_ultra_deep_synthetic_flagged():
+    """Strike $5 on a $373 stock (GOOGL 6/4) = synthetic/box trade, not
+    directional. Extrinsic near zero → flagged."""
+    _reset_chop()
+    a = _parity_alert(ticker="GOOGL", strike=5.0, expiration="2026-06-18",
+                      spot=373.10, last=367.40, delta=1.0)
+    assert _is_parity_arb_call(a) is True
+
+
+def test_parity_thresholds_pinned():
+    assert WHALE_PARITY_EXTRINSIC_PCT == 0.003
+    assert WHALE_PARITY_DEEP_ITM_DELTA == 0.85
 
 
 # === Real-time WHALE dispatch (task #44, 2026-06-04 PM) ===
@@ -483,6 +581,16 @@ TESTS = [
     test_threshold_dollar_floor,
     test_threshold_volume_floor,
     test_threshold_voi_ratio,
+    # === task #49 dividend-arb parity filter ===
+    test_parity_nee_40c_canonical,
+    test_parity_nee_65c,
+    test_parity_realtime_path_no_delta,
+    test_parity_legit_directional_deep_itm_kept,
+    test_parity_otm_call_not_flagged,
+    test_parity_put_not_flagged,
+    test_parity_missing_spot_returns_false,
+    test_parity_ultra_deep_synthetic_flagged,
+    test_parity_thresholds_pinned,
     # === task #44 real-time WHALE dispatch ===
     test_realtime_dispatch_fires_on_canonical_nbis,
     test_realtime_dispatch_under_dollar_floor_blocked,

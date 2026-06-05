@@ -551,6 +551,65 @@ _WHALE_EXCLUDED_TICKERS = frozenset({
     "SOXL", "TQQQ", "SQQQ", "UPRO", "TSLL", "NVDL",
 })
 
+# Dividend-arbitrage / parity-trade filter (2026-06-04 PM, task #49).
+#
+# The day before ex-dividend, deep-ITM calls trade at or BELOW intrinsic
+# value (negative extrinsic) because the call holder forgoes the dividend.
+# Arbitrageurs trade enormous volume in these to capture the spread from
+# sub-optimal early-exercise — it is 100% mechanical, NOT directional.
+# UW and other pro tools flag this as "ignore" flow.
+#
+# Canonical case: NEE 2026-06-04 — all 13 call strikes (Jan'27 $40 LEAP
+# through 6/18 $77.5) traded at delta 1.00 with NEGATIVE extrinsic:
+#   $40C: intrinsic $45.65, last $45.62, extrinsic -$0.03
+#   $65C: intrinsic $20.65, last $20.49, extrinsic -$0.16
+# $390M+ of "bullish call flow" that was pure dividend capture. Multiple
+# tape-readers (@thisisorlando) correctly flagged it non-actionable.
+# 11% of all $3M+ ASK call whale candidates on 6/4 had this signature.
+#
+# Discriminator: a directional buyer ALWAYS pays positive extrinsic (time
+# value / leverage premium). Trading at/below parity only happens when a
+# pending dividend offsets the call. Works WITHOUT delta (the realtime
+# WHALE-RT path has delta=0) via the strike-vs-spot deep-ITM proxy.
+WHALE_PARITY_EXTRINSIC_PCT = 0.003     # extrinsic <= 0.3% of spot = parity
+WHALE_PARITY_DEEP_ITM_DELTA = 0.85     # |delta| >= this = deep ITM
+WHALE_PARITY_DEEP_ITM_STRIKE_PCT = 0.95  # strike <= 95% of spot = deep ITM
+
+
+def _is_parity_arb_call(alert: dict[str, Any]) -> bool:
+    """Detect deep-ITM calls trading at/below intrinsic — the dividend-
+    arbitrage signature. Returns True when the trade is mechanical
+    dividend capture rather than directional conviction.
+
+    Only applies to CALLS (puts don't have this dividend-arb pattern in
+    the same way; deep-ITM put parity before ex-div is rarer and the
+    whale classifier already requires put+BEARISH which arb rarely is).
+    """
+    otype = (alert.get("option_type") or "").lower()
+    if otype != "call":
+        return False
+    spot = float(alert.get("spot") or 0)
+    strike = float(alert.get("strike") or 0)
+    # Accept either 'last' or 'last_price' key (the alert dict uses 'last',
+    # the DB row uses 'last_price' — backtest/audit tooling passes rows).
+    last = float(alert.get("last") or alert.get("last_price") or 0)
+    if spot <= 0 or last <= 0 or strike <= 0:
+        return False
+
+    # Deep-ITM gate (delta if present, else strike-vs-spot proxy).
+    delta = abs(float(alert.get("delta") or 0))
+    deep_itm = (
+        delta >= WHALE_PARITY_DEEP_ITM_DELTA
+        or strike <= spot * WHALE_PARITY_DEEP_ITM_STRIKE_PCT
+    )
+    if not deep_itm:
+        return False
+
+    # Parity gate: extrinsic value at or below the parity floor.
+    intrinsic = max(0.0, spot - strike)
+    extrinsic = last - intrinsic
+    return extrinsic <= spot * WHALE_PARITY_EXTRINSIC_PCT
+
 
 def _classify_whale_signature(
     alert: dict[str, Any],
@@ -596,6 +655,13 @@ def _classify_whale_signature(
         return 0, []
     if otype == "put" and sentiment != "BEARISH":
         return 0, []
+
+    # Gate 6: dividend-arbitrage / parity suppression (task #49). Deep-ITM
+    # calls trading at/below intrinsic the day before ex-div are mechanical
+    # dividend capture, not directional. NEE 6/4 ($390M+) was the canonical
+    # case. Return a reason so audit logs show WHY we didn't tag.
+    if _is_parity_arb_call(alert):
+        return 0, [f"PARITY_ARB ${notional/1e6:.1f}M (sub-intrinsic call, non-directional)"]
 
     # Gate 7: chop suppression. If the ticker is in two-way flow chop,
     # individual whale prints lose their directional meaning — suppress.
