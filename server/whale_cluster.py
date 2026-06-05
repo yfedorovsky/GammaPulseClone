@@ -33,29 +33,64 @@ from collections import defaultdict
 from typing import Any
 
 
-# Rolling window: how far back we look for sibling whale fires
-WHALE_CLUSTER_WINDOW_SEC = 30 * 60  # 30 minutes
+# ─── Two-tier cluster windows (Option A, task #48) ───────────────────
+#
+# FAST tier — intra-day burst (the META 0DTE 3-strike Panuwat pattern).
+# Catches multi-strike accumulation within a 30-min window where the
+# strikes need NOT be on different expirations.
+#
+# SLOW tier — cross-day-long multi-tenor ladder (today's NBIS case).
+# Catches institutional ladders that build SLOWLY across hours:
+#   10:14  NBIS 250C 6/18    $X.XM (first whale)
+#   13:51  NBIS 210C 1/15/27 $22.7M (second whale, 217 min later)
+# A 30-min window misses this because the 10:14 record gets pruned
+# before 13:51 arrives. The slow tier extends the window to 4 hours
+# AND requires DIFFERENT expirations (the cross-tenor signature) so
+# it doesn't double-fire on patterns the fast tier already catches.
+#
+# Tier dispatch rule:
+#   1. Check fast first (30-min window, 2+ distinct strikes)
+#   2. If no fast cluster, check slow (4-hour window, 2+ distinct expirations)
+#   3. At most ONE cluster fires per record_and_check call
+# This avoids double-firing on multi-strike-multi-tenor patterns.
 
-# Minimum distinct strikes to RECORD a cluster (for audit/UI surface)
+# FAST window — intra-day burst
+WHALE_CLUSTER_WINDOW_SEC = 30 * 60   # 30 minutes
+# SLOW window — multi-tenor ladder
+WHALE_CLUSTER_SLOW_WINDOW_SEC = 4 * 60 * 60  # 4 hours
+
+# Minimum distinct strikes to RECORD a fast cluster (for audit/UI surface)
 MIN_WHALE_CLUSTER_STRIKES = 2
 
-# Minimum distinct strikes to FIRE Telegram alert.
+# Minimum distinct strikes to FIRE fast (INTRADAY) Telegram alert.
 # 2 is enough because every whale already cleared the $1M ASK + vol>=500
 # + V/OI>=30% gates. Two whale-tagged strikes on the same ticker+direction
 # inside 30 min is the textbook ladder accumulation pattern.
 MIN_WHALE_CLUSTER_TELEGRAM_STRIKES = 2
 
+# Minimum distinct EXPIRATIONS to FIRE slow (MULTI-TENOR) Telegram alert.
+# 2 distinct expirations = cross-tenor signature that the fast tier won't
+# catch (because fast doesn't require cross-tenor). Higher floor for slow
+# than fast because the 4-hour window will see more incidental hits.
+MIN_WHALE_SLOW_CLUSTER_EXPIRATIONS = 2
+
 # Per-cluster dedup TTL — same cluster can't re-fire even as more strikes
 # accumulate. The cluster GROWS within the window but Telegram pings once.
+# Slow dedup is longer (4 hours) so a multi-tenor ladder doesn't keep
+# re-firing throughout the afternoon as new legs land.
 WHALE_CLUSTER_DEDUP_TTL_SEC = 30 * 60
+WHALE_CLUSTER_SLOW_DEDUP_TTL_SEC = 4 * 60 * 60
 
 
 # In-memory roster of recent whale-tagged fires keyed by (ticker, direction).
 # Value is list of {strike, expiration, ts, notional, vol, oi, option_type}.
+# Sized for the SLOW window (4hr) since fast queries are just a filter.
 _recent_whale_fires: dict[tuple[str, str], list[dict]] = defaultdict(list)
 
-# Cluster dedup: last fire timestamp per (ticker, direction)
+# Fast cluster dedup: last fire timestamp per (ticker, direction)
 _whale_cluster_dedup: dict[tuple[str, str], float] = {}
+# Slow cluster dedup: last fire timestamp per (ticker, direction)
+_whale_slow_cluster_dedup: dict[tuple[str, str], float] = {}
 
 
 def _direction_of(alert: dict[str, Any]) -> str:
@@ -83,36 +118,57 @@ def _direction_of(alert: dict[str, Any]) -> str:
     return "NEUTRAL"
 
 
+def _build_cluster_dict(
+    ticker: str,
+    direction: str,
+    roster: list[dict],
+    tier: str,
+) -> dict[str, Any]:
+    """Assemble a cluster payload dict from a roster. `tier` is 'fast' or 'slow'."""
+    distinct_legs = {(f["strike"], f["expiration"]) for f in roster}
+    expirations = sorted({f["expiration"] for f in roster})
+    total_notional = sum(f["notional"] for f in roster)
+    first_ts = min(f["ts"] for f in roster)
+    last_ts = max(f["ts"] for f in roster)
+    return {
+        "ticker": ticker,
+        "direction": direction,
+        "tier": tier,                   # "fast" | "slow"
+        "strikes": sorted(roster, key=lambda f: (f["expiration"], f["strike"])),
+        "n_strikes": len(distinct_legs),
+        "n_expirations": len(expirations),
+        "first_ts": int(first_ts),
+        "last_ts": int(last_ts),
+        "total_notional": total_notional,
+        "avg_notional": total_notional / max(len(roster), 1),
+        "duration_min": (last_ts - first_ts) / 60.0,
+        "expirations": expirations,
+    }
+
+
 def record_and_check(alert: dict[str, Any]) -> dict[str, Any] | None:
     """Record a whale-tagged fire. Return a cluster-fire dict if this fire
-    completes (or extends) a cluster of N+ DISTINCT strikes; else None.
+    completes or extends either tier of cluster; else None.
 
-    Caller should pass only is_whale=1 alerts — this module doesn't
-    re-verify the whale gate (that's the job of _classify_whale_signature).
+    Caller should pass only is_whale=1 alerts.
 
-    Cluster-fire dict format:
-      {
-        "ticker": str,
-        "direction": "BULL" | "BEAR",
-        "strikes": [{strike, exp, ts, notional, vol, oi, option_type}, ...],
-        "n_strikes": int,
-        "n_expirations": int,
-        "first_ts": int,
-        "last_ts": int,
-        "total_notional": float,
-        "avg_notional": float,
-        "duration_min": float,
-        "expirations": list[str],
-      }
+    Two-tier dispatch (Option A, task #48):
+      FAST tier (30-min window): intra-day burst, same or different expirations.
+        - 2+ distinct (strike, exp) legs within 30 min.
+        - Catches META 0DTE 3-strike Panuwat-class patterns.
+      SLOW tier (4-hour window): cross-day multi-tenor ladder.
+        - 2+ DISTINCT EXPIRATIONS within 4 hours.
+        - Catches NBIS-class patterns where legs build over hours.
+        - Only fires if fast didn't fire (prevents double-fire).
+
+    Returned dict includes tier='fast' or tier='slow' so callers can
+    choose which Telegram format to use.
     """
     ticker = (alert.get("ticker") or "").upper()
     direction = _direction_of(alert)
     if not ticker or direction == "NEUTRAL":
         return None
     if not alert.get("is_whale"):
-        # Defense in depth: skip alerts that didn't pass the whale gate.
-        # Caller is responsible but we don't want to silently form clusters
-        # on non-whale data.
         return None
 
     key = (ticker, direction)
@@ -120,14 +176,12 @@ def record_and_check(alert: dict[str, Any]) -> dict[str, Any] | None:
     strike = alert.get("strike", 0)
     exp = alert.get("expiration", "")
 
-    # GC: drop expired siblings from the roster (outside window)
-    cutoff = now - WHALE_CLUSTER_WINDOW_SEC
-    roster = [f for f in _recent_whale_fires[key] if f["ts"] >= cutoff]
+    # Maintain the roster at SLOW window size (4 hr) — the fast tier is a
+    # filtered view of the same roster so we only need one data structure.
+    slow_cutoff = now - WHALE_CLUSTER_SLOW_WINDOW_SEC
+    roster = [f for f in _recent_whale_fires[key] if f["ts"] >= slow_cutoff]
 
-    # Same (strike, expiration) re-firing — keep the latest, don't double-count.
-    # We dedup by (strike, exp) because a whale could plausibly add to the
-    # same strike at multiple expirations (a true ladder); those count as
-    # distinct slots for the cluster.
+    # Upsert this fire into the roster.
     existing = next(
         (f for f in roster if f["strike"] == strike and f["expiration"] == exp),
         None,
@@ -146,43 +200,35 @@ def record_and_check(alert: dict[str, Any]) -> dict[str, Any] | None:
     roster.append(fire_record)
     _recent_whale_fires[key] = roster
 
-    # Distinct (strike, expiration) pairs in window
-    distinct_legs = {(f["strike"], f["expiration"]) for f in roster}
-    if len(distinct_legs) < MIN_WHALE_CLUSTER_STRIKES:
-        return None
+    # ── FAST TIER: 30-min window, 2+ distinct legs ────────────────────
+    fast_cutoff = now - WHALE_CLUSTER_WINDOW_SEC
+    fast_roster = [f for f in roster if f["ts"] >= fast_cutoff]
+    fast_legs = {(f["strike"], f["expiration"]) for f in fast_roster}
 
-    # Cluster dedup
-    last_cluster_fire = _whale_cluster_dedup.get(key, 0.0)
-    if now - last_cluster_fire < WHALE_CLUSTER_DEDUP_TTL_SEC:
-        return None
-    _whale_cluster_dedup[key] = now
+    if len(fast_legs) >= MIN_WHALE_CLUSTER_TELEGRAM_STRIKES:
+        last_fast = _whale_cluster_dedup.get(key, 0.0)
+        if now - last_fast >= WHALE_CLUSTER_DEDUP_TTL_SEC:
+            _whale_cluster_dedup[key] = now
+            return _build_cluster_dict(ticker, direction, fast_roster, "fast")
 
-    first_ts = min(f["ts"] for f in roster)
-    last_ts = max(f["ts"] for f in roster)
-    expirations = sorted({f["expiration"] for f in roster})
-    total_notional = sum(f["notional"] for f in roster)
+    # ── SLOW TIER: 4-hour window, 2+ distinct EXPIRATIONS ────────────
+    # Only fires if fast didn't fire to avoid double-banners on patterns
+    # the fast tier also catches.
+    slow_expirations = {f["expiration"] for f in roster}
+    if len(slow_expirations) >= MIN_WHALE_SLOW_CLUSTER_EXPIRATIONS:
+        last_slow = _whale_slow_cluster_dedup.get(key, 0.0)
+        if now - last_slow >= WHALE_CLUSTER_SLOW_DEDUP_TTL_SEC:
+            _whale_slow_cluster_dedup[key] = now
+            return _build_cluster_dict(ticker, direction, roster, "slow")
 
-    return {
-        "ticker": ticker,
-        "direction": direction,
-        "strikes": sorted(
-            roster,
-            key=lambda f: (f["expiration"], f["strike"]),
-        ),
-        "n_strikes": len(distinct_legs),
-        "n_expirations": len(expirations),
-        "first_ts": int(first_ts),
-        "last_ts": int(last_ts),
-        "total_notional": total_notional,
-        "avg_notional": total_notional / max(len(roster), 1),
-        "duration_min": (last_ts - first_ts) / 60.0,
-        "expirations": expirations,
-    }
+    return None
 
 
 def gc_old_entries() -> int:
-    """Drop entries older than 2× window. Returns count removed."""
-    cutoff = time.time() - 2 * WHALE_CLUSTER_WINDOW_SEC
+    """Drop entries older than 2× slow window. Returns count removed."""
+    now = time.time()
+    # Roster GC — keep anything in the slow window
+    cutoff = now - 2 * WHALE_CLUSTER_SLOW_WINDOW_SEC
     removed = 0
     for key in list(_recent_whale_fires.keys()):
         before = len(_recent_whale_fires[key])
@@ -192,18 +238,30 @@ def gc_old_entries() -> int:
         removed += before - len(_recent_whale_fires[key])
         if not _recent_whale_fires[key]:
             del _recent_whale_fires[key]
-    cutoff2 = time.time() - 2 * WHALE_CLUSTER_DEDUP_TTL_SEC
+    # Fast dedup GC
+    cutoff_fast = now - 2 * WHALE_CLUSTER_DEDUP_TTL_SEC
     for key in list(_whale_cluster_dedup.keys()):
-        if _whale_cluster_dedup[key] < cutoff2:
+        if _whale_cluster_dedup[key] < cutoff_fast:
             del _whale_cluster_dedup[key]
+    # Slow dedup GC
+    cutoff_slow = now - 2 * WHALE_CLUSTER_SLOW_DEDUP_TTL_SEC
+    for key in list(_whale_slow_cluster_dedup.keys()):
+        if _whale_slow_cluster_dedup[key] < cutoff_slow:
+            del _whale_slow_cluster_dedup[key]
     return removed
 
 
 def format_cluster_telegram(cluster: dict[str, Any]) -> str:
-    """Format a whale-cluster fire dict as a Telegram-ready string."""
+    """Format a whale-cluster fire dict as a Telegram-ready string.
+
+    Two tiers produce distinct headers and context lines:
+      FAST  → ⚡ INTRADAY CLUSTER (30-min burst, e.g. META 0DTE 3-strike)
+      SLOW  → 🐋 MULTI-TENOR LADDER (4-hr cross-exp, e.g. NBIS today)
+    """
     import datetime as _dt
     ticker = cluster["ticker"]
     direction = cluster["direction"]
+    tier = cluster.get("tier", "fast")
     n_strikes = cluster["n_strikes"]
     n_exps = cluster["n_expirations"]
     notional = cluster["total_notional"]
@@ -228,33 +286,52 @@ def format_cluster_telegram(cluster: dict[str, Any]) -> str:
         )
         exp_notional = sum(f["notional"] for f in legs)
         rows.append(f"  {exp}  {strike_str}  (${exp_notional/1e6:.1f}M)")
-    rows_str = "\n".join(rows[:10])  # cap at 10 expiration rows
+    rows_str = "\n".join(rows[:10])
     if len(rows) > 10:
         rows_str += f"\n  (+{len(rows)-10} more expirations)"
 
     first_t = _dt.datetime.fromtimestamp(cluster["first_ts"]).strftime("%H:%M")
     last_t = _dt.datetime.fromtimestamp(cluster["last_ts"]).strftime("%H:%M")
 
-    # Tenor span flag — multi-tenor ladders are the textbook whale pattern
-    tenor_flag = ""
-    if n_exps >= 3:
-        tenor_flag = (
-            f"\n<b>📐 MULTI-TENOR LADDER</b> "
-            f"({n_exps} expirations) — institutional accumulation across the curve"
+    if tier == "slow":
+        # SLOW tier: multi-tenor ladder — fired hours after the first whale
+        # The actionable callout is the cross-curve conviction, not urgency
+        header = (
+            f"🐋 <b>MULTI-TENOR LADDER</b> ({n_exps} expirations, {dir_label}) 🐋\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        )
+        context = (
+            f"<i>Institutional ladder building across the curve for {dur:.0f} min.\n"
+            f"Canonical case: NBIS 6/4 — 250C 6/18 at 10:14 → 210C 1/15/27\n"
+            f"at 13:51 = 217-min gap, $90M+ total ASK across 6 expirations.\n"
+            f"Signal: not a one-day bet — strategic multi-tenor positioning.</i>"
+        )
+    else:
+        # FAST tier: intra-day burst — urgency is the point
+        header = (
+            f"⚡ <b>INTRADAY CLUSTER</b> ({n_strikes} strikes, {dir_label}) ⚡\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        )
+        # Multi-tenor badge even within fast tier if 3+ expirations
+        multi_tenor = ""
+        if n_exps >= 3:
+            multi_tenor = (
+                f"\n<b>📐 + MULTI-TENOR</b> ({n_exps} expirations)"
+            )
+        context = (
+            f"<i>2+ whale-tagged ASK strikes within 30 min on same direction.{multi_tenor}\n"
+            f"Canonical case: META 5/27 615C/617.5C/620C 0DTE pre-paid-subs\n"
+            f"news. Intraday accumulation = catalyst soon.</i>"
         )
 
     return (
-        f"🐋🐋🐋 <b>WHALE CLUSTER</b> ({n_strikes} strikes, {dir_label}) 🐋🐋🐋\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{header}"
         f"{dir_emoji} <b>{ticker}</b>\n"
         f"<b>Total notional: ${notional:,.0f}</b>  (avg ${avg/1e6:.2f}M/leg)\n"
-        f"Window: {first_t}-{last_t} ET ({dur:.0f} min){tenor_flag}\n"
+        f"Window: {first_t}-{last_t} ET ({dur:.0f} min)\n"
         f"\n"
         f"<b>Legs:</b>\n"
         f"{rows_str}\n"
         f"\n"
-        f"<i>Pattern: 2+ whale-tagged ASK prints on same ticker+direction\n"
-        f"within 30 min. Today's canonical example: NVDA 6/4 — 11 whale\n"
-        f"prints across 4 expirations (weeklies, monthlies, LEAPs) = $30M+\n"
-        f"ASK = multi-tenor institutional accumulation.</i>"
+        f"{context}"
     )

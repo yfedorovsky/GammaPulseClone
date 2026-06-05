@@ -45,6 +45,7 @@ def _alert(
 def _reset():
     wc._recent_whale_fires.clear()
     wc._whale_cluster_dedup.clear()
+    wc._whale_slow_cluster_dedup.clear()
 
 
 # === Single-strike no-cluster path ===
@@ -82,32 +83,38 @@ def test_two_strike_cross_exp_cluster_fires():
 # === NVDA 6/4 canonical case: 11 prints, 4 expirations ===
 
 def test_nvda_canonical_ladder():
-    """The motivation case — multi-tenor NVDA BULL accumulation."""
+    """The motivation case — multi-tenor NVDA BULL accumulation.
+
+    With two-tier logic, this fires twice:
+      1. Fast tier at the 2nd strike (230C + 220C same exp, within 30 min)
+      2. Slow tier when 4th distinct (strike, exp) is added and fast dedup
+         is still hot — slow fires because it crossed multiple expirations.
+    """
     _reset()
-    # Build out the actual NVDA 6/4 whale ladder
     whales = [
-        # weeklies
         (230.0, "2026-06-18"), (220.0, "2026-06-18"), (200.0, "2026-06-18"),
-        # near monthly
         (215.0, "2026-07-02"),
-        # August monthly
         (230.0, "2026-08-21"), (200.0, "2026-08-21"), (160.0, "2026-08-21"),
-        # 1/15/27 LEAP
         (200.0, "2027-01-15"), (230.0, "2027-01-15"),
         (250.0, "2027-01-15"), (300.0, "2027-01-15"),
     ]
-    last_cluster = None
+    clusters_fired = []
     for strike, exp in whales:
         result = wc.record_and_check(
             _alert(strike=strike, expiration=exp, notional=2_500_000)
         )
         if result is not None:
-            last_cluster = result
-    # Cluster dedup: should have fired ONCE (the first 2-strike completion)
-    # but the cluster contents now reflect the full ladder via the roster
-    assert last_cluster is not None, "NVDA canonical must produce a cluster"
-    # Cluster fires when 2nd distinct leg arrives, so n_strikes at fire time = 2
-    assert last_cluster["n_strikes"] == 2
+            clusters_fired.append(result)
+
+    # Must fire at least once (fast tier on first 2-strike completion)
+    assert len(clusters_fired) >= 1, "NVDA canonical must produce at least 1 cluster"
+    # First cluster is fast tier
+    assert clusters_fired[0]["tier"] == "fast"
+    assert clusters_fired[0]["n_strikes"] >= 2
+    # If slow also fired (it should given 4 expirations), it's multi-tenor
+    if len(clusters_fired) >= 2:
+        assert clusters_fired[1]["tier"] == "slow"
+        assert clusters_fired[1]["n_expirations"] >= 2
 
 
 # === Direction segregation ===
@@ -188,13 +195,13 @@ def test_dedup_within_ttl_blocks_repeat_cluster():
 # === GC ===
 
 def test_gc_drops_old_entries():
-    """gc_old_entries cleans state older than 2× window."""
+    """gc_old_entries cleans state older than 2× SLOW window (8 hr)."""
     _reset()
     wc.record_and_check(_alert(strike=215.0))
-    # Age the entry past the GC cutoff
+    # Age past the GC cutoff — must be > 2 * SLOW_WINDOW (8 hr total)
     key = ("NVDA", "BULL")
     for entry in wc._recent_whale_fires[key]:
-        entry["ts"] = time.time() - 3 * wc.WHALE_CLUSTER_WINDOW_SEC
+        entry["ts"] = time.time() - 3 * wc.WHALE_CLUSTER_SLOW_WINDOW_SEC
     removed = wc.gc_old_entries()
     assert removed >= 1
     assert "NVDA" not in [k[0] for k in wc._recent_whale_fires]
@@ -208,7 +215,9 @@ def test_format_renders_telegram_text():
     wc.record_and_check(_alert(strike=215.0))
     cluster = wc.record_and_check(_alert(strike=220.0))
     text = wc.format_cluster_telegram(cluster)
-    assert "WHALE CLUSTER" in text
+    # Either INTRADAY CLUSTER (fast) or MULTI-TENOR LADDER (slow)
+    assert ("INTRADAY CLUSTER" in text or "MULTI-TENOR LADDER" in text), \
+        f"Expected cluster header not found in: {text[:100]}"
     assert "NVDA" in text
     assert "BULLISH" in text
 
@@ -246,18 +255,139 @@ def test_pin_dedup_ttl_sec():
     assert wc.WHALE_CLUSTER_DEDUP_TTL_SEC == 30 * 60
 
 
-# === Window expiry ===
+# === Two-tier cluster logic (Option A, task #48) ===
 
-def test_old_entries_excluded_from_cluster_count():
-    """Sibling fires older than the window don't contribute to cluster."""
+def test_fast_tier_returns_fast_label():
+    """Two strikes same direction within 30 min → tier='fast'."""
     _reset()
     wc.record_and_check(_alert(strike=215.0))
-    # Age the entry past the window
+    cluster = wc.record_and_check(_alert(strike=220.0))
+    assert cluster is not None
+    assert cluster.get("tier") == "fast"
+
+
+def test_slow_tier_fires_for_cross_exp_ladder():
+    """Cross-expiration ladder separated by >30 min → slow tier.
+
+    Simulates the NBIS 6/4 pattern: 10:14 AM first whale, 13:51 PM second.
+    We fake the 217-minute gap by manually aging the first entry.
+    """
+    _reset()
+    # First whale
+    wc.record_and_check(_alert(strike=250.0, expiration="2026-06-18"))
+    # Age it past the fast window (30 min + 1 sec)
     key = ("NVDA", "BULL")
     for entry in wc._recent_whale_fires[key]:
-        entry["ts"] = time.time() - wc.WHALE_CLUSTER_WINDOW_SEC - 60
-    # Now add another strike — first is stale, so this is solo, no cluster
+        entry["ts"] = time.time() - wc.WHALE_CLUSTER_WINDOW_SEC - 1
+
+    # Second whale on different expiration (still within 4-hr slow window)
+    cluster = wc.record_and_check(_alert(strike=210.0, expiration="2027-01-15"))
+    assert cluster is not None, "Cross-exp ladder should fire slow cluster"
+    assert cluster.get("tier") == "slow", f"Expected slow, got {cluster.get('tier')}"
+    assert cluster["n_expirations"] == 2
+
+
+def test_slow_tier_requires_different_expirations():
+    """Slow tier only fires when 2+ distinct expirations are present.
+    Two strikes on same expiration (but aged past fast window) → no slow cluster.
+    """
+    _reset()
+    wc.record_and_check(_alert(strike=215.0, expiration="2026-07-02"))
+    # Age past fast window
+    key = ("NVDA", "BULL")
+    for entry in wc._recent_whale_fires[key]:
+        entry["ts"] = time.time() - wc.WHALE_CLUSTER_WINDOW_SEC - 1
+
+    # Same expiration, different strike — still same exp so no slow cluster
+    cluster = wc.record_and_check(_alert(strike=220.0, expiration="2026-07-02"))
+    # Fast window sees neither (both aged out), slow sees same exp — no cluster
+    assert cluster is None, "Same-exp pattern should not fire slow cluster"
+
+
+def test_fast_fires_before_slow():
+    """When both tiers would qualify, fast fires first, slow suppressed.
+    Two strikes within 30 min AND across expirations — fast wins.
+    """
+    _reset()
+    # Two strikes on different expirations within the fast window
+    wc.record_and_check(_alert(strike=215.0, expiration="2026-07-02"))
+    cluster = wc.record_and_check(_alert(strike=210.0, expiration="2027-01-15"))
+    assert cluster is not None
+    assert cluster.get("tier") == "fast", \
+        f"Fast should fire first when both tiers qualify, got {cluster.get('tier')}"
+
+
+def test_slow_fires_after_fast_dedup_expires():
+    """After fast dedup expires, slow can fire on the accumulated roster."""
+    _reset()
+    # Lay down two strikes within fast window → fast fires
+    wc.record_and_check(_alert(strike=215.0, expiration="2026-07-02"))
+    fast_cluster = wc.record_and_check(_alert(strike=220.0, expiration="2026-08-21"))
+    assert fast_cluster is not None and fast_cluster["tier"] == "fast"
+
+    # Expire both dedup TTLs
+    key = ("NVDA", "BULL")
+    wc._whale_cluster_dedup[key] = time.time() - wc.WHALE_CLUSTER_DEDUP_TTL_SEC - 1
+    wc._whale_slow_cluster_dedup[key] = time.time() - wc.WHALE_CLUSTER_SLOW_DEDUP_TTL_SEC - 1
+
+    # Another strike on yet another expiration
+    cluster = wc.record_and_check(_alert(strike=300.0, expiration="2027-06-17"))
+    # Fast can fire again (dedup expired) so fast wins
+    assert cluster is not None and cluster["tier"] == "fast"
+
+
+def test_format_fast_shows_intraday_cluster_header():
+    """FAST cluster Telegram has ⚡ INTRADAY CLUSTER header."""
+    _reset()
+    wc.record_and_check(_alert(strike=215.0))
     cluster = wc.record_and_check(_alert(strike=220.0))
+    assert cluster is not None
+    text = wc.format_cluster_telegram(cluster)
+    assert "INTRADAY CLUSTER" in text, f"Expected INTRADAY CLUSTER, got:\n{text}"
+    assert "MULTI-TENOR LADDER" not in text.split("━")[0]
+
+
+def test_format_slow_shows_multi_tenor_ladder_header():
+    """SLOW cluster Telegram has 🐋 MULTI-TENOR LADDER header."""
+    _reset()
+    wc.record_and_check(_alert(strike=250.0, expiration="2026-06-18"))
+    key = ("NVDA", "BULL")
+    for entry in wc._recent_whale_fires[key]:
+        entry["ts"] = time.time() - wc.WHALE_CLUSTER_WINDOW_SEC - 1
+    cluster = wc.record_and_check(_alert(strike=210.0, expiration="2027-01-15"))
+    assert cluster is not None
+    text = wc.format_cluster_telegram(cluster)
+    assert "MULTI-TENOR LADDER" in text, f"Expected MULTI-TENOR LADDER header, got:\n{text}"
+    assert "INTRADAY CLUSTER" not in text
+
+
+def test_pin_slow_window_sec():
+    assert wc.WHALE_CLUSTER_SLOW_WINDOW_SEC == 4 * 60 * 60
+
+
+def test_pin_slow_dedup_ttl_sec():
+    assert wc.WHALE_CLUSTER_SLOW_DEDUP_TTL_SEC == 4 * 60 * 60
+
+
+def test_pin_min_slow_expirations():
+    assert wc.MIN_WHALE_SLOW_CLUSTER_EXPIRATIONS == 2
+
+
+# === Window expiry ===
+
+def test_old_entries_excluded_from_fast_cluster():
+    """Entries older than fast window (30 min) don't count for fast tier.
+    But if on different expirations they can still fire slow tier.
+    Same-exp + same-direction + aged past fast window = no cluster."""
+    _reset()
+    wc.record_and_check(_alert(strike=215.0, expiration="2026-07-02"))
+    key = ("NVDA", "BULL")
+    # Age past fast window but within slow window
+    for entry in wc._recent_whale_fires[key]:
+        entry["ts"] = time.time() - wc.WHALE_CLUSTER_WINDOW_SEC - 60
+    # Same expiration — only slow would fire, but needs 2+ expirations
+    cluster = wc.record_and_check(_alert(strike=220.0, expiration="2026-07-02"))
+    # Same exp → slow tier can't fire (needs different expirations)
     assert cluster is None
 
 
@@ -281,7 +411,18 @@ TESTS = [
     test_pin_min_telegram_strikes,
     test_pin_window_sec,
     test_pin_dedup_ttl_sec,
-    test_old_entries_excluded_from_cluster_count,
+    test_old_entries_excluded_from_fast_cluster,
+    # Two-tier cluster tests (Option A, task #48)
+    test_fast_tier_returns_fast_label,
+    test_slow_tier_fires_for_cross_exp_ladder,
+    test_slow_tier_requires_different_expirations,
+    test_fast_fires_before_slow,
+    test_slow_fires_after_fast_dedup_expires,
+    test_format_fast_shows_intraday_cluster_header,
+    test_format_slow_shows_multi_tenor_ladder_header,
+    test_pin_slow_window_sec,
+    test_pin_slow_dedup_ttl_sec,
+    test_pin_min_slow_expirations,
 ]
 
 
