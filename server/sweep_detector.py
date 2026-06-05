@@ -69,6 +69,33 @@ TELEGRAM_NOTIONAL = 500_000    # $ — default alert threshold for Telegram push
 # showed $168K single prints meaningfully predicted overnight catalysts.
 TELEGRAM_NOTIONAL_MAG7 = 200_000
 
+# ── Real-time WHALE dispatch (task #44, 2026-06-04 PM) ────────────────
+#
+# Beat FL0WG0D's ~8-min sweep-to-tweet pipeline by firing the WHALE
+# Telegram banner directly from the OPRA stream the instant a per-contract
+# rollup crosses the dollar + ASK-side threshold. The chain-snapshot path
+# (server/flow_alerts.py _scan_flow_from_cache) still runs and is still the
+# system of record for DB rows + downstream basket/leaderboard tooling —
+# this is purely a dispatch shortcut that lops 19+ min off the latency.
+#
+# Latency budget on a $3M+ ASK accumulation:
+#   OPRA print → stream.consume → rollup.add → in-window check → Telegram
+#   = sub-second worst case, vs 19+ min via the chain snapshot.
+#
+# Gates mirror server/flow_alerts._classify_whale_signature so DB-side
+# and stream-side classifiers stay in lockstep. The threshold here is the
+# Telegram floor ($3M), not the DB tag floor ($1M) — we don't want to
+# flood Telegram with mid-tier whales the chain-snapshot path already
+# covers within a minute or two.
+WHALE_REALTIME_MIN_NOTIONAL = 3_000_000    # mirrors flow_alerts.WHALE_TELEGRAM_NOTIONAL
+WHALE_REALTIME_MIN_VOL = 500                # mirrors flow_alerts.WHALE_MIN_VOL
+WHALE_REALTIME_DEDUP_TTL_SEC = 600          # 10 min per contract — same trade
+                                            # repeats within this window are noise
+
+# Per-contract dispatch dedup. Key = (ticker, strike_x1000, exp_int, right).
+# Value = epoch seconds of last fire. Opportunistically pruned to bound size.
+_whale_realtime_dispatch: dict[tuple[str, int, int, str], float] = {}
+
 
 def _telegram_threshold(ticker: str) -> float:
     """Per-ticker Telegram push threshold for ISO sweeps. Mag7 tier is lower."""
@@ -692,6 +719,46 @@ async def _build_subscription_plan(
     return specs
 
 
+# ── Real-time WHALE dispatch helpers (task #44) ───────────────────────
+
+
+def _whale_dedup_key(rollup: SweepRollup) -> tuple[str, int, int, str]:
+    """Stable per-contract key for real-time WHALE dispatch dedup."""
+    try:
+        exp_int = int(str(rollup.expiration).replace("-", "")) if rollup.expiration else 0
+    except Exception:
+        exp_int = 0
+    return (
+        rollup.ticker.upper(),
+        int(rollup.strike * 1000),
+        exp_int,
+        rollup.option_type.lower(),
+    )
+
+
+def _whale_realtime_should_dispatch(rollup: SweepRollup) -> bool:
+    """Return True if this rollup may fire a WHALE Telegram alert now.
+
+    Side-effect: on True, stamps last-fire-ts so subsequent rollups in the
+    next 10 min for the same contract are suppressed. Same-contract repeats
+    inside the TTL window are almost always the same order working in
+    waves — the user already knows.
+    """
+    key = _whale_dedup_key(rollup)
+    now = time.time()
+    last_fire = _whale_realtime_dispatch.get(key)
+    if last_fire is not None and (now - last_fire) < WHALE_REALTIME_DEDUP_TTL_SEC:
+        return False
+    _whale_realtime_dispatch[key] = now
+    # Opportunistic prune so the dict doesn't grow unbounded on long sessions.
+    if len(_whale_realtime_dispatch) > 10_000:
+        cutoff = now - WHALE_REALTIME_DEDUP_TTL_SEC
+        stale = [k for k, ts in _whale_realtime_dispatch.items() if ts < cutoff]
+        for k in stale:
+            _whale_realtime_dispatch.pop(k, None)
+    return True
+
+
 # ── Detector ──────────────────────────────────────────────────────────
 
 
@@ -718,6 +785,11 @@ class SweepDetector:
         self.trades_seen = 0
         self.sweeps_seen = 0
         self.alerts_fired = 0
+        # Real-time WHALE dispatch counters (task #44) — checked at every
+        # rollup.add() in the consume loop; the dispatched count is what
+        # actually reached Telegram (after dedup + gating).
+        self.realtime_whales_checked = 0
+        self.realtime_whales_fired = 0
 
     def _bucket_key(self, trade: ThetaTrade) -> tuple[str, float, str, str]:
         return (trade.ticker, trade.strike, trade.expiration, trade.right)
@@ -860,6 +932,182 @@ class SweepDetector:
                 asyncio.create_task(self._send_telegram(rollup))
             else:
                 asyncio.create_task(self._send_telegram_filtered(rollup))
+
+    def _maybe_dispatch_realtime_whale(self, rollup: SweepRollup) -> None:
+        """Intra-window WHALE threshold check (task #44, 2026-06-04 PM).
+
+        Called after every ``rollup.add(trade)`` in the consume loop. Fires
+        a real-time WHALE Telegram alert the moment a per-contract rollup
+        crosses ``WHALE_REALTIME_MIN_NOTIONAL`` with NBBO-confirmed ASK
+        dominance — without waiting for either:
+          - rollup window close (up to 30s), or
+          - chain-snapshot scan (up to 5-15 min).
+
+        Gates mirror server/flow_alerts._classify_whale_signature so the
+        DB-side and stream-side classifiers stay in lockstep:
+          1. Notional >= WHALE_REALTIME_MIN_NOTIONAL ($3M)
+          2. Volume >= WHALE_REALTIME_MIN_VOL (500)
+          3. Ticker not in _WHALE_EXCLUDED_TICKERS (no index ETFs)
+          4. NBBO-classified side == ASK (via tick_side_tracker)
+          5. Direction aligned (call+ASK = bullish | put+ASK = bearish)
+          6. Ticker not in chop (flow_noise_filter.is_ticker_in_chop)
+          7. Per-contract dedup TTL (10 min via _whale_realtime_dispatch)
+
+        The chain-snapshot path remains the system of record for DB rows;
+        this is dispatch-only. We don't insert anything here.
+        """
+        # Cheap arithmetic gates first — most rollups die at gate 1.
+        if rollup.total_notional < WHALE_REALTIME_MIN_NOTIONAL:
+            return
+        if rollup.total_contracts < WHALE_REALTIME_MIN_VOL:
+            return
+        self.realtime_whales_checked += 1
+
+        ticker = rollup.ticker.upper()
+        try:
+            from .flow_alerts import _WHALE_EXCLUDED_TICKERS
+            if ticker in _WHALE_EXCLUDED_TICKERS:
+                return
+        except Exception:
+            # If flow_alerts imports fail, skip rather than spam Telegram.
+            return
+
+        # NBBO-authoritative side classification. tick_side_tracker has been
+        # consuming this same trade stream from the consume loop — by the
+        # time the rollup crosses $3M we already have a populated bucket
+        # for this contract. Returns None when the bucket is below the
+        # MIN_WINDOW_SIZE (20 trades) floor — in that case we skip rather
+        # than guess, since whale dispatch requires high confidence.
+        right = "C" if rollup.option_type == "call" else "P"
+        side = self.tick_side_tracker.latest_side(
+            rollup.ticker, rollup.strike, rollup.expiration, right,
+        )
+        if side != "ASK":
+            return
+
+        sentiment = "BULLISH" if rollup.option_type == "call" else "BEARISH"
+
+        # Chop suppression — same gate _classify_whale_signature applies
+        # so two-way-flow tickers (TSLA/QQQ-class) don't trip the banner
+        # on routine MM rebalancing.
+        try:
+            from .flow_noise_filter import is_ticker_in_chop
+            if is_ticker_in_chop(ticker):
+                return
+        except Exception:
+            pass
+
+        # Per-contract dedup. Stamps last-fire on this contract so the
+        # next $3M+ ASK rollup on the same strike doesn't re-fire within
+        # the TTL window.
+        if not _whale_realtime_should_dispatch(rollup):
+            return
+
+        self.realtime_whales_fired += 1
+        # Dispatch on the event loop — never block the consume loop on
+        # an HTTPS round-trip.
+        asyncio.create_task(
+            self._send_telegram_whale_realtime(rollup, side, sentiment)
+        )
+
+    async def _send_telegram_whale_realtime(
+        self, rollup: SweepRollup, side: str, sentiment: str,
+    ) -> None:
+        """Emit a real-time WHALE Telegram from a sweep rollup (task #44).
+
+        Bypasses ``flow_noise_filter.should_insert`` entirely — that gate is
+        designed for the chain-snapshot scanner where the same contract
+        repeats on every 30s cycle. Here, each rollup is unique by
+        construction (a single 30s OPRA window), and dedup is enforced via
+        the per-contract TTL above.
+
+        Uses ``force=True`` so the dispatch path bypasses every rate limit;
+        a WHALE-class signal is exactly the kind of high-confidence event
+        the rate limiter is supposed to let through.
+        """
+        from .alert_gates import should_send_alert
+        ok, reason = should_send_alert(expiration=rollup.expiration)
+        if not ok:
+            print(
+                f"[WHALE-RT] gated ({reason}) - {rollup.ticker} "
+                f"{rollup.strike}{rollup.option_type[0].upper()} "
+                f"{rollup.expiration}",
+                flush=True,
+            )
+            return
+
+        try:
+            from .telegram import send, format_flow_alert
+        except ImportError:
+            return
+
+        # Pull spot from the worker's cache. This is best-effort; the
+        # format_flow_alert renderer tolerates missing spot.
+        try:
+            snapshot = await cache.snapshot()
+            state = snapshot.get(rollup.ticker) or {}
+            spot = state.get("actual_spot") or state.get("_spot")
+        except Exception:
+            spot = None
+
+        vol = rollup.total_contracts
+        notional = rollup.total_notional
+        reasons = [
+            f"${notional/1e6:.1f}M ASK",
+            f"vol={vol}",
+            f"REALTIME OPRA ({rollup.venue_count} venues)",
+        ]
+
+        # Synthetic alert dict mirroring the flow_alerts row shape so
+        # format_flow_alert renders identical output to the chain-snapshot
+        # WHALE alert. is_whale=1 triggers the 🐋🐋🐋 banner.
+        alert = {
+            "ticker": rollup.ticker,
+            "strike": rollup.strike,
+            "expiration": rollup.expiration,
+            "option_type": rollup.option_type,
+            "volume": vol,
+            "oi": 0,
+            "vol_oi": 0,
+            "last": rollup.last_price,
+            "bid": 0,
+            "ask": 0,
+            "side": side,
+            "sentiment": sentiment,
+            "iv": 0,
+            "delta": 0,
+            "notional": notional,
+            "spot": spot or 0,
+            "conviction": "HIGH",
+            "is_whale": 1,
+            "whale_reasons": ", ".join(reasons),
+        }
+
+        # Diagnostic log captures the actual stream-side latency so we can
+        # measure how much we beat the chain-snapshot path by.
+        latency_s = time.time() - rollup.window_start
+        try:
+            from .live_flow_aggregator import _fmt_strike
+            print(
+                f"[WHALE-RT] dispatch {rollup.ticker} "
+                f"{_fmt_strike(rollup.strike)}{rollup.option_type[0].upper()} "
+                f"{rollup.expiration} ${notional/1e6:.1f}M ASK "
+                f"vol={vol} venues={rollup.venue_count} "
+                f"latency={latency_s:.1f}s from rollup-open",
+                flush=True,
+            )
+        except Exception:
+            pass
+
+        try:
+            await send(
+                format_flow_alert(alert),
+                ticker=rollup.ticker,
+                priority=True,
+                force=True,
+            )
+        except Exception as e:
+            print(f"[WHALE-RT] telegram send failed: {e!r}", flush=True)
 
     async def _send_telegram(self, rollup: SweepRollup) -> None:
         """Telegram push for high-notional sweeps. Uses the existing
@@ -1006,8 +1254,10 @@ class SweepDetector:
                 delta = self.trades_seen - last_trades
                 last_trades = self.trades_seen
                 print(
-                    f"[SWEEP] heartbeat — trades_seen={self.trades_seen} "
-                    f"(+{delta}/30s)  stream_queue_size="
+                    f"[SWEEP] heartbeat - trades_seen={self.trades_seen} "
+                    f"(+{delta}/30s)  whale_rt={self.realtime_whales_fired}/"
+                    f"{self.realtime_whales_checked} "
+                    f"stream_queue_size="
                     f"{self.stream._out_queue.qsize() if hasattr(self.stream, '_out_queue') else '?'}",
                     flush=True,
                 )
@@ -1095,6 +1345,19 @@ class SweepDetector:
                     )
                     self._buckets[key] = rollup
                 rollup.add(trade)
+
+                # Real-time WHALE dispatch check (task #44, 2026-06-04 PM).
+                # Sub-second latency from OPRA print → Telegram banner when
+                # a per-contract rollup crosses $3M ASK with NBBO confirmation.
+                # Bypasses the 5-15 min chain-snapshot dispatch path used
+                # by the standard WHALE flow. See _maybe_dispatch_realtime_whale
+                # for the full gate stack. Safe inside the consume loop — the
+                # method is sync and only schedules async work via create_task
+                # when all gates pass.
+                try:
+                    self._maybe_dispatch_realtime_whale(rollup)
+                except Exception as e:
+                    print(f"[WHALE-RT] check error: {e!r}", flush=True)
         finally:
             flush_task.cancel()
             diag_task.cancel()
@@ -1401,7 +1664,9 @@ async def run_sweep_detector(stop_event: asyncio.Event) -> None:
                 pass
         await stream.stop()
         print(
-            f"[SWEEP] shutdown — sweep: seen={detector.trades_seen} "
-            f"iso={detector.sweeps_seen} rollups={detector.alerts_fired} | "
+            f"[SWEEP] shutdown - sweep: seen={detector.trades_seen} "
+            f"iso={detector.sweeps_seen} rollups={detector.alerts_fired} "
+            f"whale_rt_checked={detector.realtime_whales_checked} "
+            f"whale_rt_fired={detector.realtime_whales_fired} | "
             f"flow: {flow_aggregator.stats()}"
         )

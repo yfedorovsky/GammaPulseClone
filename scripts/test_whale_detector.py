@@ -226,6 +226,238 @@ def test_threshold_voi_ratio():
     assert WHALE_MIN_VOL_OI_RATIO == 0.30
 
 
+# === Real-time WHALE dispatch (task #44, 2026-06-04 PM) ===
+#
+# Validates the new sub-30-second dispatch path that bypasses the chain-
+# snapshot scanner. Each test exercises one gate in _maybe_dispatch_realtime_whale
+# so a regression in any gate is caught in isolation.
+
+import time as _time  # noqa: E402
+
+import server.sweep_detector as sd  # noqa: E402
+
+
+class _StubTickSideTracker:
+    """Minimal stand-in for tick_side_tracker.
+
+    Returns a configurable side regardless of input. The real tracker
+    classifies based on rolling NBBO ticks; here we control the answer
+    so the dispatch test isolates the dispatch logic from the (already
+    unit-tested) NBBO classifier.
+    """
+    def __init__(self, side="ASK"):
+        self._side = side
+
+    def latest_side(self, ticker, strike, expiration, right):
+        return self._side
+
+
+class _StubStream:
+    """Minimal stand-in for ThetaStream so SweepDetector can be constructed."""
+    _out_queue = None
+    _subscriptions = {}
+    subscription_count = 0
+
+
+def _make_detector(side="ASK"):
+    det = sd.SweepDetector(stream=_StubStream(), flow_aggregator=None)
+    det.tick_side_tracker = _StubTickSideTracker(side=side)
+    return det
+
+
+def _make_rollup(
+    ticker="NBIS", strike=350.0, expiration="20260918", option_type="call",
+    notional=4_000_000, contracts=600, venues=4,
+):
+    """Build a SweepRollup matching the NBIS 350C 9/18 FL0WG0D canonical case."""
+    r = sd.SweepRollup(
+        ticker=ticker,
+        strike=strike,
+        expiration=expiration,
+        option_type=option_type,
+        window_start=_time.time(),
+    )
+    r.total_notional = notional
+    r.total_contracts = contracts
+    r.print_count = max(1, venues)
+    r.exchanges = set(range(venues))
+    r.first_price = 6.50
+    r.last_price = 6.80
+    r.prices = [6.50, 6.65, 6.70, 6.80]
+    r.max_print_size = max(1, contracts // venues)
+    return r
+
+
+def _reset_realtime_dispatch():
+    """Clear dedup state so tests don't bleed into each other."""
+    sd._whale_realtime_dispatch.clear()
+
+
+import asyncio as _asyncio  # noqa: E402
+
+
+class _CreateTaskPatcher:
+    """Context manager: replace asyncio.create_task with a stub that closes
+    the coroutine instead of scheduling it. Lets the sync test runner exercise
+    _maybe_dispatch_realtime_whale without a live event loop. The counter
+    increments BEFORE create_task is called, so verification still works."""
+    def __enter__(self):
+        self._orig = _asyncio.create_task
+        def _stub(coro):
+            try:
+                coro.close()
+            except Exception:
+                pass
+            return None
+        _asyncio.create_task = _stub
+        return self
+
+    def __exit__(self, *exc):
+        _asyncio.create_task = self._orig
+        return False
+
+
+def test_realtime_dispatch_fires_on_canonical_nbis():
+    """NBIS 350C 9/18 $4M ASK — the canonical missed case. Must fire."""
+    _reset_realtime_dispatch()
+    det = _make_detector(side="ASK")
+    rollup = _make_rollup()
+    fired_before = det.realtime_whales_fired
+    with _CreateTaskPatcher():
+        det._maybe_dispatch_realtime_whale(rollup)
+    assert det.realtime_whales_fired == fired_before + 1, \
+        "NBIS canonical must fire realtime whale"
+
+
+def test_realtime_dispatch_under_dollar_floor_blocked():
+    """$2M notional is below the $3M Telegram floor — must not fire."""
+    _reset_realtime_dispatch()
+    det = _make_detector(side="ASK")
+    rollup = _make_rollup(notional=2_000_000)
+    det._maybe_dispatch_realtime_whale(rollup)
+    assert det.realtime_whales_fired == 0
+
+
+def test_realtime_dispatch_low_volume_blocked():
+    """Volume below 500 must not fire even at huge notional."""
+    _reset_realtime_dispatch()
+    det = _make_detector(side="ASK")
+    rollup = _make_rollup(notional=10_000_000, contracts=200)
+    det._maybe_dispatch_realtime_whale(rollup)
+    assert det.realtime_whales_fired == 0
+
+
+def test_realtime_dispatch_bid_side_blocked():
+    """When tick_side_tracker reports BID, must not fire."""
+    _reset_realtime_dispatch()
+    det = _make_detector(side="BID")
+    rollup = _make_rollup()
+    det._maybe_dispatch_realtime_whale(rollup)
+    assert det.realtime_whales_fired == 0
+
+
+def test_realtime_dispatch_mid_side_blocked():
+    """When tick_side_tracker reports MID, must not fire."""
+    _reset_realtime_dispatch()
+    det = _make_detector(side="MID")
+    rollup = _make_rollup()
+    det._maybe_dispatch_realtime_whale(rollup)
+    assert det.realtime_whales_fired == 0
+
+
+def test_realtime_dispatch_none_side_blocked():
+    """When tick_side_tracker bucket is thin (returns None), must not fire."""
+    _reset_realtime_dispatch()
+    det = _make_detector(side=None)
+    rollup = _make_rollup()
+    det._maybe_dispatch_realtime_whale(rollup)
+    assert det.realtime_whales_fired == 0
+
+
+def test_realtime_dispatch_index_etf_blocked():
+    """SPY/QQQ/SPX/etc. are excluded regardless of notional."""
+    _reset_realtime_dispatch()
+    det = _make_detector(side="ASK")
+    rollup = _make_rollup(ticker="SPY", notional=20_000_000)
+    det._maybe_dispatch_realtime_whale(rollup)
+    assert det.realtime_whales_fired == 0
+
+
+def test_realtime_dispatch_dedup_within_ttl():
+    """Same contract within 10 min TTL must dedup — only the first fires."""
+    _reset_realtime_dispatch()
+    det = _make_detector(side="ASK")
+    rollup1 = _make_rollup()
+    with _CreateTaskPatcher():
+        det._maybe_dispatch_realtime_whale(rollup1)
+        assert det.realtime_whales_fired == 1
+        # Second rollup on the same contract — even larger notional
+        rollup2 = _make_rollup(notional=10_000_000, contracts=2000)
+        det._maybe_dispatch_realtime_whale(rollup2)
+    assert det.realtime_whales_fired == 1, "dedup should suppress repeat"
+
+
+def test_realtime_dispatch_distinct_contracts_both_fire():
+    """Different strikes on same ticker are tracked separately."""
+    _reset_realtime_dispatch()
+    det = _make_detector(side="ASK")
+    r1 = _make_rollup(ticker="NBIS", strike=350.0)
+    r2 = _make_rollup(ticker="NBIS", strike=400.0)
+    r3 = _make_rollup(ticker="MSFT", strike=500.0)
+    with _CreateTaskPatcher():
+        det._maybe_dispatch_realtime_whale(r1)
+        det._maybe_dispatch_realtime_whale(r2)
+        det._maybe_dispatch_realtime_whale(r3)
+    assert det.realtime_whales_fired == 3
+
+
+def test_realtime_dispatch_under_30s_latency():
+    """Latency from rollup-open to dispatch decision must be under 30s.
+
+    Confirms the in-window check path is sub-30s (the whole point of #44).
+    Measures the wall time from rollup creation through the gate stack
+    to dispatch scheduling — no actual Telegram round-trip.
+    """
+    _reset_realtime_dispatch()
+    det = _make_detector(side="ASK")
+    rollup = _make_rollup()
+    t0 = _time.time()
+    with _CreateTaskPatcher():
+        det._maybe_dispatch_realtime_whale(rollup)
+    elapsed = _time.time() - t0
+    assert det.realtime_whales_fired == 1
+    assert elapsed < 30.0, f"dispatch took {elapsed:.2f}s, must be <30s"
+    # In practice this is sub-millisecond. The 30s ceiling is the SLA.
+
+
+def test_realtime_dispatch_put_bearish_fires():
+    """Put + ASK = bearish institutional protection. Must fire."""
+    _reset_realtime_dispatch()
+    det = _make_detector(side="ASK")
+    rollup = _make_rollup(ticker="TSLA", option_type="put")
+    with _CreateTaskPatcher():
+        det._maybe_dispatch_realtime_whale(rollup)
+    assert det.realtime_whales_fired == 1
+
+
+def test_realtime_dispatch_dedup_key_normalization():
+    """Dedup key normalizes ticker case + option type so repeat fires don't
+    sneak through case mismatches."""
+    _reset_realtime_dispatch()
+    r1 = _make_rollup(ticker="nbis", option_type="call")
+    r2 = _make_rollup(ticker="NBIS", option_type="call")
+    k1 = sd._whale_dedup_key(r1)
+    k2 = sd._whale_dedup_key(r2)
+    assert k1 == k2, "dedup key must normalize case"
+
+
+def test_realtime_threshold_pinning():
+    """Pin the real-time dispatch config to known good values."""
+    assert sd.WHALE_REALTIME_MIN_NOTIONAL == 3_000_000
+    assert sd.WHALE_REALTIME_MIN_VOL == 500
+    assert sd.WHALE_REALTIME_DEDUP_TTL_SEC == 600
+
+
 # === Test runner ===
 
 TESTS = [
@@ -251,6 +483,20 @@ TESTS = [
     test_threshold_dollar_floor,
     test_threshold_volume_floor,
     test_threshold_voi_ratio,
+    # === task #44 real-time WHALE dispatch ===
+    test_realtime_dispatch_fires_on_canonical_nbis,
+    test_realtime_dispatch_under_dollar_floor_blocked,
+    test_realtime_dispatch_low_volume_blocked,
+    test_realtime_dispatch_bid_side_blocked,
+    test_realtime_dispatch_mid_side_blocked,
+    test_realtime_dispatch_none_side_blocked,
+    test_realtime_dispatch_index_etf_blocked,
+    test_realtime_dispatch_dedup_within_ttl,
+    test_realtime_dispatch_distinct_contracts_both_fire,
+    test_realtime_dispatch_under_30s_latency,
+    test_realtime_dispatch_put_bearish_fires,
+    test_realtime_dispatch_dedup_key_normalization,
+    test_realtime_threshold_pinning,
 ]
 
 

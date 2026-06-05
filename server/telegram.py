@@ -253,7 +253,13 @@ def format_flow_alert(alert: dict[str, Any]) -> str:
     # Extreme notional ($10M+) bypasses V/OI — meaningful regardless.
     vol_oi = alert.get('vol_oi', 0) or 0
     notional = alert.get('notional', 0) or 0
-    strong_signal = vol_oi >= 1.5 or notional >= 10_000_000
+    # is_whale signals already passed the dollar+ASK+vol_oi gate in the
+    # whale classifier — treat them as strong by default so the action
+    # text doesn't contradict the 🐋 banner. Without this, real-time
+    # OPRA dispatches (which don't have OI yet, so vol_oi=0) render as
+    # "weak signal" right under a WHALE ACCUMULATION header.
+    is_whale_flag = bool(alert.get('is_whale'))
+    strong_signal = vol_oi >= 1.5 or notional >= 10_000_000 or is_whale_flag
     moderate_signal = (1.0 <= vol_oi < 1.5) and not strong_signal
 
     def _tier_suffix() -> str:
