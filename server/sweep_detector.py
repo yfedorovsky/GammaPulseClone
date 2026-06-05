@@ -316,6 +316,17 @@ MVP_WATCHLIST_ROOTS = [
     "BRK.B",  # Berkshire — ultra-liquid, news-sensitive
     "WMT",    # consumer staple mega-cap
     "BABA",   # China ADR — active options, news-driven
+    # ─── Universe-audit adds (2026-06-04 PM) — top-flow misses ──────
+    # Driven by 6/4 top-flow leaderboard showing 8/16 names ($550M+
+    # total premium) were outside our subscription universe. The
+    # NEE 77.5C 6/18 $10.6M ITM call (Market Bishop catch at 3:11 PM ET,
+    # candle at 2:50 PM = ~20 min latency on their side) was the
+    # canonical miss — passed every WHALE-RT gate but the contract
+    # never entered our pipeline because NEE wasn't subscribed.
+    "NEE",    # AI-power-demand utility ($256M flow 6/4, biggest single-name)
+    "PDD",    # China e-commerce mega-cap ($54M flow 6/4, pairs with BABA)
+    "FXI",    # China broad ETF ($36M flow 6/4)
+    "NKE",    # consumer mega-cap ($23M flow 6/4)
 ]
 
 # Added 2026-04-20 after missing MRVL 165C 5/8 and FSLR 192.5C 4/24 signals:
@@ -377,6 +388,20 @@ TIER2_THEMATIC_ROOTS = [
     "IONQ",   # quantum pure-play
     "HIMS",   # pharma momentum
     "AXTI",   # $227M/7d extreme concentration — smart money signal
+    # ─── Universe-audit adds (2026-06-04 PM) — AI power + flow gaps ──
+    # 6/4 NEE $10.6M ITM whale exposed a coverage gap: we cover the
+    # picks-and-shovels (GEV turbines, VRT cooling, OKLO SMRs) but
+    # missed the regulated utilities that actually deliver the electrons
+    # to the data centers. This block fills that gap.
+    "CEG",    # Constellation Energy — nuclear baseload for AI data centers
+    "VST",    # Vistra — nuclear + coal-to-data-center conversions
+    "EXC",    # Exelon — Mid-Atlantic utility, PJM grid exposure
+    "SO",     # Southern Co — Vogtle nuclear restart, Southeast grid
+    "DUK",    # Duke Energy — Carolinas/Florida grid, data center hotspot
+    "AEP",    # American Electric Power — Ohio/Texas grid, hyperscaler exposure
+    # Enterprise software / fintech misses from 6/4 top-flow list
+    "INTU",   # enterprise software mega-cap ($36M flow 6/4)
+    "PYPL",   # fintech mega-cap ($32M flow 6/4)
 ]
 
 # Strike coverage target for Tier-2 thematic names — percentage-based so
@@ -435,7 +460,15 @@ SUBSCRIPTION_MAX_PLANNED = 45_000   # was 7_400 — hard loop cap in plan()
 # live (AAOI/HIVE/PL/IOT/RKLB-class).
 TIER_BUDGETS = {
     "mvp":       25_000,   # was 4,400 — full chains on watchlist names
-    "tier2":      8_000,   # was 1,500 — far-OTM RKLB-class lottos now covered
+    "tier2":     12_000,   # 2026-06-04 PM: bumped 8,000 → 12,000 to make
+                           #   room for the +8 utility-power thematic adds
+                           #   (CEG/VST/EXC/SO/DUK/AEP) + INTU/PYPL.
+                           #   Rough projection w/ 51 Tier2 roots is ~9,200
+                           #   specs at full radius; 12K leaves comfortable
+                           #   headroom. Total tier budgets sum to 49K (vs
+                           #   45K SUBSCRIPTION_TARGET) — the iteration
+                           #   order means flow_tail (last) truncates first
+                           #   if total approaches the 45K hard cap.
     "flow_top":   5_000,   # was 1,000 — top-30 by prior-day notional
     "flow_mid":   3_500,   # was 500 — rank 31-100
     "flow_tail":  3_500,   # was 400 — rank 101-300 long-tail whales
