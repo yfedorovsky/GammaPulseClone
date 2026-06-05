@@ -56,7 +56,11 @@ from .thetadata import ThetaTrade
 # the entire snapshot lifecycle. MAX_TRADES_PER_BUCKET bumped 200 → 500
 # to handle higher per-bucket trade volume over the longer window.
 WINDOW_SECONDS = 30 * 60.0  # was 60.0 — covers full chain-snapshot lifecycle
-MIN_WINDOW_SIZE = 20  # was 50; relaxed 2026-05-12
+MIN_WINDOW_SIZE = 20  # was 50; relaxed 2026-05-12. Measures CONTRACTS
+                     # (ask_vol+bid_vol+mid_vol), NOT trade count — so a
+                     # single 5,000-contract sweep already exceeds this
+                     # floor and classifies via the standard path. Verified
+                     # by scripts/test_tick_side_tracker.py.
 DOMINANCE_RATIO = 1.3  # was 1.5; relaxed 2026-05-12
 MAX_TRADES_PER_BUCKET = 500  # was 200 — 30-min window holds more trades
 
@@ -155,9 +159,16 @@ class TickSideTracker:
     def latest_side(
         self, ticker: str, strike: float, expiration: str, right: str,
     ) -> str | None:
-        """Return 'ASK' / 'BID' / 'MID' from the rolling 60s window, or None
-        if the window has fewer than MIN_WINDOW_SIZE contracts. None tells
-        the caller to fall back to the legacy snapshot detector."""
+        """Return 'ASK' / 'BID' / 'MID' from the rolling 30-min window, or
+        None if the window has fewer than MIN_WINDOW_SIZE contracts (NOT
+        trades — accumulated contract count). None tells the caller to
+        fall back to the legacy snapshot detector.
+
+        Note: a single 5,000-contract sweep produces total_size=5000 which
+        clears the 20-contract floor immediately — no special "first-print
+        fallback" needed for whale-class single prints. The regression
+        suite in scripts/test_tick_side_tracker.py pins this behavior.
+        """
         self.lookups += 1
         key = self._key(ticker, strike, expiration, right)
         bucket = self._buckets.get(key)
