@@ -1336,11 +1336,19 @@ class SweepDetector:
         except ImportError:
             return
 
-        sentiment = (
-            "BULLISH" if rollup.sweep_side == "BUY"
-            else "BEARISH" if rollup.sweep_side == "SELL"
-            else "NEUTRAL"
-        )
+        # SweepRollup has no `sweep_side` attribute (bug surfaced 2026-06-05
+        # at the open — the bigger Pro-tier universe pushed more sweeps
+        # through this filtered path). Classify side from the price walk,
+        # consistent with _flush_rollup's logic.
+        if rollup.first_price > 0 and rollup.last_price > 0:
+            _walk_pct = (rollup.last_price - rollup.first_price) / rollup.first_price
+            side = "ASK" if _walk_pct >= 0.005 else "BID" if _walk_pct <= -0.005 else "MID"
+        else:
+            side = "MID"
+        if rollup.option_type == "call":
+            sentiment = "BULLISH" if side == "ASK" else "BEARISH" if side == "BID" else "NEUTRAL"
+        else:
+            sentiment = "BULLISH" if side == "BID" else "BEARISH" if side == "ASK" else "NEUTRAL"
         try:
             regime = cached_macro_regime_tag()
         except Exception:
@@ -1352,7 +1360,7 @@ class SweepDetector:
             "strike": rollup.strike,
             "expiration": rollup.expiration,
             "option_type": rollup.option_type,
-            "side": rollup.sweep_side,
+            "side": side,
             "sentiment": sentiment,
             "conviction": "SWEEP",
             "is_sweep": 1,
