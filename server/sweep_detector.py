@@ -1385,12 +1385,20 @@ class SweepDetector:
                 # Single sweep — use the existing rich SWEEP message
                 await self._send_telegram(rollup)
             elif decision == "FIRE_SUMMARY":
-                if payload.get("kind") == "CLUSTER":
+                _kind = payload.get("kind")
+                if _kind == "CLUSTER":
                     text = format_cluster_summary(payload)
                 else:
                     text = format_hot_flow_summary(payload)
+                # 2026-06-05 (#52): force CLUSTER summaries past the global
+                # 3/10min rate_window (daily_cap=6/ticker still bounds spam);
+                # HOT_FLOW gets priority. Same fix as flow_alerts FIRE_SUMMARY.
+                _force_summary = _kind == "CLUSTER"
                 try:
-                    await send(text, ticker=payload.get("ticker", ""))
+                    await send(
+                        text, ticker=payload.get("ticker", ""),
+                        priority=True, force=_force_summary,
+                    )
                 except Exception as e:
                     print(f"[SWEEP] cluster telegram send failed: {e}")
 

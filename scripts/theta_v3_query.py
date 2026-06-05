@@ -19,6 +19,10 @@ Usage:
     python scripts/theta_v3_query.py burst NVDA 20260702 215 C 20260604 \\
         12:32:00.000 12:33:00.000
 
+    # Aggressor-side split — "is it real, and was it BOUGHT?" (default RTH window)
+    python scripts/theta_v3_query.py side MRVL 20260821 170 C 20260605
+    # → 66% ask = REAL ASK BUYING; 45% ask/52% mid = MIXED/DISTRIBUTED
+
 Required v3 format reminders:
     - URL paths use /v3/, not /v2/
     - Symbol param is `symbol=`, not `root=`
@@ -65,6 +69,77 @@ def cmd_trade(symbol, expiration, strike, right, date, time_of_day):
     }
     r = requests.get(url, params=params, timeout=10)
     _print_csv(r.text)
+
+
+def cmd_side(symbol, expiration, strike, right, date,
+             start_time="09:30:00.000", end_time="16:00:00.000"):
+    """Aggressor-side analysis: trades paired with NBBO → % at/above ask
+    (buying), at/below bid (selling), mid. Answers 'was this real, and
+    was it BOUGHT?' for any contract+window. Default window = full RTH.
+
+    This is the canonical 'is the print real and aggressive' check —
+    e.g. MRVL 260C 8/21 on 6/5 came back 45% ask / 52% mid = mixed, while
+    the 170C was 66% ask = genuine buying.
+    """
+    url = f"{REST}/v3/option/history/trade_quote"
+    params = {
+        "symbol": symbol, "expiration": expiration,
+        "strike": strike, "right": right,
+        "start_date": date, "end_date": date,
+        "start_time": start_time, "end_time": end_time,
+    }
+    try:
+        r = requests.get(url, params=params, timeout=90)
+    except requests.Timeout:
+        print("  trade_quote timed out (>90s) — window too large. Narrow it.")
+        return
+    lines = r.text.splitlines()
+    if len(lines) < 2:
+        print(f"  no data / error: {lines[:1]}")
+        return
+    hdr = [h.strip().strip('"') for h in lines[0].split(",")]
+
+    def ix(name):
+        return hdr.index(name) if name in hdr else -1
+    i_sz, i_px, i_bid, i_ask = ix("size"), ix("price"), ix("bid"), ix("ask")
+    if min(i_sz, i_px, i_bid, i_ask) < 0:
+        print(f"  unexpected columns: {hdr}")
+        return
+    ask = bid = mid = total = 0
+    px_lo = px_hi = None
+    for ln in lines[1:]:
+        c = ln.split(",")
+        try:
+            s = int(c[i_sz]); p = float(c[i_px])
+            b = float(c[i_bid]); a = float(c[i_ask])
+        except (ValueError, IndexError):
+            continue
+        total += s
+        px_lo = p if px_lo is None else min(px_lo, p)
+        px_hi = p if px_hi is None else max(px_hi, p)
+        if a > 0 and p >= a:
+            ask += s
+        elif b > 0 and p <= b:
+            bid += s
+        else:
+            mid += s
+    print(f"  {symbol} {strike}{right} {expiration}  {start_time}-{end_time}")
+    print(f"  prints={len(lines)-1}  contracts={total}  "
+          f"price_range=${px_lo}-${px_hi}")
+    if total:
+        ap, bp, mp = 100*ask/total, 100*bid/total, 100*mid/total
+        print(f"  AT/ABOVE ASK: {ask:>7} ({ap:.0f}%)")
+        print(f"  AT/BELOW BID: {bid:>7} ({bp:.0f}%)")
+        print(f"  MID:          {mid:>7} ({mp:.0f}%)")
+        if ap >= 55:
+            v = "REAL ASK BUYING (aggressive)"
+        elif ap >= 40:
+            v = "MIXED / DISTRIBUTED (worked order or two-sided)"
+        elif bp >= 55:
+            v = "SELLING (hitting the bid)"
+        else:
+            v = "NO CLEAR AGGRESSOR"
+        print(f"  VERDICT: {v}")
 
 
 def cmd_burst(symbol, expiration, strike, right, date, start_time, end_time):
@@ -132,6 +207,8 @@ def main() -> int:
             cmd_trade(*args)
         elif cmd == "burst":
             cmd_burst(*args)
+        elif cmd == "side":
+            cmd_side(*args)
         elif cmd == "health":
             cmd_health()
         else:

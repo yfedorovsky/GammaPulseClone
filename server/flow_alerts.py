@@ -1610,14 +1610,29 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                                 except Exception:
                                     pass
                             elif decision == "FIRE_SUMMARY":
-                                if payload.get("kind") == "CLUSTER":
+                                _kind = payload.get("kind")
+                                if _kind == "CLUSTER":
                                     text = format_cluster_summary(payload)
-                                elif payload.get("kind") == "CLUSTER_RESOLUTION":
+                                elif _kind == "CLUSTER_RESOLUTION":
                                     from .cluster_resolution import format_resolution_telegram
                                     text = format_resolution_telegram(payload)
                                 else:
                                     text = format_hot_flow_summary(payload)
-                                await send(text, ticker=payload.get("ticker", ""))
+                                # 2026-06-05 (#52): cluster summaries are already
+                                # COLLAPSED high-signal alerts (the filter exists
+                                # to turn N legs into 1 summary). They were being
+                                # sent with no force/priority and dying on the
+                                # 3-per-10-min global rate_window — the MRVL
+                                # 34-leg $195M cluster was dropped 104x today.
+                                # Force CLUSTER/RESOLUTION past the rate window
+                                # (daily_cap=6/ticker still bounds spam); give
+                                # HOT_FLOW priority (bypass rate_window, keep the
+                                # 1h ticker cooldown).
+                                _force_summary = _kind in ("CLUSTER", "CLUSTER_RESOLUTION")
+                                await send(
+                                    text, ticker=payload.get("ticker", ""),
+                                    priority=True, force=_force_summary,
+                                )
                                 fired_summaries += 1
                                 # Performance database log (2026-05-20)
                                 try:
