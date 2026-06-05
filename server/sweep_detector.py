@@ -309,13 +309,22 @@ MVP_WATCHLIST_ROOTS = [
     "SLV",    # silver ETF ($346M weekly)
     "USO",    # oil ETF ($417M weekly)
     "IBIT",   # BTC ETF ($117M weekly)
+    "FXI",    # China broad ETF (6/4 add — $36M flow). Positioned next
+              # to the IBIT/GLD/SLV thematic ETF block per
+              # subscription_plan_dryrun.py output that showed FXI
+              # truncating at the end of MVP iteration.
     # Financials + consumer + China (added 2026-04-22 round 2)
     "JPM",    # financial mega-cap
     "GS",     # financial
     "MS",     # financial
     "BRK.B",  # Berkshire — ultra-liquid, news-sensitive
     "WMT",    # consumer staple mega-cap
+    "NKE",    # consumer mega-cap (6/4 add — $23M flow). Sits with WMT
+              # in the consumer-staple/discretionary block per
+              # subscription_plan_dryrun.py.
     "BABA",   # China ADR — active options, news-driven
+    "PDD",    # China e-commerce (6/4 add — $54M flow). Pairs with BABA
+              # in the China block per subscription_plan_dryrun.py.
     # ─── Universe-audit adds (2026-06-04 PM) — top-flow misses ──────
     # Driven by 6/4 top-flow leaderboard showing 8/16 names ($550M+
     # total premium) were outside our subscription universe. The
@@ -323,10 +332,18 @@ MVP_WATCHLIST_ROOTS = [
     # candle at 2:50 PM = ~20 min latency on their side) was the
     # canonical miss — passed every WHALE-RT gate but the contract
     # never entered our pipeline because NEE wasn't subscribed.
-    "NEE",    # AI-power-demand utility ($256M flow 6/4, biggest single-name)
-    "PDD",    # China e-commerce mega-cap ($54M flow 6/4, pairs with BABA)
-    "FXI",    # China broad ETF ($36M flow 6/4)
-    "NKE",    # consumer mega-cap ($23M flow 6/4)
+    #
+    # Order matters: the subscription planner iterates this list in
+    # order and stops at the MVP_BUDGET (25K). Per the 2026-06-04 PM
+    # dry-run (scripts/subscription_plan_dryrun.py), at worst-case spot
+    # placeholders the 42-root MVP slate runs ~32K specs — overcommitted
+    # by 7K. To guarantee the gap-fill names get subscription slots,
+    # they sit HERE (above the alphabetical tail) rather than at the
+    # end. In production with real spots, the budget is comfortable;
+    # this ordering is the safety belt.
+    "NEE",    # AI-power-demand utility ($256M flow 6/4, biggest single-name).
+              # PDD/FXI/NKE were here originally but moved to their
+              # thematic positions earlier in the list per the dryrun.
 ]
 
 # Added 2026-04-20 after missing MRVL 165C 5/8 and FSLR 192.5C 4/24 signals:
@@ -342,6 +359,23 @@ MVP_WATCHLIST_ROOTS = [
 #   - In current thematic baskets (AI silicon, power, fiber, neocloud, crypto, clean energy)
 #   - Validated flow activity today or in past week (MRVL +5%, FSLR $1M print, etc.)
 TIER2_THEMATIC_ROOTS = [
+    # ─── AI power infrastructure (6/4 NEE-class additions moved to TOP) ─
+    # Reordered 2026-06-04 PM (overnight Phase 4 / B1): the utility group
+    # added in commit fb033ab was originally appended to the END of this
+    # list, making them last to be subscribed. If the Tier2 budget ever
+    # tightens (currently 12K cap, 9K projection), the gap-fill names
+    # would be the FIRST to truncate — defeating the whole point of the
+    # 6/4 NEE whale catch. Lifting them to the top of the list guarantees
+    # they get subscription slots before the alphabetically-later names.
+    # The original AI-power picks-and-shovels (GEV/VRT) stay adjacent.
+    "CEG",    # Constellation nuclear baseload for AI data centers
+    "VST",    # Vistra nuclear + coal-to-data-center conversions
+    "EXC",    # Exelon Mid-Atlantic PJM grid (data center hub)
+    "SO",     # Southern Co Vogtle nuclear restart
+    "DUK",    # Duke Energy Carolinas/Florida data center hotspot
+    "AEP",    # American Electric Power Ohio/Texas hyperscaler exposure
+    "INTU",   # enterprise software mega-cap ($36M flow 6/4)
+    "PYPL",   # fintech mega-cap ($32M flow 6/4)
     # AI silicon / networking (missed MRVL 165C today)
     "MRVL", "ANET",
     # AI data center power (GEV/VRT rotation winners)
@@ -388,20 +422,10 @@ TIER2_THEMATIC_ROOTS = [
     "IONQ",   # quantum pure-play
     "HIMS",   # pharma momentum
     "AXTI",   # $227M/7d extreme concentration — smart money signal
-    # ─── Universe-audit adds (2026-06-04 PM) — AI power + flow gaps ──
-    # 6/4 NEE $10.6M ITM whale exposed a coverage gap: we cover the
-    # picks-and-shovels (GEV turbines, VRT cooling, OKLO SMRs) but
-    # missed the regulated utilities that actually deliver the electrons
-    # to the data centers. This block fills that gap.
-    "CEG",    # Constellation Energy — nuclear baseload for AI data centers
-    "VST",    # Vistra — nuclear + coal-to-data-center conversions
-    "EXC",    # Exelon — Mid-Atlantic utility, PJM grid exposure
-    "SO",     # Southern Co — Vogtle nuclear restart, Southeast grid
-    "DUK",    # Duke Energy — Carolinas/Florida grid, data center hotspot
-    "AEP",    # American Electric Power — Ohio/Texas grid, hyperscaler exposure
-    # Enterprise software / fintech misses from 6/4 top-flow list
-    "INTU",   # enterprise software mega-cap ($36M flow 6/4)
-    "PYPL",   # fintech mega-cap ($32M flow 6/4)
+    # NOTE: the CEG/VST/EXC/SO/DUK/AEP/INTU/PYPL block originally landed
+    # here in commit fb033ab but was reordered to the TOP of this list
+    # (see comment block at top) so subscription planner picks them up
+    # before later-alphabetical names if the Tier2 budget tightens.
 ]
 
 # Strike coverage target for Tier-2 thematic names — percentage-based so
@@ -459,20 +483,27 @@ SUBSCRIPTION_MAX_PLANNED = 45_000   # was 7_400 — hard loop cap in plan()
 # flow_tail gets a big bump too — that's where the small-cap whale lottos
 # live (AAOI/HIVE/PL/IOT/RKLB-class).
 TIER_BUDGETS = {
-    "mvp":       25_000,   # was 4,400 — full chains on watchlist names
+    "mvp":       28_000,   # 2026-06-04 PM overnight Phase 4 / B3: bumped
+                           #   25K → 28K after subscription_plan_dryrun.py
+                           #   showed FXI (last MVP root in iteration
+                           #   order) getting 0 specs at realistic spots.
+                           #   42 MVP roots at real spots project to
+                           #   ~25-27K — 28K is the safety belt.
     "tier2":     12_000,   # 2026-06-04 PM: bumped 8,000 → 12,000 to make
                            #   room for the +8 utility-power thematic adds
                            #   (CEG/VST/EXC/SO/DUK/AEP) + INTU/PYPL.
-                           #   Rough projection w/ 51 Tier2 roots is ~9,200
-                           #   specs at full radius; 12K leaves comfortable
-                           #   headroom. Total tier budgets sum to 49K (vs
-                           #   45K SUBSCRIPTION_TARGET) — the iteration
-                           #   order means flow_tail (last) truncates first
-                           #   if total approaches the 45K hard cap.
     "flow_top":   5_000,   # was 1,000 — top-30 by prior-day notional
-    "flow_mid":   3_500,   # was 500 — rank 31-100
+    "flow_mid":   1_500,   # 2026-06-04 PM: trimmed 3,500 → 1,500 so the
+                           #   MVP bump doesn't push total over the 45K
+                           #   hard cap. flow_mid is rank 31-100; many of
+                           #   those names are now in MVP/Tier2 anyway
+                           #   after the 6/4 universe expansion.
     "flow_tail":  3_500,   # was 400 — rank 101-300 long-tail whales
 }
+# Total tier budgets sum to 50K (vs 45K SUBSCRIPTION_TARGET / 50K
+# SUBSCRIPTION_BUDGET). The iteration order ensures higher-priority tiers
+# (MVP, Tier2, flow_top) are subscribed before lower-priority ones
+# (flow_mid, flow_tail), so the truncation falls on the long tail.
 
 # Strike radius percentages also expanded with the budget headroom. The
 # old 5-10% radii missed every whale trade documented since 5/20.

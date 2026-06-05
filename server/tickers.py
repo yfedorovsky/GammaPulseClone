@@ -341,6 +341,15 @@ TIER_3 = [
     # recurring winners list NOT in our universe. AppLovin = adtech +
     # AI ad-targeting story.
     "APP",   # AppLovin — adtech/AI ads, OG recurring still-open + winner
+    # ─── Universe-audit adds (2026-06-04 PM) — chain scanner coverage ─
+    # Subscription_plan_dryrun.py verified these were missing from the
+    # chain scanner universe too, which means they would have been
+    # invisible to BOTH the OPRA stream path AND the slow chain-snapshot
+    # path. The 6/4 NEE 77.5C $10.6M whale catch validated the
+    # AI-power-utility thesis — adding these closes the slow-path gap.
+    "CEG",   # Constellation nuclear baseload — AI power thesis
+    "VST",   # Vistra nuclear + coal-to-data-center — AI power thesis
+    "FXI",   # China broad ETF — $36M flow 6/4
 ]
 
 

@@ -8,9 +8,23 @@ Usage:
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+# Force UTF-8 on Windows so emoji in child stdout doesn't crash the
+# parent's cp1252 console. Without this, test_side_detection_p0.py
+# (which prints 🟢/🔴 in its assertions) crashes the runner with
+# UnicodeEncodeError. Set BEFORE any print() in this script.
+if sys.platform == "win32":
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    os.environ.setdefault("PYTHONUTF8", "1")
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+        sys.stderr.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    except (AttributeError, OSError):
+        pass
 
 
 def main() -> int:
