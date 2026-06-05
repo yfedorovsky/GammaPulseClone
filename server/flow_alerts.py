@@ -1377,6 +1377,27 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                                     )
                             except Exception as ce:
                                 print(f"[INFORMED_CLUSTER] error: {ce!r}", flush=True)
+                        # WHALE CLUSTER check (overnight Phase 3, 2026-06-04 PM).
+                        # 2+ whale-tagged strikes same (ticker, direction) within
+                        # 30 min → ONE multi-tenor ladder summary banner. Canonical
+                        # NVDA 6/4 case: 11 whale prints / 4 expirations / $30M+.
+                        if a.get("is_whale") and _whale_tg:
+                            try:
+                                from .whale_cluster import (
+                                    record_and_check as _whale_record_cluster,
+                                    format_cluster_telegram as _whale_fmt_cluster,
+                                    MIN_WHALE_CLUSTER_TELEGRAM_STRIKES,
+                                )
+                                wcluster = _whale_record_cluster(a)
+                                if (wcluster
+                                        and wcluster["n_strikes"] >= MIN_WHALE_CLUSTER_TELEGRAM_STRIKES):
+                                    await send(
+                                        _whale_fmt_cluster(wcluster),
+                                        ticker=wcluster["ticker"],
+                                        priority=True, force=True,
+                                    )
+                            except Exception as wce:
+                                print(f"[WHALE_CLUSTER] error: {wce!r}", flush=True)
                 else:
                     # New 4-rule filter (LIGHT or FULL)
                     f = get_filter()
@@ -1451,6 +1472,30 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                                             )
                                     except Exception as ce:
                                         print(f"[INFORMED_CLUSTER] error: {ce!r}", flush=True)
+                                # WHALE CLUSTER detector (overnight Phase 3,
+                                # 2026-06-04 PM). Cross-expiration multi-strike
+                                # whale ladders. 2-strike floor for Telegram
+                                # because each individual whale already cleared
+                                # a higher bar than INFORMED FLOW gates.
+                                if payload.get("is_whale") and _is_tg_whale:
+                                    try:
+                                        from .whale_cluster import (
+                                            record_and_check as _w_record,
+                                            format_cluster_telegram as _w_fmt,
+                                            MIN_WHALE_CLUSTER_TELEGRAM_STRIKES,
+                                        )
+                                        wcluster = _w_record(payload)
+                                        if (wcluster
+                                                and wcluster["n_strikes"]
+                                                >= MIN_WHALE_CLUSTER_TELEGRAM_STRIKES):
+                                            await send(
+                                                _w_fmt(wcluster),
+                                                ticker=wcluster["ticker"],
+                                                priority=True,
+                                                force=True,
+                                            )
+                                    except Exception as wce:
+                                        print(f"[WHALE_CLUSTER] error: {wce!r}", flush=True)
                                 # Performance database log (2026-05-20)
                                 try:
                                     from .alert_outcomes import log_alert

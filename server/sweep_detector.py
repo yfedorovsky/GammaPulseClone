@@ -1036,12 +1036,80 @@ class SweepDetector:
         if not _whale_realtime_should_dispatch(rollup):
             return
 
+        # Cluster-suppression check (overnight Phase 3, 2026-06-04 PM).
+        # If a WHALE CLUSTER already fired for this (ticker, direction) in
+        # the last 30 min, the cluster banner is already covering this
+        # ladder — skip the individual fire to keep the alert stream
+        # signal-to-noise high. Without this, today's NVDA would produce
+        # 11 individual fires + 1 cluster summary = 12 Telegrams when
+        # the user really only wants the cluster + maybe the most
+        # recent leg.
+        try:
+            from .whale_cluster import (
+                _whale_cluster_dedup,
+                WHALE_CLUSTER_DEDUP_TTL_SEC,
+                _direction_of as _wc_direction,
+            )
+            direction = _wc_direction({
+                "sentiment": sentiment,
+                "option_type": rollup.option_type,
+            })
+            ckey = (rollup.ticker.upper(), direction)
+            now = time.time()
+            last_cluster = _whale_cluster_dedup.get(ckey, 0.0)
+            if (last_cluster
+                    and now - last_cluster < WHALE_CLUSTER_DEDUP_TTL_SEC):
+                # Active cluster window — fire cluster-extension dispatch
+                # (records the new leg in the roster) but skip the
+                # individual Telegram. Caller below still does the
+                # cluster.record_and_check so the roster grows.
+                self.realtime_whales_fired += 1
+                asyncio.create_task(
+                    self._record_whale_in_active_cluster(
+                        rollup, side, sentiment,
+                    )
+                )
+                return
+        except Exception as e:
+            print(f"[WHALE-RT] cluster-suppress check error: {e!r}", flush=True)
+
         self.realtime_whales_fired += 1
         # Dispatch on the event loop — never block the consume loop on
         # an HTTPS round-trip.
         asyncio.create_task(
             self._send_telegram_whale_realtime(rollup, side, sentiment)
         )
+
+    async def _record_whale_in_active_cluster(
+        self, rollup: SweepRollup, side: str, sentiment: str,
+    ) -> None:
+        """Record a whale fire into an already-fired cluster's roster
+        without dispatching a Telegram. Used when a fresh whale lands on
+        a (ticker, direction) that already has an active CLUSTER banner
+        in the user's feed — we don't want to repeat the signal but we
+        DO want the cluster roster to reflect the new leg so subsequent
+        cluster lifecycle queries see accurate state.
+        """
+        try:
+            from .whale_cluster import record_and_check as _wc_record
+            synthetic = {
+                "ticker": rollup.ticker,
+                "strike": rollup.strike,
+                "expiration": rollup.expiration,
+                "option_type": rollup.option_type,
+                "side": side,
+                "sentiment": sentiment,
+                "notional": rollup.total_notional,
+                "volume": rollup.total_contracts,
+                "oi": 0,
+                "is_whale": 1,
+            }
+            # record_and_check returns a cluster only when dedup hasn't
+            # fired yet for this (ticker, direction) — here it's been set
+            # already so we expect None. Either way, the roster grows.
+            _wc_record(synthetic)
+        except Exception as e:
+            print(f"[WHALE-CLUSTER] record-only error: {e!r}", flush=True)
 
     async def _send_telegram_whale_realtime(
         self, rollup: SweepRollup, side: str, sentiment: str,
@@ -1141,6 +1209,44 @@ class SweepDetector:
             )
         except Exception as e:
             print(f"[WHALE-RT] telegram send failed: {e!r}", flush=True)
+
+        # WHALE CLUSTER check (overnight Phase 3). After the individual
+        # whale fire, see if this completes a 2+ strike multi-strike
+        # cluster on the same (ticker, direction). If so, fire ONE
+        # cluster summary banner too — the canonical NVDA 6/4 pattern
+        # was 11 whale prints across 4 expirations = $30M+ in 3 hours.
+        # The cluster banner highlights the LADDER, not just the latest
+        # leg. Dedup is internal to whale_cluster so back-to-back fires
+        # within 30 min still see ONE cluster Telegram.
+        try:
+            from .whale_cluster import (
+                record_and_check as _record_whale_cluster,
+                format_cluster_telegram as _format_whale_cluster,
+                MIN_WHALE_CLUSTER_TELEGRAM_STRIKES,
+            )
+            cluster = _record_whale_cluster(alert)
+            if cluster and cluster["n_strikes"] >= MIN_WHALE_CLUSTER_TELEGRAM_STRIKES:
+                cluster_msg = _format_whale_cluster(cluster)
+                try:
+                    await send(
+                        cluster_msg,
+                        ticker=rollup.ticker,
+                        priority=True,
+                        force=True,
+                    )
+                    print(
+                        f"[WHALE-CLUSTER] dispatch {rollup.ticker} "
+                        f"{cluster['direction']} {cluster['n_strikes']}-strike "
+                        f"{cluster['n_expirations']}-exp ${cluster['total_notional']/1e6:.1f}M",
+                        flush=True,
+                    )
+                except Exception as e:
+                    print(
+                        f"[WHALE-CLUSTER] telegram send failed: {e!r}",
+                        flush=True,
+                    )
+        except Exception as e:
+            print(f"[WHALE-CLUSTER] check error: {e!r}", flush=True)
 
     async def _send_telegram(self, rollup: SweepRollup) -> None:
         """Telegram push for high-notional sweeps. Uses the existing
