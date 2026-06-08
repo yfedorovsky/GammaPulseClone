@@ -89,6 +89,12 @@ class Candidate:
     t1: Optional[Sequence[int]] = None                  # label horizon -> CPCV purge.
     regime_labels: Optional[Sequence] = None            # per-return regime tag.
     detector_returns: Optional[dict] = None             # {name: aligned returns} -> orthogonality.
+    # Optional SPA-specific aligned pair. Candidate vs baseline often live on
+    # different per-trade indices (different cohorts), so SPA compares them on a
+    # COMMON grid (e.g. daily P/L). When both are set, the SPA stage uses these
+    # instead of (returns, baseline_returns); CPCV/DSR/PBO still use `returns`.
+    spa_returns: Optional[Sequence[float]] = None
+    spa_baseline_returns: Optional[Sequence[float]] = None
 
 
 @dataclass
@@ -292,11 +298,16 @@ class ValidationGate:
                                    f"SR {res.sr_observed:.3f} vs E[max|N={res.n_trials}] {res.sr0:.3f}")
 
     def _stage_spa(self, cand: Candidate) -> StageResult:
-        if cand.baseline_returns is None:
+        # Prefer the SPA-specific aligned pair (e.g. daily P/L) if supplied.
+        if cand.spa_returns is not None and cand.spa_baseline_returns is not None:
+            cand_s, base_s = cand.spa_returns, cand.spa_baseline_returns
+        else:
+            cand_s, base_s = cand.returns, cand.baseline_returns
+        if base_s is None:
             return StageResult("SPA", FAIL,
                                message="no baseline_returns: cannot prove it beats SOE A")
         try:
-            res = spa_beats_baseline(cand.returns, cand.baseline_returns,
+            res = spa_beats_baseline(cand_s, base_s,
                                      alpha=self.cfg.spa_alpha, reps=self.cfg.spa_reps)
         except ValueError as e:
             return StageResult("SPA", FAIL, message=f"SPA error: {e}")

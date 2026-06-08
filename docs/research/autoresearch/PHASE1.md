@@ -59,13 +59,53 @@ py -3.12 -m venv .venv-autoresearch
 The decay monitor + ledger are pure-stdlib (run on any Python). The stats core +
 gate need the venv (numpy/scipy/arch).
 
-## Tests — 55 total, 0 failures
+## Backtester adapter (wires the gate to real cohorts)
+
+`autoresearch/backtest_adapter.py` turns an `alert_outcomes` cohort into a gate
+`Candidate` (read-only, offline). `scripts/run_gate_on_cohort.py` is the
+end-to-end CLI.
+
+**Return proxy & its limitation (important):** the live DB does NOT store realized
+option-premium returns (`opt_close_eod`/`opt_mfe_pct` are entirely NULL). The spot
+trajectory IS fully populated, so the adapter uses a **directional spot return**
+per trade: `sign(direction) * (resolution_spot - spot_at_alert)/spot_at_alert`.
+This is the underlying move the alert called, **not** an option P/L net of
+slippage. A true slippage-aware option series needs ThetaData re-simulation
+(`scripts/realistic_slippage_backtest.py`) — a later step. Regime columns
+(`vix_at_alert`/`gex_signal`/`earnings_in_window`/`oi_confirmed`) are also NULL,
+so per-trade regime labels can't be built from this DB yet (economic stage WARNs).
+
+PBO config variants come from **score-quantile thresholds** (`score` is populated);
+SPA compares candidate vs baseline on a **common daily grid** (`Candidate.spa_returns`
+/ `spa_baseline_returns`), while CPCV/DSR/PBO/MIN_LENGTH use the per-trade series.
+
+### End-to-end result on the live DB (2026-06-08, ~26 days / 18 trading days)
+
+Every real cohort is **correctly quarantined at MIN_LENGTH** — exactly the
+expected behavior for thin data, and an independent corroboration of this
+project's prior "no honest directional alpha after measurement" finding:
+
+| Candidate | n | mean spot ret | Sharpe | gate verdict |
+|---|---|---|---|---|
+| FLOW_MEDIUM | 12921 | −0.10% | −0.07 | MIN_LENGTH (MinTRL=∞, edge ≤ 0) |
+| FLOW_HIGH | 6456 | −0.07% | −0.07 | MIN_LENGTH (MinTRL=∞, edge ≤ 0) |
+| SOE_A | 468 | −0.28% | −0.10 | MIN_LENGTH (MinTRL=∞, edge ≤ 0) |
+| SOE_BP | 47 | **+0.17%** | +0.07 | MIN_LENGTH (MinTRL=422 ≫ n=47) |
+
+The candidate win rates the adapter reads (e.g. FLOW_HIGH 41.1%) match the decay
+monitor exactly — the two tools see the same reality. Negative-edge cohorts get
+`MinTRL=∞` (you can't establish an edge that isn't there); the one weak-positive
+cohort (SOE_BP) needs 422 obs for a Sharpe that small but has 47. Nothing reaches
+CPCV/PBO/DSR/SPA — those stages are validated by the controlled test suite instead.
+
+## Tests — 62 total, 0 failures
 
 ```
 python scripts/test_decay_monitor.py            # 15  (stdlib)
 python scripts/test_trials_ledger.py            #  9  (stdlib)
 .venv-autoresearch/Scripts/python scripts/test_stats_core.py       # 19  (venv)
 .venv-autoresearch/Scripts/python scripts/test_gate_acceptance.py  # 12  (venv)
+.venv-autoresearch/Scripts/python scripts/test_backtest_adapter.py #  7  (venv)
 ```
 
 `test_gate_acceptance.py` is the **Phase 1 kill-criterion**: it proves the gate
@@ -75,12 +115,13 @@ economic-regime), plus that the global ledger increments on every evaluation.
 
 ## Not yet wired (next, pending human review)
 
-- **Backtester adapter**: a thin module turning a cohort/hypothesis into the
-  `Candidate` arrays (realistic ask-bid per-trade returns, config matrix across
-  parameter variants, aligned SOE-A baseline) by driving
-  `scripts/realistic_slippage_backtest.py` over ThetaData. The gate is
-  deliberately decoupled from the backtester — it operates on arrays.
+- **ThetaData option-return path**: replace the spot-return proxy with
+  slippage-aware option-premium returns via `scripts/realistic_slippage_backtest.py`,
+  so gate verdicts reflect tradable P/L, not just directional spot moves. This is
+  the single biggest fidelity upgrade and the natural next step.
 - **MLflow** tracking/registry (deferrable to Phase 2).
 - **Embedding/AST dedup** (AlphaAgent-style) to replace the Phase 1 token-Jaccard
   placeholder in stage 0.
-- These are intentionally left for the next review checkpoint, not started.
+- **Phase 2** internal hypothesis generator (regime-slice → auto-backtest through
+  this gate) — blocked until the DB accumulates enough history to clear MinTRL,
+  and ideally until the option-return path lands.
