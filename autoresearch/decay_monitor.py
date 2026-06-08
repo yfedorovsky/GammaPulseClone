@@ -380,6 +380,208 @@ def compute_signal_health(
 
 
 # ---------------------------------------------------------------------------
+# C3 — always-valid retirement monitor (anti-optional-stopping).
+# ---------------------------------------------------------------------------
+#
+# The fixed-n Wilson/Clopper-Pearson trigger above is fine as a DASHBOARD, but
+# using "Wilson lower < breakeven, re-checked daily" as a RETIRE trigger has
+# optional-stopping bias: a long enough noise streak eventually breaches and kills
+# a healthy signal. C3 replaces the trigger with:
+#   - an ALWAYS-VALID confidence sequence (time-uniform empirical-Bernstein, LIL
+#     boundary — valid simultaneously for all n, so daily re-checks are safe),
+#   - TWO-CHECK HYSTERESIS (retire only after >=2 consecutive breaches),
+#   - an ECONOMIC gate (recent expectancy deterioration, not just win rate),
+#   - EMPIRICAL-BAYES shrinkage toward the pooled rate + a min-n floor for
+#     regime-specific verdicts (else fall back to pooled, flagged low-data).
+
+DEFAULT_ALPHA = 0.05
+DEFAULT_MIN_N_REGIME = 45   # below this, no regime-specific verdict (pooled fallback).
+
+
+def always_valid_lcb(wins: int, n: int, alpha: float = DEFAULT_ALPHA) -> float:
+    """Time-uniform (always-valid) lower confidence bound on a [0,1] mean.
+
+    Empirical-Bernstein with a law-of-iterated-logarithm boundary (Howard-Ramdas
+    family): radius ~ sqrt(2 v B / n) + 3 B/n with B = ln(1/alpha) + 3 ln ln(e n).
+    Valid SIMULTANEOUSLY over all n, so re-checking every day carries no optional-
+    stopping bias — unlike a fixed-n Wilson bound. Deliberately conservative (wider
+    than Wilson), which is the point: "desks almost never kill on a single breach."
+    """
+    if n <= 0:
+        return 0.0
+    mu = wins / n
+    var = mu * (1.0 - mu)
+    beta = math.log(1.0 / alpha) + 3.0 * math.log(max(1.0, math.log(math.e * n)))
+    radius = math.sqrt(2.0 * var * beta / n) + 3.0 * beta / n
+    return max(0.0, mu - radius)
+
+
+def eb_shrink_rates(cohorts: dict, kappa_bounds: tuple = (2.0, 1000.0)) -> dict:
+    """Pure-stdlib empirical-Bayes Beta-Binomial shrinkage of win rates.
+
+    ``cohorts``: name -> (wins, n). Returns name -> dict(shrunk, ci_low, ci_high,
+    raw, prior_mean, kappa). Small cohorts shrink toward the pooled rate; CIs use
+    the module's pure-python Beta inverse.
+    """
+    items = [(k, int(w), int(n)) for k, (w, n) in cohorts.items() if n > 0]
+    if not items:
+        return {}
+    tw = sum(w for _, w, _ in items)
+    tn = sum(n for _, _, n in items)
+    m = tw / tn
+    rates = [w / n for _, w, n in items]
+    if len(rates) >= 2:
+        mean_r = sum(rates) / len(rates)
+        var = sum((r - mean_r) ** 2 for r in rates) / (len(rates) - 1)
+        kappa = (m * (1 - m) / var - 1.0) if (var > 1e-12 and 0 < m < 1) else kappa_bounds[1]
+    else:
+        ns = sorted(n for _, _, n in items)
+        kappa = float(ns[len(ns) // 2])
+    kappa = min(max(kappa, kappa_bounds[0]), kappa_bounds[1])
+    a0, b0 = m * kappa, (1 - m) * kappa
+    out = {}
+    for k, w, n in items:
+        a, b = a0 + w, b0 + (n - w)
+        out[k] = {
+            "raw": w / n, "shrunk": a / (a + b),
+            "ci_low": _beta_ppf(0.025, a, b), "ci_high": _beta_ppf(0.975, a, b),
+            "prior_mean": m, "kappa": kappa,
+        }
+    return out
+
+
+@dataclass
+class SignalVerdict:
+    cohort: str
+    verdict: str               # HEALTHY / WATCH / RETIRE_CANDIDATE / UNTRUSTED.
+    n: int
+    raw_rate: Optional[float]
+    shrunk_rate: Optional[float]
+    always_valid_lcb: Optional[float]
+    breach: bool               # provisional breach this check.
+    breach_streak: int         # consecutive breaches incl. this check.
+    expectancy_recent: Optional[float]
+    expectancy_deteriorating: Optional[bool]
+    reason: str = ""
+
+
+def _recent_counts(con, cohort_col: str, lo_ts: float, hi_ts: float) -> dict:
+    """Per-cohort (wins, n) over [lo_ts, hi_ts) for resolved WIN/LOSS rows."""
+    sql = (
+        f"SELECT {cohort_col}, "
+        f"  SUM(CASE WHEN verdict_eod='WIN' THEN 1 ELSE 0 END), "
+        f"  SUM(CASE WHEN verdict_eod IN ('WIN','LOSS') THEN 1 ELSE 0 END) "
+        f"FROM alert_outcomes "
+        f"WHERE outcome_status != 'pending' AND {cohort_col} IS NOT NULL "
+        f"  AND fired_at >= ? AND fired_at < ? "
+        f"GROUP BY {cohort_col}"
+    )
+    out = {}
+    for row in con.execute(sql, (lo_ts, hi_ts)).fetchall():
+        out[row[0]] = (int(row[1] or 0), int(row[2] or 0))
+    return out
+
+
+def monitor_signals(
+    db_path: str = LIVE_DB_PATH,
+    *,
+    now_ts: Optional[float] = None,
+    breakeven: float = DEFAULT_BREAKEVEN,
+    alpha: float = DEFAULT_ALPHA,
+    min_n: float = DEFAULT_MIN_N_REGIME,
+    recent_days: float = 60.0,
+    prior_state: Optional[dict] = None,
+    expectancy_recent: Optional[dict] = None,
+    expectancy_prior: Optional[dict] = None,
+) -> tuple[list[SignalVerdict], dict]:
+    """Always-valid retirement monitor with hysteresis + economics (C3).
+
+    Args:
+        prior_state: cohort -> {"breach_streak": int} from the previous check.
+        expectancy_recent / expectancy_prior: optional cohort -> mean economic
+            expectancy (e.g. mean option R-multiple) for the recent and prior
+            windows. When given, a RETIRE breach also requires recent expectancy
+            to have deteriorated (lower than prior or <= 0) — not just win rate.
+
+    Returns (verdicts sorted worst-first, new_state for the next check).
+    """
+    now = float(now_ts) if now_ts is not None else datetime.now(timezone.utc).timestamp()
+    lo = now - recent_days * SECONDS_PER_DAY
+    prior_state = prior_state or {}
+    exp_recent = expectancy_recent or {}
+    exp_prior = expectancy_prior or {}
+
+    con = _open_ro(db_path)
+    try:
+        counts = _recent_counts(con, "alert_type", lo, now)
+    finally:
+        con.close()
+
+    shrunk = eb_shrink_rates({k: v for k, v in counts.items() if v[1] > 0})
+
+    verdicts: list[SignalVerdict] = []
+    new_state: dict = {}
+    for cohort, (wins, n) in counts.items():
+        prev_streak = int(prior_state.get(cohort, {}).get("breach_streak", 0))
+        if n < min_n:
+            new_state[cohort] = {"breach_streak": 0}
+            sr = shrunk.get(cohort, {})
+            verdicts.append(SignalVerdict(
+                cohort=cohort, verdict=UNTRUSTED, n=n,
+                raw_rate=(wins / n if n else None),
+                shrunk_rate=sr.get("shrunk"), always_valid_lcb=None,
+                breach=False, breach_streak=0,
+                expectancy_recent=exp_recent.get(cohort),
+                expectancy_deteriorating=None,
+                reason=f"n={n} < min_n={int(min_n)} (regime verdict suppressed; "
+                       f"pooled fallback {sr.get('shrunk', float('nan')):.1%})"))
+            continue
+
+        lcb = always_valid_lcb(wins, n, alpha)
+        rate_breach = lcb < breakeven
+
+        exp_det = None
+        if cohort in exp_recent:
+            er = exp_recent[cohort]
+            ep = exp_prior.get(cohort)
+            exp_det = (er <= 0.0) or (ep is not None and er < ep)
+
+        # A breach requires the always-valid lower bound below breakeven AND, when
+        # expectancy data exists, economic deterioration too.
+        breach = rate_breach and (exp_det if exp_det is not None else True)
+        streak = prev_streak + 1 if breach else 0
+        new_state[cohort] = {"breach_streak": streak}
+
+        if breach and streak >= 2:
+            verdict = RETIRE_CANDIDATE
+            reason = (f"always-valid LCB {lcb:.1%} < breakeven {breakeven:.1%} for "
+                      f"{streak} consecutive checks" +
+                      ("; economic expectancy deteriorating" if exp_det else ""))
+        elif breach:
+            verdict = WATCH
+            reason = (f"provisional breach (always-valid LCB {lcb:.1%} < {breakeven:.1%}); "
+                      f"awaiting 2nd confirmation (streak {streak})")
+        elif lcb >= breakeven:
+            verdict = HEALTHY
+            reason = f"always-valid LCB {lcb:.1%} >= breakeven {breakeven:.1%} (n={n})"
+        else:
+            verdict = WATCH
+            reason = (f"LCB {lcb:.1%} < breakeven but no economic deterioration — "
+                      f"hold (streak reset)")
+
+        sr = shrunk.get(cohort, {})
+        verdicts.append(SignalVerdict(
+            cohort=cohort, verdict=verdict, n=n, raw_rate=wins / n,
+            shrunk_rate=sr.get("shrunk"), always_valid_lcb=lcb,
+            breach=breach, breach_streak=streak,
+            expectancy_recent=exp_recent.get(cohort),
+            expectancy_deteriorating=exp_det, reason=reason))
+
+    verdicts.sort(key=lambda v: (_VERDICT_SEVERITY.get(v.verdict, 99), -v.n, v.cohort))
+    return verdicts, new_state
+
+
+# ---------------------------------------------------------------------------
 # Rendering / artifacts.
 # ---------------------------------------------------------------------------
 

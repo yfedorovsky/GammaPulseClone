@@ -16,10 +16,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np  # noqa: E402
 
 from autoresearch.backtest_adapter import (  # noqa: E402
-    load_cohort, build_candidate, _same_day_horizon, _score_threshold_matrix,
-    _daily_series,
+    load_cohort, load_clusters_economic, build_candidate, _same_day_horizon,
+    _score_threshold_matrix, _daily_series,
 )
 from autoresearch.gate import TestCard  # noqa: E402
+from autoresearch.option_pnl import Bar  # noqa: E402
+
+
+class _FakeNBBO:
+    """Returns the same bars for any contract -> deterministic +20% EOD PnL."""
+    def bars(self, ticker, expiration, strike, right, date):
+        return [Bar("09:31", 1.9, 2.0), Bar("15:59", 2.4, 2.5)]  # entry ask 2.0, exit bid 2.4
 
 _COLS = ("alert_type TEXT, fired_at REAL, direction TEXT, score REAL, "
          "vix_at_alert REAL, spot_at_alert REAL, outcome_resolution_spot REAL, "
@@ -121,17 +128,88 @@ def test_build_candidate_assembles_arrays():
     card = TestCard("t", "p", "claim text", "positive", "a real mechanism here",
                     "CAND", "kill when bad")
     cand, diag = build_candidate(card, "CAND", db_path=db, baseline_alert_type="BASE")
-    assert diag["n_trades"] == 40
+    assert diag["n_units"] == 40                       # spot path (no source).
     assert cand.returns.shape[0] == 40
     assert cand.t1 is not None and len(cand.t1) == 40
     # SPA arrays exist, equal length, on the common day grid.
     assert cand.spa_returns is not None and cand.spa_baseline_returns is not None
     assert len(cand.spa_returns) == len(cand.spa_baseline_returns) == diag["spa_grid_days"]
-    assert diag["return_proxy"] == "directional_spot_pct"
+    assert diag["return_proxy"] == "directional_spot_pct" and diag["unit"] == "alert"
+
+
+_ECON_COLS = ("alert_type TEXT, fired_at REAL, ticker TEXT, direction TEXT, "
+              "strike REAL, expiration TEXT, option_type TEXT, score REAL, "
+              "verdict_eod TEXT, outcome_status TEXT")
+
+
+def _make_econ_db(rows) -> str:
+    fd = tempfile.NamedTemporaryFile(prefix="econ_", suffix=".db", delete=False)
+    fd.close()
+    con = sqlite3.connect(fd.name)
+    con.execute(f"CREATE TABLE alert_outcomes ({_ECON_COLS})")
+    con.executemany(
+        "INSERT INTO alert_outcomes (alert_type,fired_at,ticker,direction,strike,"
+        "expiration,option_type,score,verdict_eod,outcome_status) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+    con.commit(); con.close()
+    return fd.name
+
+
+def _erow(at, day, ticker, direction, strike, score=5.0, hh=13):
+    # hh=13 UTC -> 09:00 ET, so the 09:31 fake bar is the entry.
+    return (at, _ts(day, hh), ticker, direction, strike, "2026-06-18", "call",
+            score, "WIN", "info_only")
+
+
+def test_clusters_collapse_alerts_to_decisions():
+    # 6 alerts -> 3 economic clusters: (A,d13,BULL)x3, (A,d14,BULL)x1, (B,d13,BEAR)x2.
+    rows = [
+        _erow("C", "2026-05-13", "A", "BULL", 100, hh=13),
+        _erow("C", "2026-05-13", "A", "BULL", 101, hh=14),
+        _erow("C", "2026-05-13", "A", "BULL", 102, hh=15),
+        _erow("C", "2026-05-14", "A", "BULL", 100, hh=13),
+        _erow("C", "2026-05-13", "B", "BEAR", 50, hh=13),
+        _erow("C", "2026-05-13", "B", "BEAR", 51, hh=14),
+    ]
+    clusters, cov = load_clusters_economic(_make_econ_db(rows), "C", _FakeNBBO())
+    assert len(clusters) == 3, [(c["ticker"], c["day"], c["direction"]) for c in clusters]
+    assert cov["n_alerts_total"] == 6 and cov["n_clusters_with_data"] == 3
+    # Each cluster's realized outcome is the fake +20% EOD / 50% risk = +0.4 R.
+    for c in clusters:
+        assert abs(c["ret"] - 0.4) < 1e-9, c
+    big = [c for c in clusters if c["ticker"] == "A" and c["day"] == "2026-05-13"][0]
+    assert big["n_alerts"] == 3
+
+
+def test_build_candidate_economic_mode():
+    rows = []
+    for i in range(12):
+        rows.append(_erow("CAND", f"2026-05-{13 + (i % 4):02d}", f"T{i%6}", "BULL",
+                           100 + i, score=4.0 + (i % 5) * 0.2))
+    for i in range(8):
+        rows.append(_erow("BASE", f"2026-05-{13 + (i % 4):02d}", f"B{i%4}", "BULL", 50 + i))
+    db = _make_econ_db(rows)
+    card = TestCard("t", "p", "claim", "positive", "a real mechanism here", "CAND", "kill")
+    cand, diag = build_candidate(card, "CAND", db_path=db, baseline_alert_type="BASE",
+                                 source=_FakeNBBO(), return_mode="option_pnl")
+    assert diag["unit"] == "cluster"
+    assert diag["return_proxy"] == "option_pnl_r_multiple"
+    assert diag["coverage"]["n_alerts_total"] == 12
+    assert cand.returns.shape[0] == diag["n_units"] >= 1
+    assert cand.spa_returns is not None and len(cand.spa_returns) == diag["spa_grid_days"]
+
+
+def test_economic_limit_caps_clusters():
+    rows = [_erow("C", f"2026-05-{13 + i:02d}", "A", "BULL", 100 + i) for i in range(10)]
+    clusters, cov = load_clusters_economic(_make_econ_db(rows), "C", _FakeNBBO(), limit=4)
+    assert len(clusters) == 4 and cov["n_clusters_attempted"] == 4
 
 
 TESTS = [
     test_directional_return_signs,
+    test_clusters_collapse_alerts_to_decisions,
+    test_build_candidate_economic_mode,
+    test_economic_limit_caps_clusters,
     test_excludes_pending_and_flat_and_nulls,
     test_same_day_horizon,
     test_score_threshold_matrix_shape_and_zeroing,

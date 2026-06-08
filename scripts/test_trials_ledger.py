@@ -101,8 +101,67 @@ def test_atomic_no_tmp_left_behind():
     assert Path(path).exists()
 
 
+def test_seed_increments_global_n_and_is_idempotent():
+    led = TrialLedger(_tmp_path(), clock=_fixed_clock)
+    added = led.seed(200, reason="prior ad-hoc backtests + 4-LLM rounds + buffer")
+    assert added == 200 and led.count() == 200
+    # Re-seeding must NOT double-count.
+    again = led.seed(200, reason="retry")
+    assert again == 0 and led.count() == 200
+    actions = [a["action"] for a in led.audit_log()]
+    assert "seed" in actions and "seed_skipped" in actions
+
+
+def test_seed_then_record_continues_count():
+    led = TrialLedger(_tmp_path(), clock=_fixed_clock)
+    led.seed(50, reason="prior")
+    led.record("newcand", 1.2, 250, family="soe")
+    assert led.count() == 51
+    assert led.count_by_family()["seed"] == 50
+    assert led.count_by_family()["soe"] == 1
+
+
+def test_effective_n_family_fallback():
+    led = TrialLedger(_tmp_path(), clock=_fixed_clock)
+    # 5 near-duplicate variants in one family + 2 in another => 2 effective.
+    for i in range(5):
+        led.record(f"v{i}", 1.0, 100, family="famA")
+    for i in range(2):
+        led.record(f"w{i}", 1.0, 100, family="famB")
+    assert led.count() == 7
+    assert led.effective_n() == 2.0
+
+
+def test_effective_n_from_correlation_participation_ratio():
+    led = TrialLedger(_tmp_path(), clock=_fixed_clock)
+    # 4 trials, two perfectly-correlated pairs => ~2 independent.
+    C = [[1.0, 1.0, 0.0, 0.0],
+         [1.0, 1.0, 0.0, 0.0],
+         [0.0, 0.0, 1.0, 1.0],
+         [0.0, 0.0, 1.0, 1.0]]
+    neff = led.effective_n(correlation=C)
+    assert abs(neff - 2.0) < 1e-6, neff
+    # Identity matrix => fully independent.
+    I = [[1.0 if i == j else 0.0 for j in range(4)] for i in range(4)]
+    assert abs(led.effective_n(correlation=I) - 4.0) < 1e-6
+
+
+def test_throughput_cap():
+    led = TrialLedger(_tmp_path(), clock=_fixed_clock)
+    for i in range(3):
+        led.record(f"c{i}", 1.0, 100, family="soe")
+    assert led.throughput_remaining("soe", cap=5) == 2
+    assert led.throughput_remaining("never", cap=5) == 5
+    assert led.throughput_remaining("soe", cap=2) == 0   # already over cap.
+
+
 TESTS = [
     test_empty_count_zero,
+    test_seed_increments_global_n_and_is_idempotent,
+    test_seed_then_record_continues_count,
+    test_effective_n_family_fallback,
+    test_effective_n_from_correlation_participation_ratio,
+    test_throughput_cap,
     test_record_increments_global_n,
     test_seq_monotonic_and_ids,
     test_persistence_across_instances,

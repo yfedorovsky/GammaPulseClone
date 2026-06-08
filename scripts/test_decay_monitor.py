@@ -27,6 +27,9 @@ from autoresearch.decay_monitor import (  # noqa: E402
     clopper_pearson_interval,
     compute_signal_health,
     wilson_interval,
+    always_valid_lcb,
+    eb_shrink_rates,
+    monitor_signals,
 )
 
 # Fixed reference "now" so every window boundary is deterministic.
@@ -238,8 +241,73 @@ def test_sorting_worst_first():
     assert verdicts[-1] == HEALTHY, verdicts
 
 
+# === C3: always-valid monitor ===
+
+def test_always_valid_lcb_is_conservative_vs_wilson():
+    # The time-uniform bound must be NO TIGHTER than the fixed-n Wilson lower bound
+    # (it is wider on purpose — that is what removes optional-stopping bias).
+    for wins, n in [(30, 100), (120, 300), (600, 2000)]:
+        wlo = wilson_interval(wins, n)[0]
+        av = always_valid_lcb(wins, n)
+        assert 0.0 <= av <= wins / n, (wins, n, av)
+        assert av <= wlo + 1e-9, (wins, n, av, wlo)
+
+
+def test_monitor_healthy_large_n():
+    rows = _gen("H", wins=1200, losses=800, flat=0, age_days=10)  # 60% over 2000
+    v, _ = monitor_signals(_make_db(rows), now_ts=NOW_TS, min_n=45)
+    h = [x for x in v if x.cohort == "H"][0]
+    assert h.verdict == HEALTHY, h.reason
+    assert h.always_valid_lcb >= DEFAULT_BREAKEVEN
+
+
+def test_monitor_low_n_untrusted():
+    rows = _gen("T", 3, 7, 0, 10)  # n=10 < 45
+    v, st = monitor_signals(_make_db(rows), now_ts=NOW_TS, min_n=45)
+    t = [x for x in v if x.cohort == "T"][0]
+    assert t.verdict == UNTRUSTED and st["T"]["breach_streak"] == 0
+
+
+def test_monitor_two_check_hysteresis():
+    # Severe collapse: first check WATCH (streak 1), second consecutive RETIRE.
+    db = _make_db(_gen("D", 15, 285, 0, 10))  # 5% over n=300
+    v1, st1 = monitor_signals(db, now_ts=NOW_TS, min_n=45)
+    d1 = [x for x in v1 if x.cohort == "D"][0]
+    assert d1.breach is True and d1.verdict == WATCH and d1.breach_streak == 1, d1.reason
+    v2, st2 = monitor_signals(db, now_ts=NOW_TS, min_n=45, prior_state=st1)
+    d2 = [x for x in v2 if x.cohort == "D"][0]
+    assert d2.verdict == RETIRE_CANDIDATE and d2.breach_streak == 2, d2.reason
+
+
+def test_monitor_economic_gate_blocks_retire_without_deterioration():
+    # Rate breach but expectancy is POSITIVE / not deteriorating -> NO breach.
+    db = _make_db(_gen("D", 15, 285, 0, 10))
+    v, st = monitor_signals(db, now_ts=NOW_TS, min_n=45, prior_state={"D": {"breach_streak": 1}},
+                            expectancy_recent={"D": 0.5})  # healthy expectancy
+    d = [x for x in v if x.cohort == "D"][0]
+    assert d.breach is False and d.verdict == WATCH and st["D"]["breach_streak"] == 0
+    # Same setup but expectancy deteriorating -> breach proceeds to RETIRE (streak 2).
+    v2, _ = monitor_signals(db, now_ts=NOW_TS, min_n=45, prior_state={"D": {"breach_streak": 1}},
+                            expectancy_recent={"D": -0.3})
+    d2 = [x for x in v2 if x.cohort == "D"][0]
+    assert d2.breach is True and d2.verdict == RETIRE_CANDIDATE
+
+
+def test_eb_shrink_small_cohort_toward_pool():
+    res = eb_shrink_rates({"big": (450, 1000), "tiny": (5, 5)})
+    assert res["tiny"]["raw"] == 1.0
+    assert res["tiny"]["shrunk"] < 0.95          # shrunk down toward pool
+    assert res["tiny"]["ci_low"] <= res["tiny"]["shrunk"] <= res["tiny"]["ci_high"]
+
+
 TESTS = [
     test_wilson_ordering_and_point,
+    test_always_valid_lcb_is_conservative_vs_wilson,
+    test_monitor_healthy_large_n,
+    test_monitor_low_n_untrusted,
+    test_monitor_two_check_hysteresis,
+    test_monitor_economic_gate_blocks_retire_without_deterioration,
+    test_eb_shrink_small_cohort_toward_pool,
     test_clopper_pearson_brackets_point,
     test_clopper_pearson_known_value,
     test_wilson_zero_n_safe,

@@ -1,26 +1,26 @@
 """Backtester adapter — turn an alert_outcomes cohort into a gate ``Candidate``.
 
-Bridges the live outcome DB to the validation gate. It is READ-ONLY on the DB and
-offline; it only assembles arrays, runs nothing live.
+Bridges the live outcome DB to the validation gate. READ-ONLY on the DB, offline;
+it only assembles arrays.
 
-IMPORTANT — return proxy & its limitation:
-  The live ``alert_outcomes.db`` does NOT store realized OPTION-premium returns
-  (``opt_close_eod`` / ``opt_mfe_pct`` are entirely NULL in the current data).
-  What IS fully populated is the spot trajectory, so this adapter uses a
-  DIRECTIONAL SPOT RETURN per trade:
+TWO return modes:
+  - ``option_pnl`` (C6, DEFAULT when an NBBO source is given): per-cluster realized
+    OPTION-premium R-multiple, re-simulated net of slippage over ThetaData
+    (autoresearch/option_pnl.py: ask-in / bid-out). This is the tradable economic
+    series the gate's SPA + economic-null stages want.
+  - ``spot`` (legacy fallback when no source): a DIRECTIONAL SPOT-RETURN proxy,
+    ``sign(direction)*(resolution_spot-spot_at_alert)/spot_at_alert`` — the
+    underlying move, NOT option P/L. Kept for the no-network path and tests.
 
-      ret = sign(direction) * (resolution_spot - spot_at_alert) / spot_at_alert   [%]
+UNIT OF ANALYSIS (C5): one **economic decision cluster** = (ticker, ET trading
+day, direction) — the same flow episode / ticker-session, NOT a raw alert. Raw
+alerts are heavily clustered, so the row count badly overstates the independent
+sample. The cluster's representative is its earliest fire; its realized outcome is
+that decision's option PnL. CPCV purging, SPA losses and the decay monitor all run
+on clusters.
 
-  This is the underlying move the alert called, NOT an option P/L net of slippage.
-  A true slippage-aware option-return series requires re-simulating fills over
-  ThetaData (scripts/realistic_slippage_backtest.py); wiring that in is a later
-  step. Treat gate verdicts built on the spot proxy as directional-edge evidence,
-  not tradable-premium evidence — and the gate will (correctly) quarantine thin
-  cohorts at MIN_LENGTH/CPCV regardless.
-
-Regime enrichment: vix_at_alert / gex_signal / earnings_in_window / oi_confirmed
-are NULL in the current DB, so per-trade regime labels usually cannot be built
-here (the economic stage then WARNs rather than checking regime robustness).
+Regime enrichment (vix/gex/earnings/oi) is NULL in the current DB, so per-cluster
+regime labels usually can't be built (economic stage then SHADOWs).
 """
 from __future__ import annotations
 
@@ -32,6 +32,9 @@ from typing import Optional
 import numpy as np
 
 from .gate import TestCard, Candidate
+from .option_pnl import (
+    NBBOSource, simulate_option_pnl, fire_hhmm_from_ts, et_day_from_ts,
+)
 
 LIVE_DB_PATH = r"C:\Dev\GammaPulse\alert_outcomes.db"
 
@@ -138,55 +141,136 @@ def _daily_series(trades: list[dict], all_days: list[str]) -> np.ndarray:
     return np.array([float(np.mean(by_day[d])) if d in by_day else 0.0 for d in all_days])
 
 
+def load_clusters_economic(db_path: str, alert_type: str, source: NBBOSource,
+                           tp_pct: float = 100.0, stop_pct: float = -50.0,
+                           limit: Optional[int] = None) -> tuple[list[dict], dict]:
+    """C5+C6: economic decision clusters with realized option-PnL R-multiples.
+
+    One cluster = (ticker, ET day, direction). Representative = earliest fire; its
+    slippage-aware option PnL (autoresearch/option_pnl) is the cluster's realized
+    outcome. Returns (clusters ordered by representative time, coverage dict).
+    """
+    con = _open_ro(db_path)
+    try:
+        rows = con.execute(
+            "SELECT fired_at, ticker, direction, strike, expiration, option_type, score "
+            "FROM alert_outcomes "
+            "WHERE alert_type = ? AND outcome_status != 'pending' "
+            "  AND verdict_eod IN ('WIN','LOSS') "
+            "  AND strike IS NOT NULL AND expiration IS NOT NULL "
+            "  AND option_type IS NOT NULL "
+            "ORDER BY fired_at ASC",
+            (alert_type,),
+        ).fetchall()
+    finally:
+        con.close()
+
+    # Group into clusters; keep earliest fire as representative.
+    groups: dict[tuple, dict] = {}
+    for r in rows:
+        day = et_day_from_ts(r["fired_at"])
+        key = (r["ticker"], day, (r["direction"] or "").upper())
+        g = groups.get(key)
+        if g is None:
+            groups[key] = {"rep": r, "fired_at": r["fired_at"], "n_alerts": 1,
+                           "scores": [r["score"]] if r["score"] is not None else []}
+        else:
+            g["n_alerts"] += 1
+            if r["score"] is not None:
+                g["scores"].append(r["score"])
+            if r["fired_at"] < g["fired_at"]:
+                g["rep"] = r
+                g["fired_at"] = r["fired_at"]
+
+    ordered = sorted(groups.items(), key=lambda kv: kv[1]["fired_at"])
+    if limit is not None:
+        ordered = ordered[:limit]
+
+    clusters: list[dict] = []
+    n_attempt = n_nodata = 0
+    for (ticker, day, direction), g in ordered:
+        rep = g["rep"]
+        n_attempt += 1
+        res = simulate_option_pnl(
+            ticker=ticker, expiration=rep["expiration"], strike=float(rep["strike"]),
+            option_type=rep["option_type"], fire_hhmm=fire_hhmm_from_ts(rep["fired_at"]),
+            date=day, source=source, tp_pct=tp_pct, stop_pct=stop_pct)
+        if res.status != "OK":
+            n_nodata += 1
+            continue
+        score = float(np.mean(g["scores"])) if g["scores"] else None
+        clusters.append({"ticker": ticker, "day": day, "direction": direction,
+                         "ret": float(res.r_multiple), "pnl_pct": float(res.pnl_pct),
+                         "exit": res.exit_reason, "score": score,
+                         "n_alerts": g["n_alerts"]})
+    coverage = {"n_clusters_attempted": n_attempt, "n_clusters_no_data": n_nodata,
+                "n_clusters_with_data": len(clusters), "n_alerts_total": len(rows)}
+    return clusters, coverage
+
+
 def build_candidate(card: TestCard, alert_type: str,
                     db_path: str = LIVE_DB_PATH,
                     baseline_alert_type: str = "SOE_A",
+                    source: Optional[NBBOSource] = None,
+                    return_mode: str = "option_pnl",
+                    tp_pct: float = 100.0, stop_pct: float = -50.0,
+                    limit: Optional[int] = None,
                     vix_below: Optional[float] = None,
                     vix_atleast: Optional[float] = None,
                     n_configs: int = 8) -> tuple[Candidate, dict]:
-    """Assemble a gate ``Candidate`` for a cohort, plus a diagnostics dict.
+    """Assemble a gate ``Candidate`` plus diagnostics.
 
-    The candidate's per-trade series drives CPCV/DSR/PBO/MIN_LENGTH; a daily-
-    aligned (candidate vs baseline) pair drives SPA. The baseline is another
-    cohort (default SOE_A) — the gate's beat-the-baseline reference.
+    With an NBBO ``source`` and ``return_mode='option_pnl'`` (default), builds
+    CLUSTER-level option-PnL R-multiple series (C5+C6). Without a source it falls
+    back to the per-alert directional spot-return proxy (legacy / no-network).
     """
-    cand_trades = load_cohort(db_path, alert_type, vix_below=vix_below, vix_atleast=vix_atleast)
-    base_trades = load_cohort(db_path, baseline_alert_type)
+    use_economic = source is not None and return_mode == "option_pnl"
 
-    rets = np.array([t["ret"] for t in cand_trades], dtype=float)
-    days = [t["day"] for t in cand_trades]
-    scores = [t["score"] for t in cand_trades]
+    if use_economic:
+        cand_items, cov = load_clusters_economic(db_path, alert_type, source,
+                                                  tp_pct, stop_pct, limit)
+        base_items, base_cov = load_clusters_economic(db_path, baseline_alert_type,
+                                                       source, tp_pct, stop_pct, limit)
+        proxy = "option_pnl_r_multiple"
+        unit = "cluster"
+    else:
+        cand_items = load_cohort(db_path, alert_type, vix_below=vix_below, vix_atleast=vix_atleast)
+        base_items = load_cohort(db_path, baseline_alert_type)
+        cov = base_cov = {}
+        proxy = "directional_spot_pct"
+        unit = "alert"
+
+    rets = np.array([t["ret"] for t in cand_items], dtype=float)
+    days = [t["day"] for t in cand_items]
+    scores = [t.get("score") for t in cand_items]
 
     config_matrix = _score_threshold_matrix(rets, scores, n_configs) if rets.size else None
     t1 = _same_day_horizon(days) if days else None
 
-    # Common day grid across BOTH cohorts for the SPA comparison.
-    all_days = sorted({t["day"] for t in cand_trades} | {t["day"] for t in base_trades})
-    spa_returns = _daily_series(cand_trades, all_days) if all_days else None
-    spa_baseline = _daily_series(base_trades, all_days) if all_days else None
+    all_days = sorted({t["day"] for t in cand_items} | {t["day"] for t in base_items})
+    spa_returns = _daily_series(cand_items, all_days) if all_days else None
+    spa_baseline = _daily_series(base_items, all_days) if all_days else None
 
     cand = Candidate(
-        card=card,
-        returns=rets,
-        config_matrix=config_matrix,
-        baseline_returns=spa_baseline,        # fallback if spa_* unused.
-        t1=t1,
-        spa_returns=spa_returns,
-        spa_baseline_returns=spa_baseline,
+        card=card, returns=rets, config_matrix=config_matrix,
+        baseline_returns=spa_baseline, t1=t1,
+        spa_returns=spa_returns, spa_baseline_returns=spa_baseline,
     )
     diag = {
         "alert_type": alert_type,
         "baseline_alert_type": baseline_alert_type,
-        "n_trades": int(rets.size),
+        "unit": unit,
+        "return_proxy": proxy,
+        "n_units": int(rets.size),
+        "n_baseline_units": len(base_items),
         "n_trading_days": len(set(days)),
-        "n_baseline_trades": len(base_trades),
-        "mean_ret_pct": float(rets.mean()) if rets.size else None,
+        "mean_ret": float(rets.mean()) if rets.size else None,
         "win_rate": float(np.mean(rets > 0)) if rets.size else None,
         "config_matrix_shape": None if config_matrix is None else list(config_matrix.shape),
         "spa_grid_days": len(all_days),
-        "return_proxy": "directional_spot_pct",
+        "coverage": cov,
     }
     return cand, diag
 
 
-__all__ = ["load_cohort", "build_candidate", "LIVE_DB_PATH"]
+__all__ = ["load_cohort", "load_clusters_economic", "build_candidate", "LIVE_DB_PATH"]

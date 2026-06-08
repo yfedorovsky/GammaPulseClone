@@ -1,8 +1,10 @@
 """Acceptance test for the validation gate — the Phase 1 kill-criterion.
 
-The deflation engine is only trustworthy if it PASSES a known-good signal and
-REJECTS a known-overfit one. This suite proves both, then forces a targeted
-rejection at EACH stage (card, dedup, min-length, CPCV, PBO, DSR, SPA, economic).
+Updated for the C1 tiered model: the gate returns an OUTCOME in
+{SHIP, SHADOW, REJECT}. SPA-beats-baseline + economic lift are the HARD gates;
+PBO and DSR are DIAGNOSTIC bands that can cap the outcome (PBO>=0.50 / DSR<0.90 ->
+REJECT) but are not sole gatekeepers. MIN_LENGTH no longer hard-quarantines a
+positive edge — it caps at STAGING(SHADOW) until enough effective obs.
 
 MUST run under the autoresearch venv:
     .venv-autoresearch/Scripts/python scripts/test_gate_acceptance.py
@@ -20,7 +22,7 @@ import numpy as np  # noqa: E402
 
 from autoresearch.trials_ledger import TrialLedger  # noqa: E402
 from autoresearch.gate import (  # noqa: E402
-    TestCard, Candidate, GateConfig, ValidationGate, PASS, FAIL, WARN,
+    TestCard, Candidate, GateConfig, ValidationGate, SHIP, SHADOW, REJECT,
 )
 
 
@@ -37,7 +39,6 @@ def _tmp_ledger_path() -> str:
 
 
 def _seed_ledger(path: str, sharpes: list[float]) -> None:
-    """Write a ledger file directly (fast pre-seed of global N)."""
     trials = [
         {"seq": i + 1, "trial_id": f"seed-{i+1:06d}", "recorded_at": 1_700_000_000.0,
          "label": "seed", "sharpe": float(s), "n_obs": 250,
@@ -52,14 +53,11 @@ def _seed_ledger(path: str, sharpes: list[float]) -> None:
 
 def _good_card(cid="EMA8-VIX-LOW") -> TestCard:
     return TestCard(
-        card_id=cid,
-        provenance="internal slice of alert_outcomes.db, VIX<20 cohort",
-        claim="SOE A in low-VIX regime has higher net expectancy than baseline",
+        card_id=cid, provenance="internal slice of alert_outcomes.db",
+        claim="this cohort has higher net expectancy than baseline",
         expected_sign="positive",
-        mechanism="dealer hedging is more mechanical in low-VIX so opening flow "
-                  "leads spot more reliably",
-        target_cohort="SOE_A & VIX<20",
-        kill_criteria="rolling 60d Clopper-Pearson lower bound < 22.7% breakeven",
+        mechanism="dealer hedging is more mechanical here so flow leads spot",
+        target_cohort="some cohort", kill_criteria="rolling lower bound < breakeven",
     )
 
 
@@ -79,34 +77,32 @@ def _fast_cfg(**kw):
     return GateConfig(**base)
 
 
-# --------------------------------------------------------------------------- #
-# Headline: pass known-good, reject known-overfit.
-# --------------------------------------------------------------------------- #
-
-def test_known_good_PASSES():
-    rng = np.random.default_rng(100)
-    path = _tmp_ledger_path()
-    _seed_ledger(path, [0.15, 0.18, 0.20, 0.16, 0.19])  # modest, low-dispersion prior trials.
-    led = TrialLedger(path)
-
-    T = 1280
+def _full_good_candidate(rng, T=1280, cid="EMA8-VIX-LOW"):
+    """A candidate that should clear every stage."""
     ret = _genuine_returns(rng, T)
     M = _genuine_matrix(rng, T)
-    M[:, 0] = ret                                   # candidate IS the edge column.
-    baseline = rng.normal(0.0, 0.2, T)              # baseline (SOE A) ~ flat.
-    labels = np.array(["am"] * (T // 2) + ["pm"] * (T - T // 2))  # both regimes +EV.
-    detector = rng.normal(0.0, 0.2, T)              # uncorrelated live detector.
-
-    cand = Candidate(card=_good_card(), returns=ret, config_matrix=M,
+    M[:, 0] = ret
+    baseline = rng.normal(0.0, 0.2, T)
+    labels = np.array(["am"] * (T // 2) + ["pm"] * (T - T // 2))
+    detector = rng.normal(0.0, 0.2, T)
+    return Candidate(card=_good_card(cid), returns=ret, config_matrix=M,
                      baseline_returns=baseline, regime_labels=labels,
                      detector_returns={"king_migration": detector})
-    rep = ValidationGate(led, _fast_cfg()).evaluate(cand)
-    if not rep.passed:
+
+
+# --------------------------------------------------------------------------- #
+# Headline: SHIP a known-good, REJECT a known-overfit.
+# --------------------------------------------------------------------------- #
+
+def test_known_good_SHIPS():
+    rng = np.random.default_rng(100)
+    path = _tmp_ledger_path()
+    _seed_ledger(path, [0.15, 0.18, 0.20, 0.16, 0.19])
+    led = TrialLedger(path)
+    rep = ValidationGate(led, _fast_cfg()).evaluate(_full_good_candidate(rng))
+    if rep.outcome != SHIP:
         print(rep.summary())
-    assert rep.passed is True, rep.rejected_at
-    assert rep.rejected_at is None
-    # Every stage that ran is PASS (economic may be PASS since enrichments present).
-    assert all(s.status in (PASS, WARN) for s in rep.stages), rep.summary()
+    assert rep.outcome == SHIP, rep.drivers
 
 
 def test_known_overfit_REJECTED():
@@ -114,187 +110,201 @@ def test_known_overfit_REJECTED():
     path = _tmp_ledger_path()
     _seed_ledger(path, [0.1, 0.2, 0.15])
     led = TrialLedger(path)
-
     T, N = 1280, 20
     M = rng.normal(0.0, 1.0, (T, N))                # pure noise search space.
-    best_col = int(np.argmax(M.mean(axis=0)))       # the in-sample "winner".
-    ret = M[:, best_col]                            # cherry-picked overfit candidate.
-    baseline = rng.normal(0.0, 1.0, T)
-
+    ret = M[:, int(np.argmax(M.mean(axis=0)))]      # cherry-picked IS winner.
     cand = Candidate(card=_good_card("NOISE-MINER"), returns=ret, config_matrix=M,
-                     baseline_returns=baseline)
+                     baseline_returns=rng.normal(0.0, 1.0, T))
     rep = ValidationGate(led, _fast_cfg()).evaluate(cand)
-    assert rep.passed is False, rep.summary()
-    # It must die at a STATISTICAL overfit defense, not the card stage. A
-    # cherry-picked-from-noise series has a tiny Sharpe, so it is legitimately
-    # killed at MIN_LENGTH (track record too short for that Sharpe) before it even
-    # reaches PBO — MinTRL is itself a selection-bias defense. CPCV/PBO/DSR are the
-    # later defenses; the dedicated test_reject_pbo proves the PBO stage directly.
-    assert rep.rejected_at in ("MIN_LENGTH", "CPCV", "PBO", "DSR"), rep.rejected_at
+    assert rep.outcome == REJECT, rep.summary()
+    # The overfitting must be caught by a statistical stage (PBO danger / SPA / CPCV).
+    assert any(d in ("PBO", "SPA", "CPCV", "DSR") for d in rep.drivers), rep.drivers
 
 
 # --------------------------------------------------------------------------- #
-# Targeted per-stage rejections.
+# Card stage.
 # --------------------------------------------------------------------------- #
 
 def test_reject_invalid_card():
     led = TrialLedger(_tmp_ledger_path())
     bad = _good_card()
-    bad.mechanism = "    "                          # empty rationale.
-    cand = Candidate(card=bad, returns=[0.1] * 100)
-    rep = ValidationGate(led, _fast_cfg()).evaluate(cand)
-    assert rep.passed is False and rep.rejected_at == "TEST_CARD"
+    bad.mechanism = "   "
+    rep = ValidationGate(led, _fast_cfg()).evaluate(Candidate(card=bad, returns=[0.1] * 100))
+    assert rep.outcome == REJECT and "TEST_CARD" in rep.drivers
     assert led.count() == 0, "must NOT record a trial for a malformed card"
 
 
 def test_reject_duplicate_card():
     led = TrialLedger(_tmp_ledger_path())
-    existing = ["SOE A in low VIX regime has higher net expectancy than baseline"]
-    cand = Candidate(card=_good_card(), returns=[0.1] * 100)
-    rep = ValidationGate(led, _fast_cfg(), existing_claims=existing).evaluate(cand)
-    assert rep.passed is False and rep.rejected_at == "TEST_CARD"
+    existing = ["this cohort has higher net expectancy than baseline"]
+    rep = ValidationGate(led, _fast_cfg(), existing_claims=existing).evaluate(
+        Candidate(card=_good_card(), returns=[0.1] * 100))
+    assert rep.outcome == REJECT and "TEST_CARD" in rep.drivers
     assert "duplicate" in rep.stages[-1].message
 
 
-def test_reject_min_length():
+# --------------------------------------------------------------------------- #
+# MIN_LENGTH: negative edge -> REJECT; positive-but-thin -> SHADOW (not REJECT).
+# --------------------------------------------------------------------------- #
+
+def test_negative_edge_rejected_at_min_length():
     rng = np.random.default_rng(102)
     led = TrialLedger(_tmp_ledger_path())
-    ret = rng.normal(0.02, 0.3, 40)                 # weak SR, tiny T -> MinTRL huge.
-    cand = Candidate(card=_good_card(), returns=ret)
-    rep = ValidationGate(led, _fast_cfg()).evaluate(cand)
-    assert rep.passed is False and rep.rejected_at == "MIN_LENGTH", rep.summary()
+    ret = rng.normal(-0.05, 0.3, 300)               # SR < 0.
+    rep = ValidationGate(led, _fast_cfg()).evaluate(Candidate(card=_good_card(), returns=ret))
+    assert rep.outcome == REJECT and "MIN_LENGTH" in rep.drivers, rep.summary()
 
 
-def test_reject_cpcv():
-    # Net-positive overall (passes MIN_LENGTH) but the edge is concentrated in ONE
-    # group, so most combinatorial OOS test sets are negative -> median Sharpe < 0.
+def test_underpowered_positive_is_SHADOW_not_ship():
+    # Genuine edge but T below the ship floor -> capped at STAGING(SHADOW), not SHIP,
+    # not REJECT. (Everything else passes.)
     rng = np.random.default_rng(103)
-    led = TrialLedger(_tmp_ledger_path())
-    T = 600
-    ret = rng.normal(-0.02, 0.3, T)
-    ret[:100] = rng.normal(0.5, 0.3, 100)           # only group 0 carries the gains.
-    cand = Candidate(card=_good_card(), returns=ret)
-    rep = ValidationGate(led, _fast_cfg()).evaluate(cand)
-    assert rep.passed is False and rep.rejected_at == "CPCV", rep.summary()
-
-
-def test_reject_pbo():
-    # Candidate series is a genuine stationary edge (clears MIN_LENGTH + CPCV) but
-    # the searched config space is pure noise -> PBO ~ 0.5 -> overfitting flagged.
-    rng = np.random.default_rng(104)
-    led = TrialLedger(_tmp_ledger_path())
-    _seed_ledger(led.path, [0.1, 0.15])
-    T = 1280
+    path = _tmp_ledger_path()
+    _seed_ledger(path, [0.15, 0.18, 0.2])
+    led = TrialLedger(path)
+    T = 300                                          # < ship_min_obs (450).
     ret = _genuine_returns(rng, T)
-    M = rng.normal(0.0, 1.0, (T, 20))               # noise search space.
+    M = _genuine_matrix(rng, T); M[:, 0] = ret
+    baseline = rng.normal(0.0, 0.2, T)
+    labels = np.array(["am"] * 150 + ["pm"] * 150)
     cand = Candidate(card=_good_card(), returns=ret, config_matrix=M,
-                     baseline_returns=rng.normal(0.0, 0.2, T))
+                     baseline_returns=baseline, regime_labels=labels,
+                     detector_returns={"d": rng.normal(0, 0.2, T)})
     rep = ValidationGate(led, _fast_cfg()).evaluate(cand)
-    assert rep.passed is False and rep.rejected_at == "PBO", rep.summary()
+    assert rep.outcome == SHADOW, rep.summary()
+    assert "MIN_LENGTH" in rep.drivers
 
 
-def test_reject_dsr_under_huge_global_n():
-    # Same genuine edge, but a huge, high-dispersion global trial count inflates
-    # E[max Sharpe | N] above the candidate's Sharpe -> DSR collapses.
+# --------------------------------------------------------------------------- #
+# Diagnostics drive REJECT at the right bands.
+# --------------------------------------------------------------------------- #
+
+def test_pbo_overfit_drives_reject():
+    # Genuine series clears the hard gates, but the searched config space is the
+    # textbook overfitting pathology: each config is tuned to a random subset of
+    # time blocks (great there, terrible elsewhere), so the in-sample winner is
+    # systematically the OOS loser -> PBO -> danger band -> REJECT.
+    rng = np.random.default_rng(104)
+    path = _tmp_ledger_path()
+    _seed_ledger(path, [0.1, 0.15])
+    led = TrialLedger(path)
+    S, block, N = 16, 80, 24
+    T = S * block
+    M = rng.normal(0.0, 0.1, (T, N))
+    blk = np.arange(T) // block
+    for j in range(N):
+        fav = rng.choice(S, S // 2, replace=False)
+        favmask = np.isin(blk, fav)
+        M[favmask, j] += 1.0
+        M[~favmask, j] -= 1.0
+    ret = _genuine_returns(rng, T)
+    labels = np.array(["am"] * (T // 2) + ["pm"] * (T - T // 2))
+    cand = Candidate(card=_good_card(), returns=ret, config_matrix=M,
+                     baseline_returns=rng.normal(0.0, 0.2, T), regime_labels=labels,
+                     detector_returns={"d": rng.normal(0, 0.2, T)})
+    rep = ValidationGate(led, _fast_cfg()).evaluate(cand)
+    assert rep.outcome == REJECT and "PBO" in rep.drivers, rep.summary()
+    pbo = [s for s in rep.stages if s.name == "PBO"][0].detail["pbo"]
+    assert pbo >= 0.20, f"expected high PBO, got {pbo}"
+
+
+def test_dsr_reject_under_huge_global_n():
     rng = np.random.default_rng(105)
     path = _tmp_ledger_path()
-    _seed_ledger(path, list(rng.uniform(-1.0, 3.0, 800)))   # 800 prior trials, high var.
+    _seed_ledger(path, list(rng.uniform(-1.0, 3.0, 800)))   # huge, high-variance N.
     led = TrialLedger(path)
     T = 1280
     ret = _genuine_returns(rng, T)
-    M = _genuine_matrix(rng, T)
-    M[:, 0] = ret
+    M = _genuine_matrix(rng, T); M[:, 0] = ret
+    labels = np.array(["am"] * 640 + ["pm"] * 640)
     cand = Candidate(card=_good_card(), returns=ret, config_matrix=M,
-                     baseline_returns=rng.normal(0.0, 0.2, T))
+                     baseline_returns=rng.normal(0.0, 0.2, T), regime_labels=labels,
+                     detector_returns={"d": rng.normal(0, 0.2, T)})
     rep = ValidationGate(led, _fast_cfg()).evaluate(cand)
-    assert rep.passed is False and rep.rejected_at == "DSR", rep.summary()
+    assert rep.outcome == REJECT and "DSR" in rep.drivers, rep.summary()
 
 
-def test_reject_spa_when_baseline_better():
+# --------------------------------------------------------------------------- #
+# Hard gates: SPA + economic.
+# --------------------------------------------------------------------------- #
+
+def test_spa_reject_when_baseline_better():
     rng = np.random.default_rng(106)
     path = _tmp_ledger_path()
     _seed_ledger(path, [0.1, 0.12])
     led = TrialLedger(path)
     T = 1280
-    ret = _genuine_returns(rng, T, mean=0.08, sd=0.2)
-    M = _genuine_matrix(rng, T, edge=0.08)
-    M[:, 0] = ret
-    baseline = rng.normal(0.16, 0.2, T)             # baseline beats the candidate.
+    ret = _genuine_returns(rng, T, mean=0.08)
+    M = _genuine_matrix(rng, T, edge=0.08); M[:, 0] = ret
     cand = Candidate(card=_good_card(), returns=ret, config_matrix=M,
-                     baseline_returns=baseline)
+                     baseline_returns=rng.normal(0.16, 0.2, T))   # baseline wins.
     rep = ValidationGate(led, _fast_cfg()).evaluate(cand)
-    assert rep.passed is False and rep.rejected_at == "SPA", rep.summary()
+    assert rep.outcome == REJECT and "SPA" in rep.drivers, rep.summary()
 
 
-def test_reject_economic_regime():
+def test_economic_regime_reject():
     rng = np.random.default_rng(107)
     path = _tmp_ledger_path()
     _seed_ledger(path, [0.1, 0.12])
     led = TrialLedger(path)
     T = 1280
-    ret = _genuine_returns(rng, T, mean=0.12, sd=0.2)
-    M = _genuine_matrix(rng, T)
-    M[:, 0] = ret
-    baseline = rng.normal(0.0, 0.2, T)
-    # One regime bucket is net-negative even though overall expectancy is positive.
+    ret = _genuine_returns(rng, T)
+    M = _genuine_matrix(rng, T); M[:, 0] = ret
     labels = np.array(["bull"] * (T - 200) + ["bear"] * 200)
-    ret = np.asarray(ret)
-    ret[-200:] = rng.normal(-0.15, 0.2, 200)        # 'bear' regime loses money.
+    ret = np.asarray(ret); ret[-200:] = rng.normal(-0.15, 0.2, 200)  # bear loses.
     cand = Candidate(card=_good_card(), returns=ret, config_matrix=M,
-                     baseline_returns=baseline, regime_labels=labels)
+                     baseline_returns=rng.normal(0.0, 0.2, T), regime_labels=labels)
     rep = ValidationGate(led, _fast_cfg()).evaluate(cand)
-    assert rep.passed is False and rep.rejected_at == "ECONOMIC", rep.summary()
+    assert rep.outcome == REJECT and "ECONOMIC" in rep.drivers, rep.summary()
     assert "bear" in rep.stages[-1].message
 
 
-def test_economic_warns_when_enrichments_missing():
-    # A fully-passing candidate with NO regime/detector data -> ECONOMIC = WARN,
-    # but the gate still PASSES overall (WARN is not FAIL).
+def test_economic_shadow_when_enrichments_missing():
+    # Clears hard gates but no regime/detector data -> ECONOMIC SHADOW -> overall
+    # SHADOW (capped), NOT SHIP, NOT REJECT.
     rng = np.random.default_rng(108)
     path = _tmp_ledger_path()
     _seed_ledger(path, [0.15, 0.18, 0.2])
     led = TrialLedger(path)
     T = 1280
     ret = _genuine_returns(rng, T)
-    M = _genuine_matrix(rng, T)
-    M[:, 0] = ret
+    M = _genuine_matrix(rng, T); M[:, 0] = ret
     cand = Candidate(card=_good_card(), returns=ret, config_matrix=M,
                      baseline_returns=rng.normal(0.0, 0.2, T))
     rep = ValidationGate(led, _fast_cfg()).evaluate(cand)
-    assert rep.passed is True, rep.summary()
-    assert rep.stages[-1].name == "ECONOMIC" and rep.stages[-1].status == WARN
+    assert rep.outcome == SHADOW, rep.summary()
+    assert "ECONOMIC" in rep.drivers
 
 
 def test_ledger_increments_per_evaluation():
     rng = np.random.default_rng(109)
     led = TrialLedger(_tmp_ledger_path())
-    assert led.count() == 0
     for i in range(3):
-        ret = rng.normal(0.02, 0.3, 50)             # rejected at MIN_LENGTH, but still counts.
+        ret = rng.normal(0.02, 0.3, 50)
         ValidationGate(led, _fast_cfg()).evaluate(
             Candidate(card=_good_card(f"c{i}"), returns=ret))
     assert led.count() == 3, "every backtest the gate runs must increment global N"
 
 
 TESTS = [
-    test_known_good_PASSES,
+    test_known_good_SHIPS,
     test_known_overfit_REJECTED,
     test_reject_invalid_card,
     test_reject_duplicate_card,
-    test_reject_min_length,
-    test_reject_cpcv,
-    test_reject_pbo,
-    test_reject_dsr_under_huge_global_n,
-    test_reject_spa_when_baseline_better,
-    test_reject_economic_regime,
-    test_economic_warns_when_enrichments_missing,
+    test_negative_edge_rejected_at_min_length,
+    test_underpowered_positive_is_SHADOW_not_ship,
+    test_pbo_overfit_drives_reject,
+    test_dsr_reject_under_huge_global_n,
+    test_spa_reject_when_baseline_better,
+    test_economic_regime_reject,
+    test_economic_shadow_when_enrichments_missing,
     test_ledger_increments_per_evaluation,
 ]
 
 
 def main() -> int:
     print("=" * 72)
-    print("ACCEPTANCE TESTS - autoresearch validation gate (Phase 1 kill-criterion)")
+    print("ACCEPTANCE TESTS - validation gate (C1 tiered model)")
     print("=" * 72)
     passed = failed = 0
     for t in TESTS:

@@ -125,3 +125,58 @@ economic-regime), plus that the global ledger increments on every evaluation.
 - **Phase 2** internal hypothesis generator (regime-slice → auto-backtest through
   this gate) — blocked until the DB accumulates enough history to clear MinTRL,
   and ideally until the option-return path lands.
+
+---
+
+# Phase 1.5 — Round-2 corrections applied (C1–C6)
+
+Applied the 4-LLM follow-up corrections (`FOLLOWUP_SYNC.md` / `PHASE1.5.md`). The
+theme: the gate was honest-but-underpowered / over-strict / naive about
+dependence — right-size it, don't add frequentist strictness.
+
+| # | Correction | What changed |
+|---|---|---|
+| **C1** | PBO/DSR → diagnostics; fix PBO band | Gate now returns a tiered outcome **SHIP/SHADOW/REJECT**. Hard gates = SPA-beats-baseline + economic lift. PBO banded (≥0.50 danger, 0.20–0.50 no-deploy, 0.10–0.20 shadow, <0.10 pass) — **0.50 is the danger line, not 0.05**. DSR ≥0.95 admit / 0.90–0.95 shadow / <0.90 reject, secondary. |
+| **C6** | Economic PnL net of slippage | New `option_pnl.py`: per-cluster realized **option-premium R-multiple** re-simulated over ThetaData NBBO (ask-in / bid-out), ET-aligned, cached. Replaces the spot proxy for SPA + economic. |
+| **C5** | Unit = economic decision cluster | `backtest_adapter` re-keyed to **(ticker, ET-day, direction)** clusters; representative = earliest fire; CPCV/SPA/decay run on clusters, not raw alerts. |
+| **C2** | Hierarchical partial pooling | New `pooling.py`: empirical-Bayes **beta-binomial** (win rate) + DerSimonian-Laird **random-effects** (R-multiple, winsorized) shrink small subgroups toward the pooled mean. Unblocks Phase 2. |
+| **C4** | Effective-N ledger | `trials_ledger` gains `seed(N, reason)` (audit-logged, idempotent), `effective_n()` (family count / correlation participation-ratio), and `throughput_remaining()` per family. Seed default N≈300. |
+| **C3** | Always-valid decay monitor | `decay_monitor.monitor_signals`: time-uniform **always-valid LCB** (empirical-Bernstein, LIL boundary) replaces the optional-stopping-biased fixed-n Wilson trigger; **two-check hysteresis**; **economic-expectancy** gate; **EB shrinkage** + min-n. 60/90d Wilson kept as dashboard. |
+
+## Re-run verdicts (live DB, option-PnL clusters, seeded N≈300)
+
+```
+SOE_BP  vs SOE_A : REJECT (MIN_LENGTH,CPCV,PBO,DSR,ECONOMIC)
+   44 clusters/47 alerts, 100% NBBO coverage. Directional spot edge was +0.17%,
+   but realized OPTION R-multiple = -0.107 after ask-in/bid-out slippage. SPA
+   "passes" (loses less than the SOE_A baseline, both negative) yet the economic
+   null correctly REJECTs negative expectancy. -> C6 reveals phantom alpha.
+
+ZERO_DTE_BP vs SOE_A : REJECT (PBO, DSR)
+   21 clusters/90 alerts. Positive option edge (+0.52 R), beats baseline
+   (SPA p=0.005), CPCV-robust (87% paths positive) — but PBO=0.672 (DANGER: the
+   score-threshold config space doesn't generalize) and DSR=0.848 (<0.90 vs
+   N=302) REJECT it; MIN_LENGTH flags STAGING (n=21<34). The calibrated PBO band
+   does real work the old PBO<0.05 rule could not express.
+```
+
+Both are honest quarantines — now with nuanced tiered reasoning instead of a blunt
+MIN_LENGTH wall. Nothing ships; the option-PnL path confirms these cohorts lack
+slippage-robust, deflation-robust edge.
+
+## Tests — 89 total, 0 failures
+```
+python scripts/test_decay_monitor.py                                # 21 (stdlib) +C3
+python scripts/test_trials_ledger.py                                # 14 (stdlib) +C4
+.venv-autoresearch/Scripts/python scripts/test_stats_core.py        # 19 (venv)
+.venv-autoresearch/Scripts/python scripts/test_gate_acceptance.py   # 12 (venv)  C1 tiered
+.venv-autoresearch/Scripts/python scripts/test_backtest_adapter.py  # 10 (venv)  +C5/C6
+.venv-autoresearch/Scripts/python scripts/test_option_pnl.py        #  7 (venv)  C6
+.venv-autoresearch/Scripts/python scripts/test_pooling.py           #  6 (venv)  C2
+```
+
+## Still queued (after C1–C6, before/with Phase 2)
+- Governance Experiment/Signal-Health Card (one-page auditable artifact).
+- MLflow tracking + AST/embedding dedup (replace token-Jaccard).
+- Phase 2 miner — now unblocked by C2 + C6, but still gated on the DB accruing
+  enough independent cluster history to clear MinTRL at the family (pooled) level.

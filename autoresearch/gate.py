@@ -42,6 +42,17 @@ from .trials_ledger import TrialLedger
 
 PASS, FAIL, WARN, SKIP = "PASS", "FAIL", "WARN", "SKIP"
 
+# Outcome tiers (C1): the gate no longer returns a naive pass/fail. SPA-beats-
+# baseline + economic lift are the HARD gates; PBO and DSR are DIAGNOSTIC bands
+# that can cap the outcome at SHADOW or REJECT but are not sole gatekeepers.
+SHIP, SHADOW, REJECT = "SHIP", "SHADOW", "REJECT"
+_TIER_RANK = {REJECT: 0, SHADOW: 1, SHIP: 2}
+
+
+def _worst(*tiers: str) -> str:
+    """Combine outcome tiers — the overall outcome is the worst (lowest) tier."""
+    return min(tiers, key=lambda t: _TIER_RANK[t])
+
 
 # --------------------------------------------------------------------------- #
 # Inputs.
@@ -100,20 +111,33 @@ class Candidate:
 @dataclass
 class GateConfig:
     breakeven: float = 0.227
-    dsr_min: float = 0.95
-    pbo_max: float = 0.05
     spa_alpha: float = 0.05
     mintrl_prob: float = 0.95
     minbtl_target_sr: float = 1.0
     cpcv_groups: int = 6
     cpcv_k_test: int = 2
-    cpcv_embargo_pct: float = 0.01
+    # Embargo as a fraction of samples; for cluster-level series, 1 cluster ~ 1
+    # trading day, so a small fraction already embargoes the hold horizon (C5).
+    cpcv_embargo_pct: float = 0.02
     cpcv_median_sharpe_min: float = 0.0
     pbo_blocks: int = 16
     orthogonality_max_abs_corr: float = 0.7
     spa_reps: int = 1000
     dedup_jaccard_max: float = 0.9
     min_regime_n: int = 20
+
+    # --- C1 diagnostic bands (PBO is NOT a p-value; 0.50 is the danger line) ---
+    # PBO: >=0.50 REJECT (hard) · 0.20-0.50 REJECT-deploy · 0.10-0.20 SHADOW · <0.10 SHIP.
+    pbo_danger: float = 0.50
+    pbo_no_deploy: float = 0.20
+    pbo_shadow: float = 0.10
+    # DSR (secondary): >=0.95 admit · 0.90-0.95 shadow · <0.90 reject.
+    dsr_admit: float = 0.95
+    dsr_shadow: float = 0.90
+    # Power / staging (threshold lock): n>=staging => STAGING(shadow); ship needs
+    # >= ship_min_obs effective cluster obs AND T>=MinTRL.
+    staging_min_obs: int = 200
+    ship_min_obs: int = 450
 
 
 # --------------------------------------------------------------------------- #
@@ -123,7 +147,9 @@ class GateConfig:
 @dataclass
 class StageResult:
     name: str
-    status: str            # PASS / FAIL / WARN / SKIP.
+    status: str            # PASS / FAIL / WARN / SKIP (display).
+    tier: str = SHIP       # SHIP / SHADOW / REJECT contribution to the outcome.
+    role: str = "gate"     # "gate" (hard) or "diagnostic" (PBO/DSR).
     detail: dict = field(default_factory=dict)
     message: str = ""
 
@@ -131,19 +157,33 @@ class StageResult:
 @dataclass
 class GateReport:
     card_id: str
-    passed: bool
-    rejected_at: Optional[str]
+    outcome: str                       # SHIP / SHADOW / REJECT.
+    drivers: list[str]                 # stage names that set the final tier.
     global_n_trials: int
     stages: list[StageResult] = field(default_factory=list)
 
+    # Backward-compatible convenience flags.
+    @property
+    def passed(self) -> bool:          # "did it clear to SHIP?"
+        return self.outcome == SHIP
+
+    @property
+    def rejected(self) -> bool:
+        return self.outcome == REJECT
+
+    @property
+    def shippable(self) -> bool:
+        return self.outcome == SHIP
+
     def summary(self) -> str:
-        head = f"GATE [{self.card_id}]  ->  {'PASS' if self.passed else 'FAIL'}"
-        if self.rejected_at:
-            head += f"  (rejected at: {self.rejected_at})"
+        head = f"GATE [{self.card_id}]  ->  {self.outcome}"
+        if self.drivers:
+            head += f"  (set by: {', '.join(self.drivers)})"
         head += f"   global N={self.global_n_trials}"
         lines = [head, "-" * 72]
         for s in self.stages:
-            lines.append(f"  [{s.status:4s}] {s.name:18s} {s.message}")
+            tag = "diag" if s.role == "diagnostic" else "GATE"
+            lines.append(f"  [{s.status:4s}|{s.tier:6s}|{tag}] {s.name:12s} {s.message}")
         return "\n".join(lines)
 
 
@@ -179,16 +219,12 @@ class ValidationGate:
 
     def evaluate(self, cand: Candidate) -> GateReport:
         stages: list[StageResult] = []
-        rejected_at: Optional[str] = None
 
-        def add(res: StageResult) -> bool:
-            stages.append(res)
-            return res.status != FAIL
-
-        # --- Stage 0: TEST CARD + DEDUP (no stats yet) --------------------- #
+        # --- Stage 0: TEST CARD + DEDUP (no stats; never records a trial) --- #
         s0 = self._stage_card(cand)
-        if not add(s0):
-            return self._finish(cand, stages, "TEST_CARD")
+        stages.append(s0)
+        if s0.tier == REJECT:
+            return self._finish(cand, stages)
 
         # Record this attempt as ONE global trial BEFORE deflation, so N (and the
         # MinBTL/DSR hurdles) include it. This is the single global-N increment.
@@ -202,116 +238,130 @@ class ValidationGate:
         )
         global_n = self.ledger.count()
 
-        # --- Stage 1: MinTRL / MinBTL -------------------------------------- #
-        if not add(self._stage_minlen(r, sr, skew, kurt, global_n)):
-            return self._finish(cand, stages, "MIN_LENGTH")
-
-        # --- Stage 2: CPCV OOS distribution -------------------------------- #
-        if not add(self._stage_cpcv(r)):
-            return self._finish(cand, stages, "CPCV")
-
-        # --- Stage 3: PBO -------------------------------------------------- #
-        if not add(self._stage_pbo(cand)):
-            return self._finish(cand, stages, "PBO")
-
-        # --- Stage 4: DSR -------------------------------------------------- #
-        if not add(self._stage_dsr(sr, skew, kurt, r.size)):
-            return self._finish(cand, stages, "DSR")
-
-        # --- Stage 5: Hansen SPA vs baseline ------------------------------- #
-        if not add(self._stage_spa(cand)):
-            return self._finish(cand, stages, "SPA")
-
-        # --- Stage 6: economic null ---------------------------------------- #
-        if not add(self._stage_economic(cand, r)):
-            return self._finish(cand, stages, "ECONOMIC")
-
-        return self._finish(cand, stages, None)
+        # All remaining stages run (no short-circuit) so the report is a complete
+        # diagnostic. The overall outcome is the WORST tier across them; SPA and
+        # ECONOMIC are the hard gates, PBO and DSR are diagnostic bands (C1).
+        stages.append(self._stage_minlen(r, sr, skew, kurt, global_n))
+        stages.append(self._stage_cpcv(r))
+        stages.append(self._stage_pbo(cand))            # diagnostic
+        stages.append(self._stage_dsr(sr, skew, kurt, r.size))  # diagnostic
+        stages.append(self._stage_spa(cand))            # HARD gate
+        stages.append(self._stage_economic(cand, r))    # HARD gate
+        return self._finish(cand, stages)
 
     # --- stages ----------------------------------------------------------- #
 
     def _stage_card(self, cand: Candidate) -> StageResult:
         err = cand.card.validate()
         if err:
-            return StageResult("TEST_CARD", FAIL, message=f"invalid card: {err}")
+            return StageResult("TEST_CARD", FAIL, tier=REJECT, message=f"invalid card: {err}")
         claim = _normalize_claim(cand.card.claim)
         for prior in self._existing:
             j = _jaccard(claim, prior)
             if j >= self.cfg.dedup_jaccard_max:
-                return StageResult("TEST_CARD", FAIL,
+                return StageResult("TEST_CARD", FAIL, tier=REJECT,
                                    detail={"jaccard": j},
                                    message=f"semantic duplicate of an existing card (Jaccard {j:.2f})")
-        return StageResult("TEST_CARD", PASS, message="card complete, not a duplicate")
+        return StageResult("TEST_CARD", PASS, tier=SHIP, message="card complete, not a duplicate")
 
     def _stage_minlen(self, r, sr, skew, kurt, global_n) -> StageResult:
         T = int(r.size)
         mintrl = min_track_record_length(sr, skew, kurt, prob=self.cfg.mintrl_prob)
         minbtl = min_backtest_length(global_n, self.cfg.minbtl_target_sr)
         need = max(mintrl, minbtl)
-        ok = T >= need
-        msg = (f"T={T}, MinTRL={mintrl:.0f}, MinBTL(N={global_n})={minbtl:.0f}, "
-               f"need>={need:.0f}")
-        return StageResult("MIN_LENGTH", PASS if ok else FAIL,
-                           detail={"T": T, "mintrl": mintrl, "minbtl": minbtl,
-                                   "required": need, "global_n": global_n},
-                           message=msg)
+        detail = {"T": T, "mintrl": mintrl, "minbtl": minbtl, "required": need,
+                  "global_n": global_n, "sharpe": sr}
+        if sr <= 0:
+            return StageResult("MIN_LENGTH", FAIL, tier=REJECT, role="gate", detail=detail,
+                               message=f"no positive edge (SR={sr:+.3f}); MinTRL=inf")
+        if T >= need and T >= self.cfg.ship_min_obs:
+            return StageResult("MIN_LENGTH", PASS, tier=SHIP, role="gate", detail=detail,
+                               message=f"T={T} >= need {need:.0f} and ship floor {self.cfg.ship_min_obs}")
+        # Underpowered for shipping, but not a hard reject — staging/shadow (pooling
+        # at family level may rescue it; see C2).
+        why = (f"T={T} < need {need:.0f}" if T < need
+               else f"T={T} < ship floor {self.cfg.ship_min_obs}")
+        return StageResult("MIN_LENGTH", WARN, tier=SHADOW, role="gate", detail=detail,
+                           message=f"STAGING — {why} (MinTRL={mintrl:.0f}, MinBTL={minbtl:.0f})")
 
     def _stage_cpcv(self, r) -> StageResult:
         n = int(r.size)
         if n < self.cfg.cpcv_groups:
-            return StageResult("CPCV", FAIL,
-                               message=f"too few samples (n={n}) for {self.cfg.cpcv_groups} groups")
+            return StageResult("CPCV", WARN, tier=SHADOW, role="gate",
+                               message=f"too few samples (n={n}) for {self.cfg.cpcv_groups} groups — not assessed")
         splits = cpcv_splits(n, self.cfg.cpcv_groups, self.cfg.cpcv_k_test,
                              embargo_pct=self.cfg.cpcv_embargo_pct)
         sharpes = cpcv_oos_sharpes(r, splits)
         med = float(np.median(sharpes))
         frac_pos = float(np.mean(np.asarray(sharpes) > 0))
         ok = med > self.cfg.cpcv_median_sharpe_min
-        return StageResult("CPCV", PASS if ok else FAIL,
+        return StageResult("CPCV", PASS if ok else FAIL, tier=SHIP if ok else REJECT, role="gate",
                            detail={"n_paths": len(splits), "median_oos_sharpe": med,
                                    "frac_paths_positive": frac_pos},
                            message=f"{len(splits)} OOS paths, median Sharpe {med:+.3f}, "
                                    f"{frac_pos:.0%} positive")
 
     def _stage_pbo(self, cand: Candidate) -> StageResult:
+        # DIAGNOSTIC (C1): PBO is the prob the IS-winner ranks below OOS median.
+        # 0.50 is the danger line, NOT 0.05. Bands cap the outcome but PBO is not a
+        # sole gatekeeper.
         if cand.config_matrix is None:
-            return StageResult("PBO", FAIL,
-                               message="no config_matrix: cannot assess overfitting "
-                                       "without the searched configuration space")
+            return StageResult("PBO", WARN, tier=SHADOW, role="diagnostic",
+                               message="no config_matrix — overfitting not assessed (shadow)")
         M = np.asarray(cand.config_matrix, dtype=float)
-        res = cscv_pbo(M, n_blocks=self.cfg.pbo_blocks)
-        ok = res.pbo < self.cfg.pbo_max
-        return StageResult("PBO", PASS if ok else FAIL,
-                           detail={"pbo": res.pbo, "n_configs": res.n_configs,
+        try:
+            res = cscv_pbo(M, n_blocks=self.cfg.pbo_blocks)
+        except ValueError as e:
+            return StageResult("PBO", WARN, tier=SHADOW, role="diagnostic",
+                               message=f"PBO not assessed: {e}")
+        pbo = res.pbo
+        if pbo >= self.cfg.pbo_danger:
+            tier, st, note = REJECT, FAIL, "DANGER (>=0.50): IS-winner ~ random OOS"
+        elif pbo >= self.cfg.pbo_no_deploy:
+            tier, st, note = REJECT, FAIL, "no-deploy band (0.20-0.50)"
+        elif pbo >= self.cfg.pbo_shadow:
+            tier, st, note = SHADOW, WARN, "shadow band (0.10-0.20)"
+        else:
+            tier, st, note = SHIP, PASS, "acceptable (<0.10)"
+        return StageResult("PBO", st, tier=tier, role="diagnostic",
+                           detail={"pbo": pbo, "n_configs": res.n_configs,
                                    "n_combinations": res.n_combinations},
-                           message=f"PBO={res.pbo:.3f} (max {self.cfg.pbo_max}) "
-                                   f"over {res.n_configs} configs")
+                           message=f"PBO={pbo:.3f} — {note}")
 
     def _stage_dsr(self, sr, skew, kurt, T) -> StageResult:
+        # DIAGNOSTIC / SECONDARY (C1).
         all_sr = self.ledger.all_sharpes()  # includes this candidate (recorded above).
         res = deflated_sharpe_ratio(sr, all_sr, T=int(T), skew=skew, kurt=kurt)
-        ok = res.dsr >= self.cfg.dsr_min
-        return StageResult("DSR", PASS if ok else FAIL,
-                           detail={"dsr": res.dsr, "sr_observed": res.sr_observed,
+        dsr = res.dsr
+        if dsr >= self.cfg.dsr_admit:
+            tier, st, note = SHIP, PASS, f"admit (>={self.cfg.dsr_admit})"
+        elif dsr >= self.cfg.dsr_shadow:
+            tier, st, note = SHADOW, WARN, f"shadow ({self.cfg.dsr_shadow}-{self.cfg.dsr_admit})"
+        else:
+            tier, st, note = REJECT, FAIL, f"reject (<{self.cfg.dsr_shadow})"
+        return StageResult("DSR", st, tier=tier, role="diagnostic",
+                           detail={"dsr": dsr, "sr_observed": res.sr_observed,
                                    "sr0_benchmark": res.sr0, "n_trials": res.n_trials},
-                           message=f"DSR={res.dsr:.3f} (min {self.cfg.dsr_min}); "
-                                   f"SR {res.sr_observed:.3f} vs E[max|N={res.n_trials}] {res.sr0:.3f}")
+                           message=f"DSR={dsr:.3f} — {note}; SR {res.sr_observed:.3f} "
+                                   f"vs E[max|N={res.n_trials}] {res.sr0:.3f}")
 
     def _stage_spa(self, cand: Candidate) -> StageResult:
-        # Prefer the SPA-specific aligned pair (e.g. daily P/L) if supplied.
+        # HARD GATE: must beat the baseline (SOE A) on economic PnL, not zero.
         if cand.spa_returns is not None and cand.spa_baseline_returns is not None:
             cand_s, base_s = cand.spa_returns, cand.spa_baseline_returns
         else:
             cand_s, base_s = cand.returns, cand.baseline_returns
         if base_s is None:
-            return StageResult("SPA", FAIL,
-                               message="no baseline_returns: cannot prove it beats SOE A")
+            return StageResult("SPA", FAIL, tier=REJECT, role="gate",
+                               message="no baseline series: cannot prove it beats SOE A")
         try:
             res = spa_beats_baseline(cand_s, base_s,
                                      alpha=self.cfg.spa_alpha, reps=self.cfg.spa_reps)
         except ValueError as e:
-            return StageResult("SPA", FAIL, message=f"SPA error: {e}")
-        return StageResult("SPA", PASS if res.beats_baseline else FAIL,
+            return StageResult("SPA", WARN, tier=SHADOW, role="gate",
+                               message=f"SPA not assessed: {e}")
+        beats = res.beats_baseline
+        return StageResult("SPA", PASS if beats else FAIL, tier=SHIP if beats else REJECT, role="gate",
                            detail={"pvalue_consistent": res.pvalue_consistent,
                                    "candidate_mean": res.candidate_mean,
                                    "baseline_mean": res.baseline_mean},
@@ -319,65 +369,63 @@ class ValidationGate:
                                    f"mean {res.candidate_mean:+.4f} vs baseline {res.baseline_mean:+.4f}")
 
     def _stage_economic(self, cand: Candidate, r) -> StageResult:
+        # HARD GATE: positive net expectancy + regime-robust + orthogonal.
         mean_ret = float(r.mean())
         detail = {"mean_return_net": mean_ret}
-        notes = [f"mean net return {mean_ret:+.4f}"]
+        notes = [f"mean net {mean_ret:+.4f}"]
         if mean_ret <= 0:
-            return StageResult("ECONOMIC", FAIL, detail=detail,
+            return StageResult("ECONOMIC", FAIL, tier=REJECT, role="gate", detail=detail,
                                message=f"non-positive net expectancy ({mean_ret:+.4f})")
 
-        # Regime robustness (optional enrichment).
-        regime_status = SKIP
+        checked = False
         if cand.regime_labels is not None:
             labels = np.asarray(cand.regime_labels)
-            bad = []
-            buckets = {}
+            bad, buckets = [], {}
             for lab in set(labels.tolist()):
                 seg = r[labels == lab]
                 if seg.size >= self.cfg.min_regime_n:
-                    m = float(seg.mean())
-                    buckets[str(lab)] = m
+                    m = float(seg.mean()); buckets[str(lab)] = m
                     if m <= 0:
                         bad.append(str(lab))
             detail["regime_means"] = buckets
             if bad:
-                return StageResult("ECONOMIC", FAIL, detail=detail,
+                return StageResult("ECONOMIC", FAIL, tier=REJECT, role="gate", detail=detail,
                                    message=f"negative expectancy in regime(s): {', '.join(bad)}")
-            regime_status = PASS if buckets else SKIP
-            notes.append(f"regime-robust ({len(buckets)} buckets)" if buckets
-                         else "regime split too thin")
+            if buckets:
+                checked = True
+                notes.append(f"regime-robust ({len(buckets)} buckets)")
 
-        # Orthogonality to existing live detectors (optional enrichment).
-        corr_status = SKIP
         if cand.detector_returns:
-            corrs = {}
-            high = []
+            corrs, high = {}, []
             for name, series in cand.detector_returns.items():
                 s = np.asarray(series, dtype=float)
                 if s.shape[0] == r.shape[0] and s.std() > 0 and r.std() > 0:
-                    c = float(np.corrcoef(r, s)[0, 1])
-                    corrs[name] = c
+                    c = float(np.corrcoef(r, s)[0, 1]); corrs[name] = c
                     if abs(c) > self.cfg.orthogonality_max_abs_corr:
                         high.append(f"{name}({c:+.2f})")
             detail["detector_correlations"] = corrs
             if high:
-                return StageResult("ECONOMIC", FAIL, detail=detail,
+                return StageResult("ECONOMIC", FAIL, tier=REJECT, role="gate", detail=detail,
                                    message=f"too correlated with live detector(s): {', '.join(high)}")
-            corr_status = PASS if corrs else SKIP
-            notes.append("orthogonal to live detectors" if corrs else "no aligned detector series")
+            if corrs:
+                checked = True
+                notes.append("orthogonal to live detectors")
 
-        msg = "; ".join(notes)
-        if regime_status == SKIP and corr_status == SKIP:
-            return StageResult("ECONOMIC", WARN, detail=detail,
-                               message=msg + " [regime & orthogonality NOT checked]")
-        return StageResult("ECONOMIC", PASS, detail=detail, message=msg)
+        if checked:
+            return StageResult("ECONOMIC", PASS, tier=SHIP, role="gate", detail=detail,
+                               message="; ".join(notes))
+        return StageResult("ECONOMIC", WARN, tier=SHADOW, role="gate", detail=detail,
+                           message="; ".join(notes) + " [regime & orthogonality NOT checked]")
 
-    def _finish(self, cand, stages, rejected_at) -> GateReport:
-        passed = rejected_at is None
+    def _finish(self, cand, stages) -> GateReport:
+        outcome = SHIP
+        for s in stages:
+            outcome = _worst(outcome, s.tier)
+        drivers = [s.name for s in stages if s.tier == outcome] if outcome != SHIP else []
         return GateReport(
             card_id=cand.card.card_id,
-            passed=passed,
-            rejected_at=rejected_at,
+            outcome=outcome,
+            drivers=drivers,
             global_n_trials=self.ledger.count(),
             stages=stages,
         )
@@ -386,4 +434,5 @@ class ValidationGate:
 __all__ = [
     "TestCard", "Candidate", "GateConfig", "ValidationGate",
     "GateReport", "StageResult", "PASS", "FAIL", "WARN", "SKIP",
+    "SHIP", "SHADOW", "REJECT",
 ]

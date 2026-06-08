@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from autoresearch.backtest_adapter import build_candidate, LIVE_DB_PATH  # noqa: E402
 from autoresearch.gate import TestCard, GateConfig, ValidationGate        # noqa: E402
 from autoresearch.trials_ledger import TrialLedger                        # noqa: E402
+from autoresearch.option_pnl import ThetaNBBOSource                       # noqa: E402
 
 
 def main(argv=None) -> int:
@@ -26,8 +27,11 @@ def main(argv=None) -> int:
     ap.add_argument("--alert-type", required=True, help="candidate cohort alert_type")
     ap.add_argument("--baseline", default="SOE_A", help="baseline cohort (default SOE_A)")
     ap.add_argument("--db", default=LIVE_DB_PATH)
-    ap.add_argument("--vix-below", type=float, default=None)
-    ap.add_argument("--vix-atleast", type=float, default=None)
+    ap.add_argument("--spot", action="store_true",
+                    help="use the legacy directional-spot proxy instead of option PnL")
+    ap.add_argument("--limit", type=int, default=None, help="cap clusters per cohort")
+    ap.add_argument("--seed-n", type=int, default=300,
+                    help="seed the GLOBAL trial count (C4); 0 to disable")
     ap.add_argument("--ledger", default=str(Path(__file__).resolve().parent.parent
                                             / "autoresearch" / "_artifacts" / "demo_ledger.json"))
     ap.add_argument("--spa-reps", type=int, default=1000)
@@ -37,17 +41,18 @@ def main(argv=None) -> int:
     card = TestCard(
         card_id=f"{args.alert_type}-vs-{args.baseline}",
         provenance=f"alert_outcomes.db cohort {args.alert_type} (read-only)",
-        claim=f"{args.alert_type} has positive, baseline-beating directional edge",
+        claim=f"{args.alert_type} clusters beat the {args.baseline} baseline on net option PnL",
         expected_sign="positive",
         mechanism="cohort selection captures informed directional flow that leads spot",
         target_cohort=args.alert_type,
-        kill_criteria="rolling 60d Clopper-Pearson lower bound < 22.7% breakeven",
+        kill_criteria="rolling always-valid lower bound < 22.7% breakeven for 2 checks",
     )
 
+    source = None if args.spot else ThetaNBBOSource()
     cand, diag = build_candidate(
-        card, args.alert_type, db_path=args.db,
-        baseline_alert_type=args.baseline,
-        vix_below=args.vix_below, vix_atleast=args.vix_atleast,
+        card, args.alert_type, db_path=args.db, baseline_alert_type=args.baseline,
+        source=source, return_mode=("spot" if args.spot else "option_pnl"),
+        limit=args.limit,
     )
 
     print("=" * 72)
@@ -60,6 +65,11 @@ def main(argv=None) -> int:
 
     Path(args.ledger).parent.mkdir(parents=True, exist_ok=True)
     led = TrialLedger(args.ledger)
+    if args.seed_n > 0:
+        added = led.seed(args.seed_n,
+                         reason="prior ad-hoc backtests + 4-LLM rounds + buffer (C4)")
+        if added:
+            print(f"[ledger] seeded global N with {added} prior trials (C4)")
     rep = ValidationGate(led, GateConfig(spa_reps=args.spa_reps)).evaluate(cand)
     print(rep.summary())
 
@@ -68,8 +78,8 @@ def main(argv=None) -> int:
         Path(args.json_out).write_text(json.dumps({
             "diagnostics": diag,
             "report": {
-                "card_id": rep.card_id, "passed": rep.passed,
-                "rejected_at": rep.rejected_at, "global_n_trials": rep.global_n_trials,
+                "card_id": rep.card_id, "outcome": rep.outcome,
+                "drivers": rep.drivers, "global_n_trials": rep.global_n_trials,
                 "stages": [asdict(s) for s in rep.stages],
             },
         }, indent=2, default=str), encoding="utf-8")
