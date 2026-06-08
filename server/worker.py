@@ -599,6 +599,26 @@ async def _compute_one(
     macro = exp_data[MACRO_KEY]
     signal, regime, king_pos = build_signal(macro, spot)
 
+    # Push SPY/QQQ dealer-structure to the market-structure cache (task #54
+    # Layer 3) so the flow-alert scorer can read the index short-gamma tape
+    # synchronously (bear-day guardrail). update_index_structure() filters to
+    # the index tickers internally, so this is a cheap no-op for everything
+    # else. Never let it break a scan cycle.
+    #
+    # #62 (4-LLM synthesis 6/8): the STRUCTURAL regime read anchors on SETTLED
+    # OI (oi_mode="raw"), not the volume-adjusted/effective OI used for the MACRO
+    # above. All 4 LLMs converged: effective OI is for intraday/0DTE level
+    # identification; settled OI is the cleaner base for the dealer-positioning
+    # regime (it's about inventories/open positions, not same-day churn). We pay
+    # the extra compute ONLY for the index tickers the cache retains.
+    try:
+        from .structure_regime import update_index_structure, STRUCTURE_INDEX_TICKERS
+        if ticker.upper() in STRUCTURE_INDEX_TICKERS:
+            macro_settled = compute_exp_data(contracts, spot, oi_mode="raw")
+            update_index_structure(ticker, macro_settled, spot)
+    except Exception as e:
+        print(f"[worker] structure update failed for {ticker}: {e!r}", flush=True)
+
     # Compute Greeks freshness
     greeks_age = time.time() - greeks_ts
 
@@ -1101,6 +1121,26 @@ async def run_worker(stop_event: asyncio.Event) -> None:
                     await maybe_fire_eod_leaderboard()
                 except Exception as lb_err:
                     print(f"[worker] leaderboard failed: {lb_err}")
+                # Daily EOD RTS snapshot (task #56) — persists per-ticker
+                # composite scores so we can compute acceleration/deceleration
+                # (rate-of-change of relative strength). Self-gates to
+                # 16:00-16:30 ET, once per day. Burn-in: deltas meaningful from
+                # the 2nd recorded session.
+                try:
+                    from .rs_acceleration import maybe_record_eod_rts
+                    await maybe_record_eod_rts(tradier)
+                except Exception as rts_err:
+                    print(f"[worker] rts history record failed: {rts_err}")
+                # Refresh the index base-rate (Analogues) bias cache so the flow
+                # scorer can tag alerts with market-context confluence (task #55
+                # follow-up). Internally throttled to 30 min + 1h scan cache, and
+                # run in a thread so the network fetch never blocks the loop.
+                try:
+                    import asyncio as _aio
+                    from .analogue_confluence import refresh_market_bias
+                    await _aio.to_thread(refresh_market_bias)
+                except Exception as ac_err:
+                    print(f"[worker] analogue bias refresh failed: {ac_err}")
                 # Mir TP Window alert — daily 1:00-1:30 PM ET ping listing
                 # open INFORMED FLOW + SOE A/A+ positions. Self-dedups to
                 # once per ET calendar day. Cheap no-op outside window or

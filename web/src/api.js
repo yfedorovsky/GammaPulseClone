@@ -52,6 +52,24 @@ export const api = {
       'GET',
       `/api/sweeps?since=${since}&limit=${limit}${ticker ? '&ticker=' + encodeURIComponent(ticker) : ''}${minNotional ? '&min_notional=' + minNotional : ''}`,
     ),
+  // Sweeps with an explicit timeout — the underlying endpoint sometimes hangs
+  // on DB write contention (live worker writes flow_alerts continuously);
+  // without a timeout the frontend gets stuck on "Loading..." indefinitely.
+  sweepsWithTimeout: async (since = 0, limit = 200, ticker = '', minNotional = 0, timeoutMs = 20_000) => {
+    const ctl = new AbortController();
+    const tid = setTimeout(() => ctl.abort(), timeoutMs);
+    const url = `/api/sweeps?since=${since}&limit=${limit}${ticker ? '&ticker=' + encodeURIComponent(ticker) : ''}${minNotional ? '&min_notional=' + minNotional : ''}`;
+    try {
+      const r = await fetch(url, { signal: ctl.signal });
+      if (!r.ok) throw new Error(`GET /api/sweeps → ${r.status}`);
+      return await r.json();
+    } catch (e) {
+      if (e.name === 'AbortError') throw new Error(`sweeps timed out after ${timeoutMs/1000}s — backend may be under heavy write load`);
+      throw e;
+    } finally {
+      clearTimeout(tid);
+    }
+  },
   flowDaily: ({ sinceDate = '', ticker = '', minNotional = 0, minOI = 0, side = 'ALL', limit = 500 } = {}) =>
     json(
       'GET',

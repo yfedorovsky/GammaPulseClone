@@ -34,10 +34,19 @@ Five fixes here, in order of impact:
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 import time
 from datetime import date, datetime
 from typing import Any
+
+# Test hook: point the cross-expiration bias query at a temp DB. None → prod
+# "snapshots.db". (Same pattern as rs_acceleration._DB_PATH_OVERRIDE.)
+_DB_PATH_OVERRIDE: str | None = None
+
+
+def _bias_db_path() -> str:
+    return _DB_PATH_OVERRIDE or "snapshots.db"
 
 
 # === Contract-snapshot dedup state ===
@@ -206,32 +215,79 @@ def should_insert(alert: dict[str, Any]) -> tuple[bool, str | None]:
     return False, f"dup band={band} {elapsed:.0f}s ago"
 
 
-# === Cross-expiration directional summary (Fix #5) ===
+# === Cross-expiration directional summary (Fix #5; delta-weighted in #59) ===
+#
+# #59 (4-LLM synthesis 6/8): the headline directional bias is now
+# DELTA-WEIGHTED buy-to-open flow, not raw $ notional. All 4 LLMs converged
+# (Pan-Poteshman, Ge-Lin-Pearson): the predictive object is signed,
+# buyer-initiated, OPENING, *delta-weighted* demand — Σ(V·Δ·100·P_open).
+# Notional over-weights deep-ITM premium (Δ≈1 mechanical/stock-substitute) and
+# the cheap-OTM lottery flood (each Δ≈0.05) inflates raw counts; delta-weighting
+# collapses both, which is the direct fix for the 7,898-vs-6,514 long-bias on a
+# crash day. Notional fields are retained as *_notional for reference.
+#
+# P_open = calibrated probability the trade opens new OI. Alerts already pass a
+# vol≥2·oi unusual-flow gate, so opening likelihood is ~1 here; left as a flat
+# constant + calibration hook (calibrate vs next-day settled OI à la #60).
+BIAS_POPEN: float = 1.0
+# Fallback |delta| when a row is missing greeks (~0.3% of ASK-opening rows).
+_BIAS_DELTA_FALLBACK: float = 0.5
+
+
+def _bias_verdict(bias_pct: float) -> str:
+    if abs(bias_pct) < 10:
+        return "CHOP"
+    if bias_pct >= 40:
+        return "STRONG_BULL"
+    if bias_pct >= 20:
+        return "BULL"
+    if bias_pct <= -40:
+        return "STRONG_BEAR"
+    if bias_pct <= -20:
+        return "BEAR"
+    return "MILD"
+
+
 def compute_directional_bias_by_expiration(
     ticker: str, lookback_hours: int = 6
 ) -> list[dict[str, Any]]:
-    """Return per-expiration bull/bear bias for a ticker.
+    """Return per-expiration delta-weighted bull/bear bias for a ticker.
 
     Useful for surfacing patterns like TSLA today: weekly chop but next
     week bullish + monthly bearish. The same data structure is what
     the daily digest will render.
 
-    Returns list of dicts sorted by total volume descending:
-      [{exp, bull_buy, bear_buy, net, bias_pct, verdict}]
+    Headline `bias_pct`/`verdict` are DELTA-WEIGHTED (signed buy-to-open delta
+    demand). Notional equivalents are kept as `bias_pct_notional` etc.
+
+    Returns list of dicts sorted by total delta demand descending:
+      [{expiration, bull_buy, bear_buy, net,            # notional ($)
+        bull_delta, bear_delta, net_delta,              # delta-weighted (Δ·shares)
+        bias_pct, verdict,                              # headline = delta-weighted
+        bias_pct_notional, verdict_notional}]           # reference = notional
     """
     cutoff = int(time.time()) - lookback_hours * 3600
+    # vol × |delta| × 100, NULL/0 delta → fallback; whole thing × P_open.
+    dexpr = (
+        f"volume * COALESCE(NULLIF(ABS(delta), 0), {_BIAS_DELTA_FALLBACK}) "
+        f"* 100 * {BIAS_POPEN}"
+    )
     try:
-        conn = sqlite3.connect("snapshots.db", timeout=5)
+        conn = sqlite3.connect(_bias_db_path(), timeout=5)
         rows = conn.execute(
-            """SELECT expiration,
+            f"""SELECT expiration,
                SUM(CASE WHEN sentiment='BULLISH' AND side='ASK' AND option_type='call'
                         THEN notional ELSE 0 END) as bull_buy,
                SUM(CASE WHEN sentiment='BEARISH' AND side='ASK' AND option_type='put'
-                        THEN notional ELSE 0 END) as bear_buy
+                        THEN notional ELSE 0 END) as bear_buy,
+               SUM(CASE WHEN sentiment='BULLISH' AND side='ASK' AND option_type='call'
+                        THEN {dexpr} ELSE 0 END) as bull_delta,
+               SUM(CASE WHEN sentiment='BEARISH' AND side='ASK' AND option_type='put'
+                        THEN {dexpr} ELSE 0 END) as bear_delta
                FROM flow_alerts WHERE ticker = ? AND ts >= ?
                GROUP BY expiration
                HAVING bull_buy + bear_buy > 500000
-               ORDER BY bull_buy + bear_buy DESC""",
+               ORDER BY bull_delta + bear_delta DESC""",
             (ticker.upper(), cutoff),
         ).fetchall()
         conn.close()
@@ -243,29 +299,120 @@ def compute_directional_bias_by_expiration(
     for r in rows:
         bull = r[1] or 0
         bear = r[2] or 0
-        total = bull + bear
-        if total == 0:
+        bull_d = r[3] or 0
+        bear_d = r[4] or 0
+        total_d = bull_d + bear_d
+        if total_d == 0:
             continue
-        net = bull - bear
-        bias_pct = (net / total) * 100
-        if abs(bias_pct) < 10:
-            verdict = "CHOP"
-        elif bias_pct >= 40:
-            verdict = "STRONG_BULL"
-        elif bias_pct >= 20:
-            verdict = "BULL"
-        elif bias_pct <= -40:
-            verdict = "STRONG_BEAR"
-        elif bias_pct <= -20:
-            verdict = "BEAR"
-        else:
-            verdict = "MILD"
+        net_d = bull_d - bear_d
+        bias_pct = (net_d / total_d) * 100  # DELTA-weighted headline
+
+        total_n = bull + bear
+        net_n = bull - bear
+        bias_pct_n = (net_n / total_n) * 100 if total_n else 0.0
+
         results.append({
             "expiration": r[0],
+            # notional ($) — reference
             "bull_buy": bull,
             "bear_buy": bear,
-            "net": net,
+            "net": net_n,
+            "bias_pct_notional": bias_pct_n,
+            "verdict_notional": _bias_verdict(bias_pct_n),
+            # delta-weighted — headline
+            "bull_delta": bull_d,
+            "bear_delta": bear_d,
+            "net_delta": net_d,
             "bias_pct": bias_pct,
-            "verdict": verdict,
+            "verdict": _bias_verdict(bias_pct),
         })
     return results
+
+
+# === Per-underlying flow z-score normalization (task #61, 4-LLM synthesis) ===
+#
+# #61 (4-LLM synthesis 6/8): options sweep flow is mechanically call-heavy, so
+# absolute directional flow always reads bullish. Sophisticated desks normalize
+# each name against its OWN rolling base rate (z-score / percentile) and only
+# treat flow as a standout when it deviates ≥2σ — this washes out the constant
+# institutional call-overwrite hum (Grok/ChatGPT/Gemini converged on this).
+#
+# SHADOW by default (per the no-arch-change-until-validated discipline rule):
+# we compute + surface the z-score but DO NOT hard-gate dispatch. Flip
+# FLOW_ZSCORE_GATE_ACTIVE=1 only after live validation to actually escalate on
+# |z|≥threshold. The z is delta-weighted (reuses the #59 buy-to-open construct).
+FLOW_ZSCORE_GATE_ACTIVE: bool = os.getenv("FLOW_ZSCORE_GATE_ACTIVE", "0") in ("1", "true", "True")
+FLOW_ZSCORE_BASELINE_DAYS: int = 20      # trailing window for the per-name baseline
+FLOW_ZSCORE_MIN_DAYS: int = 5            # need this many prior days or z is untrusted
+FLOW_ZSCORE_STANDOUT: float = 2.0        # |z| ≥ this = standout / escalation-eligible
+
+
+def _daily_net_delta_series(ticker: str, days: int) -> list[tuple[str, float]]:
+    """Per-trading-day signed buy-to-open delta flow for a ticker, most recent
+    `days` days. Returns [(YYYY-MM-DD, net_delta)] oldest→newest. Day buckets use
+    localtime (consistent with the rest of flow_noise_filter)."""
+    cutoff = int(time.time()) - days * 86400
+    dexpr = (
+        f"volume * COALESCE(NULLIF(ABS(delta), 0), {_BIAS_DELTA_FALLBACK}) "
+        f"* 100 * {BIAS_POPEN}"
+    )
+    try:
+        conn = sqlite3.connect(_bias_db_path(), timeout=5)
+        rows = conn.execute(
+            f"""SELECT strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime') as d,
+                   SUM(CASE
+                       WHEN sentiment='BULLISH' AND side='ASK' AND option_type='call' THEN {dexpr}
+                       WHEN sentiment='BEARISH' AND side='ASK' AND option_type='put'  THEN -({dexpr})
+                       ELSE 0 END) as net_delta
+                FROM flow_alerts WHERE ticker = ? AND ts >= ?
+                GROUP BY d ORDER BY d ASC""",
+            (ticker.upper(), cutoff),
+        ).fetchall()
+        conn.close()
+    except Exception as e:
+        print(f"[NOISE_FILTER] zscore query failed {ticker}: {e!r}", flush=True)
+        return []
+    return [(r[0], float(r[1] or 0.0)) for r in rows]
+
+
+def compute_flow_zscore(ticker: str) -> dict[str, Any]:
+    """How unusual is today's signed buy-to-open delta flow vs this name's own
+    trailing baseline? Returns a shadow-mode read the bias endpoint surfaces:
+
+      z          : float | None — (today − mean_prior) / std_prior; None if untrusted
+      today_net  : float        — today's signed delta flow (Δ·shares; + bull / − bear)
+      mean, std  : float        — trailing baseline (prior days only, today excluded)
+      n_days     : int          — prior days available for the baseline
+      standout   : bool         — |z| ≥ FLOW_ZSCORE_STANDOUT
+      direction  : str          — BULL / BEAR / FLAT (sign of today_net)
+      trusted    : bool         — n_days ≥ FLOW_ZSCORE_MIN_DAYS and std > 0
+      gate_active: bool
+    """
+    out: dict[str, Any] = {
+        "z": None, "today_net": 0.0, "mean": 0.0, "std": 0.0, "n_days": 0,
+        "standout": False, "direction": "FLAT", "trusted": False,
+        "gate_active": FLOW_ZSCORE_GATE_ACTIVE,
+    }
+    series = _daily_net_delta_series(ticker, FLOW_ZSCORE_BASELINE_DAYS + 1)
+    if not series:
+        return out
+    today_key = date.today().isoformat()
+    today_net = next((v for d, v in series if d == today_key), 0.0)
+    prior = [v for d, v in series if d != today_key]
+    out["today_net"] = today_net
+    out["direction"] = "BULL" if today_net > 0 else ("BEAR" if today_net < 0 else "FLAT")
+    out["n_days"] = len(prior)
+    if len(prior) < FLOW_ZSCORE_MIN_DAYS:
+        return out
+    mean = sum(prior) / len(prior)
+    var = sum((v - mean) ** 2 for v in prior) / len(prior)
+    std = var ** 0.5
+    out["mean"] = mean
+    out["std"] = std
+    if std <= 0:
+        return out
+    z = (today_net - mean) / std
+    out["z"] = z
+    out["trusted"] = True
+    out["standout"] = abs(z) >= FLOW_ZSCORE_STANDOUT
+    return out

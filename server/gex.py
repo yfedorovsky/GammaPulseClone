@@ -138,7 +138,9 @@ def _estimate_effective_oi(prior_oi: float, today_volume: float) -> float:
     return prior_oi * (1 + ALPHA * math.log1p(activity_ratio))
 
 
-def _opt_fields(opt: dict[str, Any], spot: float = 0.0) -> dict[str, float]:
+def _opt_fields(
+    opt: dict[str, Any], spot: float = 0.0, oi_mode: str = "effective",
+) -> dict[str, float]:
     """Extract the fields we need from a Tradier option quote.
 
     Tradier does NOT provide vanna directly.  We approximate it from the
@@ -149,9 +151,14 @@ def _opt_fields(opt: dict[str, Any], spot: float = 0.0) -> dict[str, float]:
     This is the same identity used by most retail GEX dashboards when the
     data provider omits vanna.
 
-    Also computes `oi_effective` — a volume-adjusted OI estimate used for
-    GEX/VEX dollar calculations. Raw OI is preserved as `oi_raw` for
-    auditability. See `_estimate_effective_oi` for the heuristic.
+    `oi_mode` selects the open-interest input used by downstream GEX/VEX/CEX
+    math:
+      - "effective" (default): volume-adjusted OI `OI×(1+0.4·ln(1+vol/OI))`,
+        more intraday-responsive. Our historical behavior — preserved.
+      - "raw": pure settled open interest (SpotGamma/Menthor-Q/AION
+        convention). Cleaner & more stable for daily/structural reads; avoids
+        the 0DTE close-out sign-inversion the effective-OI heuristic risks.
+    Raw OI is always preserved as `oi_raw` for audit either way.
     """
     greeks = opt.get("greeks") or {}
     vega = _safe_float(greeks.get("vega"))
@@ -162,13 +169,17 @@ def _opt_fields(opt: dict[str, Any], spot: float = 0.0) -> dict[str, float]:
 
     oi_raw = _safe_float(opt.get("open_interest"))
     volume = _safe_float(opt.get("volume"))
-    oi_effective = _estimate_effective_oi(oi_raw, volume)
+    if oi_mode == "raw":
+        oi_used = oi_raw
+    else:
+        oi_used = _estimate_effective_oi(oi_raw, volume)
 
     return {
         "strike": _safe_float(opt.get("strike")),
-        # `oi` is what downstream math consumes — swap in the volume-adjusted
-        # estimate. Keep raw available as `oi_raw` for audit / diff tooling.
-        "oi": oi_effective,
+        # `oi` is what downstream math consumes. In "effective" mode this is
+        # the volume-adjusted estimate; in "raw" mode it's settled OI. Raw is
+        # always kept as `oi_raw` for audit / diff tooling.
+        "oi": oi_used,
         "oi_raw": oi_raw,
         "volume": volume,
         "bid": _safe_float(opt.get("bid")),
@@ -178,6 +189,7 @@ def _opt_fields(opt: dict[str, Any], spot: float = 0.0) -> dict[str, float]:
         "delta": _safe_float(greeks.get("delta")),
         "gamma": _safe_float(greeks.get("gamma")),
         "vanna": raw_vanna,
+        "charm": _safe_float(greeks.get("charm")),
         "theta": _safe_float(greeks.get("theta")),
         "vega": vega,
     }
@@ -206,6 +218,102 @@ def _bsm_gamma(
     sqrt_T = math.sqrt(T)
     d1 = (math.log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / (sigma * sqrt_T)
     return _norm_pdf(d1) * math.exp(-q * T) / (S * sigma * sqrt_T)
+
+
+def _norm_cdf(x: float) -> float:
+    """Standard normal cumulative distribution function."""
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def _bsm_charm(
+    S: float, K: float, sigma: float, T: float,
+    r: float = 0.045, q: float = 0.013, is_call: bool = True,
+) -> float:
+    """BSM charm = dDelta/dTime (calendar), returned PER CALENDAR DAY.
+
+    Charm is the time-decay engine of dealer hedging: as expiration approaches,
+    an option's delta drifts even with no price move. Aggregated across the
+    dealer book (CEX), it is what produces the OPEX / Friday-pin effect.
+
+    Unlike gamma (identical for calls and puts), charm genuinely differs by
+    option type, so this is is_call-aware. The dealer-position sign (+1 call /
+    -1 put) is applied by the caller, same convention as GEX/VEX.
+
+    Sign reading downstream: negative net CEX with the dominant charm strike
+    BELOW spot = structural downward pin into expiry (the bear-day signature).
+    """
+    if S <= 0 or K <= 0 or sigma <= 0 or T <= 0:
+        return 0.0
+    sqrt_T = math.sqrt(T)
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / (sigma * sqrt_T)
+    d2 = d1 - sigma * sqrt_T
+    # term common to calls and puts
+    common = (
+        math.exp(-q * T) * _norm_pdf(d1)
+        * (2.0 * (r - q) * T - d2 * sigma * sqrt_T)
+        / (2.0 * T * sigma * sqrt_T)
+    )
+    if is_call:
+        charm = q * math.exp(-q * T) * _norm_cdf(d1) - common
+    else:
+        charm = -q * math.exp(-q * T) * _norm_cdf(-d1) - common
+    return charm / 365.0  # annual → per calendar day
+
+
+def _structure_regime(
+    spot: float, zgl: float, pos_gex: float, neg_gex: float,
+    has_real_flip: bool,
+) -> tuple[str, int, bool]:
+    """Classify the dealer-hedging *volatility* regime (AION-style lexicon).
+
+    Returns (label, structure_score 0-100, is_risk_off).
+
+    Labels describe how price MOVES, not direction:
+      PINNED / LEAN_PIN   → long gamma, dampened (mean-revert, pinning)
+      INFLECTION          → on the flip, can swing either way
+      LEAN_VOL / VOLATILE → short gamma, amplified (trend, cascade)
+      NEUTRAL             → no real flip + unclear book sign
+
+    structure_score: 0 = max long-gamma/calm, 100 = max short-gamma/risk-off.
+    is_risk_off: True when the tape mechanically amplifies down-moves
+                 (short-gamma below flip OR net-negative-gamma dominant) —
+                 the bear-day guardrail consumes this.
+    """
+    abs_neg = abs(neg_gex) if neg_gex else 0.0
+    pos = pos_gex if pos_gex else 0.0
+    neg_dom = abs_neg > pos
+    denom = pos + abs_neg + 1.0
+    neg_ratio = abs_neg / denom
+
+    if not spot or spot <= 0 or not zgl or zgl <= 0:
+        label = "VOLATILE" if neg_dom else "NEUTRAL"
+        return label, round(100 * neg_ratio), neg_dom
+
+    dist = (spot - zgl) / spot
+    below = spot < zgl
+    score = round(100 * (0.6 * neg_ratio + 0.4 * (1.0 if below else 0.0)))
+
+    if not has_real_flip:
+        # whole chain one sign — no zero crossing in range
+        label = "VOLATILE" if neg_dom else "PINNED"
+        return label, score, (neg_dom or below)
+
+    BAND = 0.015  # 1.5% of spot
+    if dist >= BAND:
+        label = "PINNED"
+    elif dist > 0.004:
+        label = "LEAN_PIN"
+    elif dist >= -0.004:
+        label = "INFLECTION"
+    elif dist > -BAND:
+        label = "LEAN_VOL"
+    else:
+        label = "VOLATILE"
+    # neg-dominance never reads as fully pinned
+    if neg_dom and label in ("PINNED", "LEAN_PIN"):
+        label = "INFLECTION"
+    is_risk_off = label in ("VOLATILE", "LEAN_VOL") or (neg_dom and below)
+    return label, score, is_risk_off
 
 
 def _solve_gamma_profile(
@@ -487,14 +595,20 @@ def _oldest_greeks_age(per_strike: dict) -> float:
 
 
 def compute_exp_data(
-    contracts: list[dict[str, Any]], spot: float
+    contracts: list[dict[str, Any]], spot: float, oi_mode: str = "effective",
 ) -> dict[str, Any]:
     """Given a list of Tradier option dicts (for one expiration OR merged across
-    many), compute the full expData structure our frontend expects."""
+    many), compute the full expData structure our frontend expects.
+
+    `oi_mode` ("effective" default | "raw") chooses the OI input for all
+    GEX/VEX/CEX dollar math — see `_opt_fields`. "raw" gives the cleaner
+    settled-OI structural read; "effective" is the volume-adjusted intraday
+    read (historical default, unchanged)."""
     per_strike: dict[float, dict[str, float]] = defaultdict(
         lambda: {
             "net_gex": 0.0,
             "net_vex": 0.0,
+            "net_cex": 0.0,  # charm exposure $ (time-decay / pin engine)
             "net_delta": 0.0,
             "volume": 0.0,
             "oi": 0.0,       # volume-adjusted effective OI used for GEX math
@@ -509,12 +623,13 @@ def compute_exp_data(
     today = date.today()
 
     for opt in contracts:
-        f = _opt_fields(opt, spot=spot)
+        f = _opt_fields(opt, spot=spot, oi_mode=oi_mode)
         strike = f["strike"]
         if strike <= 0 or f["oi"] <= 0:
             continue
         otype = (opt.get("option_type") or "").lower()
-        sign = 1.0 if otype == "call" else -1.0
+        is_call = otype == "call"
+        sign = 1.0 if is_call else -1.0
 
         # Synth gamma fallback for 0DTE bug (2026-05-28).
         # Tradier (and ThetaData) report gamma=0 for 0DTE contracts by
@@ -539,18 +654,36 @@ def compute_exp_data(
             except (ValueError, TypeError):
                 pass
 
+        # Charm (dDelta/day). Use provider charm if present, else BSM fallback
+        # (same pattern as the 0DTE synth-gamma path above). is_call-aware.
+        charm = f.get("charm", 0.0)
+        if charm == 0.0 and f["iv"] > 0 and spot > 0 and strike > 0:
+            try:
+                exp_str = opt.get("expiration_date") or opt.get("expiration") or ""
+                if exp_str:
+                    exp_d = date.fromisoformat(exp_str)
+                    days = max((exp_d - today).days, 0)
+                    T = max(days / 365.0, 0.5 / 365.0)
+                    charm = _bsm_charm(spot, strike, f["iv"], T, is_call=is_call)
+            except (ValueError, TypeError):
+                pass
+
         # GEX = gamma * OI * 100 * spot^2 * 0.01 (per 1% move), signed by dealer side
         gamma_dollar = (
             gamma * f["oi"] * CONTRACT_SIZE * spot * spot * 0.01 * sign
         )
         # VEX = vanna * OI * 100 * spot * 1 (per 1 vol point); signed likewise
         vanna_dollar = f["vanna"] * f["oi"] * CONTRACT_SIZE * spot * sign
+        # CEX = charm(per day) * OI * 100 * spot; dealer-signed like GEX/VEX.
+        # Negative net CEX + dominant strike below spot = downward pin into expiry.
+        charm_dollar = charm * f["oi"] * CONTRACT_SIZE * spot * sign
         # Net delta (dealer hedge)
         delta_shares = f["delta"] * f["oi"] * CONTRACT_SIZE * sign
 
         bucket = per_strike[strike]
         bucket["net_gex"] += gamma_dollar
         bucket["net_vex"] += vanna_dollar
+        bucket["net_cex"] += charm_dollar
         bucket["net_delta"] += delta_shares
         bucket["volume"] += f["volume"]
         bucket["oi"] += f["oi"]              # effective OI
@@ -594,6 +727,11 @@ def compute_exp_data(
             "iv": 0,
             "net_delta": 0,
             "net_vanna": 0,
+            "net_cex": 0,
+            "charm_anchor": {},
+            "structure_regime": "NEUTRAL",
+            "structure_score": 0,
+            "structure_risk_off": False,
             "ceiling": 0,
             "floor": 0,
             "gatekeepers": [],
@@ -609,9 +747,24 @@ def compute_exp_data(
     total_neg = sum(b["net_gex"] for b in per_strike.values() if b["net_gex"] < 0)
     total_delta = sum(b["net_delta"] for b in per_strike.values())
     total_vanna = sum(b["net_vex"] for b in per_strike.values())
+    total_cex = sum(b["net_cex"] for b in per_strike.values())
 
     # Intensity
     max_intensity = max((abs(b["net_gex"]) for b in per_strike.values()), default=1.0) or 1.0
+
+    # Charm anchor: the dominant |net_cex| strike + its side vs spot. A negative
+    # anchor below spot = downward time-decay pin into expiry (Friday-pin / bear).
+    charm_anchor: dict[str, Any] = {}
+    _cex_strikes = [s for s in per_strike if per_strike[s]["net_cex"] != 0.0]
+    if _cex_strikes and spot > 0:
+        a_strike = max(_cex_strikes, key=lambda s: abs(per_strike[s]["net_cex"]))
+        a_cex = per_strike[a_strike]["net_cex"]
+        charm_anchor = {
+            "strike": a_strike,
+            "cex": a_cex,
+            "side": "below" if a_strike < spot else ("above" if a_strike > spot else "at"),
+            "distance_pct": round((a_strike - spot) / spot * 100, 2),
+        }
 
     # KING bifurcation (2026-04-21 — v4 methodology).
     #
@@ -899,6 +1052,7 @@ def compute_exp_data(
                 "strike": s,
                 "net_gex": b["net_gex"],
                 "net_vex": b["net_vex"],
+                "net_cex": b["net_cex"],
                 "net_delta": b["net_delta"],
                 "node_type": node_type,
                 "is_air": is_air,
@@ -921,6 +1075,14 @@ def compute_exp_data(
         king_is_positive=king_is_positive,
         floor=floor_strike, ceiling=ceiling_strike,
         neg_king=neg_king_strike,
+    )
+
+    # Dealer-structure (volatility) regime — AION-style PINNED..VOLATILE read.
+    # `has_real_flip` = the ZGL came from an actual gamma zero-crossing, not the
+    # centroid fallback (mirrors AION's flip_quality:"fallback").
+    _has_real_flip = zgl_solved is not None
+    structure_regime, structure_score, structure_risk_off = _structure_regime(
+        spot, zgl, total_pos, total_neg, _has_real_flip,
     )
 
     return {
@@ -953,6 +1115,11 @@ def compute_exp_data(
         "iv": iv_avg,
         "net_delta": total_delta,
         "net_vanna": total_vanna,
+        "net_cex": total_cex,             # total dealer charm exposure $
+        "charm_anchor": charm_anchor,     # dominant CEX strike + side vs spot
+        "structure_regime": structure_regime,    # PINNED..VOLATILE (vol behavior)
+        "structure_score": structure_score,      # 0 calm .. 100 short-gamma/risk-off
+        "structure_risk_off": structure_risk_off,  # bool — bear-day guardrail input
         "ceiling": ceiling_strike or 0,
         "floor": floor_strike or 0,
         "gatekeepers": sorted(gk),
@@ -960,6 +1127,7 @@ def compute_exp_data(
         "neg_gex": total_neg,
         "air_pockets": air_pockets,
         "callout": callout,  # v3: actionable trader-facing signal text
+        "_oi_mode": oi_mode,
         "_king_is_positive": king_is_positive,
         "_sign_model": "assumed_dealer",
         "_king_model": "bifurcated_v4",  # 2026-04-21: separate pos/neg kings

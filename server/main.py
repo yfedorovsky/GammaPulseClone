@@ -86,6 +86,8 @@ async def lifespan(app: FastAPI):
     init_cell_history_db()
     from .oi_delta import init_oi_delta_db
     init_oi_delta_db()
+    from .rs_acceleration import init_rts_history_db
+    init_rts_history_db()
     await db.start()  # Single-writer queue for SQLite (prevents SQLITE_BUSY)
     await streamer.ensure_running()
     # Compute quarterly basket on startup (PIT sector selection)
@@ -945,26 +947,57 @@ async def mtf(ticker: str):
 
 @app.get("/api/flow/bias/{ticker}")
 async def flow_directional_bias(ticker: str, lookback_hours: float = 6.5):
-    """Cross-expiration directional bias for a ticker (Fix #5, 2026-06-02 PM).
+    """Cross-expiration directional bias for a ticker (Fix #5, 2026-06-02 PM;
+    delta-weighted in #59, 4-LLM synthesis 2026-06-08).
 
-    Surfaces patterns the raw flow_alerts table buries — e.g. TSLA today:
-      6/5 weekly:   BALANCED ($9.2B / $9.2B)   CHOP
-      6/8 weekly:   BULL +27% ($1.3B / $0.7B)  BULL
-      6/12 weekly:  BULL +35% ($0.8B / $0.4B)  BULL
-      7/17 monthly: BEAR -27% ($0.3B / $0.5B)  BEAR
+    Surfaces patterns the raw flow_alerts table buries (weekly chop but monthly
+    bull, etc.). Headline `bias_pct`/`verdict` are now DELTA-WEIGHTED signed
+    buy-to-open demand Σ(V·Δ·100·P_open) — the predictive object per
+    Pan-Poteshman / Ge-Lin-Pearson — not raw $ notional. This collapses the
+    mechanical long-bias (cheap-OTM Δ≈0.05 lottery flood) and the
+    deep-ITM-premium false-bear distortion. Notional equivalents are retained
+    as `bias_pct_notional` / `verdict_notional` for reference.
 
-    Each expiration gets bull-buy ($), bear-buy ($), net ($), bias%, and
-    verdict (CHOP / MILD / BULL / STRONG_BULL / BEAR / STRONG_BEAR).
+    Each expiration: bull_buy/bear_buy/net ($ notional), bull_delta/bear_delta/
+    net_delta (Δ·shares), bias_pct + verdict (delta-weighted headline),
+    bias_pct_notional + verdict_notional (reference). Verdict ∈ CHOP / MILD /
+    BULL / STRONG_BULL / BEAR / STRONG_BEAR.
     """
-    from .flow_noise_filter import compute_directional_bias_by_expiration
+    from .flow_noise_filter import (
+        compute_directional_bias_by_expiration,
+        compute_flow_zscore,
+    )
     rows = compute_directional_bias_by_expiration(
         ticker, lookback_hours=int(lookback_hours)
     )
+    # #61: per-underlying flow z-score — how unusual is today's signed
+    # delta-flow vs this name's own baseline (shadow read; washes out the
+    # constant call-overwrite hum).
+    zscore = compute_flow_zscore(ticker)
     return {
         "ticker": ticker.upper(),
         "lookback_hours": lookback_hours,
         "expirations": rows,
+        "flow_zscore": zscore,
     }
+
+
+@app.get("/api/flow/zscore/{ticker}")
+async def flow_zscore_endpoint(ticker: str):
+    """Per-underlying flow z-score (#61): today's signed buy-to-open delta flow
+    normalized against the name's own trailing baseline. |z|≥2 = standout that
+    breaks the mechanical long-bias. Shadow read until FLOW_ZSCORE_GATE_ACTIVE=1."""
+    from .flow_noise_filter import compute_flow_zscore
+    return {"ticker": ticker.upper(), **compute_flow_zscore(ticker)}
+
+
+@app.get("/api/outcomes/oi-confirmation")
+async def oi_confirmation_report(days: int = 30):
+    """Win rates split by next-morning OI-confirmation cohort (#60). Tests the
+    Pan-Poteshman hypothesis that confirmed (opening) flow out-wins
+    unconfirmed (closing-churn) flow per alert type."""
+    from .alert_outcomes import get_oi_confirmation_report
+    return {"days": days, "cohorts": get_oi_confirmation_report(days=days)}
 
 
 @app.get("/api/flow/{ticker}")
@@ -1105,6 +1138,77 @@ async def rts_rankings(direction: str = "BULL", limit: int = 50):
         results = await compute_rts_universe(tradier, tickers)
         ranked = rank_tickers(results, direction)
         return {"direction": direction, "count": len(ranked), "tickers": ranked}
+    finally:
+        await tradier.close()
+
+
+@app.get("/api/rs-acceleration")
+async def rs_acceleration_rankings(limit: int = 20):
+    """RS acceleration / deceleration leaderboards (task #56). Reads the
+    rts_history table — meaningful once >= 2 EOD sessions are recorded.
+    'accelerating' = composite RS climbing fast (keeps working); 'decelerating'
+    = fading (often the next leader to roll off)."""
+    from .rs_acceleration import accelerators, decelerators
+    acc = await asyncio.to_thread(accelerators, limit)
+    dec = await asyncio.to_thread(decelerators, limit)
+    return {"accelerating": acc, "decelerating": dec,
+            "note": "needs >= 2 EOD RTS snapshots; burns in after first day"}
+
+
+@app.get("/api/market-read")
+async def market_read(symbol: str = "SPX"):
+    """Unified market read (bear-day capstone): synthesizes dealer-structure
+    (#54), index base-rate (#55b), and the directional benchmark (#57) into one
+    posture (RISK_OFF / NEUTRAL / RISK_ON) + summary line + long-flow advisory.
+    Posture is driven by structure + base-rate; the forecast is benchmark-only."""
+    from .market_read import get_market_read
+    try:
+        return await asyncio.to_thread(get_market_read, symbol)
+    except Exception as e:
+        return {"error": str(e), "symbol": symbol.upper(), "posture": "NEUTRAL"}
+
+
+@app.get("/api/directional")
+async def directional_prior(symbol: str = "SPX", horizon: int = 3):
+    """Short-horizon directional prior (bear-day ensemble leg 2): P(index up
+    over N days) from a walk-forward-honest logistic model on index
+    momentum/breadth/vol features. Returns prob_up + lean + the HONEST
+    walk-forward AUC (`trustworthy` only when AUC>=0.55 — don't over-trust it).
+    Cached 1h. Horizons: 3/10/20."""
+    from .directional_prior import get_directional
+    try:
+        return await asyncio.to_thread(get_directional, symbol, horizon)
+    except Exception as e:
+        return {"ok": False, "error": str(e), "symbol": symbol.upper()}
+
+
+@app.get("/api/analogues")
+async def analogues_scan(symbol: str = "SPX"):
+    """Historical base-rate pattern scan (task #55) for an index/ETF
+    (SPX/NDX/SPY/QQQ/DJI/RUT/IWM/VIX). Returns which technical patterns are
+    firing on the latest bar plus each one's forward-return distribution
+    (+5/+10/+20d). Cached 1h. Pair a rare bullish pattern with informed call
+    flow for a higher-conviction confluence read."""
+    from .analogue_data import get_scan
+    try:
+        return await asyncio.to_thread(get_scan, symbol)
+    except Exception as e:
+        return {"error": str(e), "symbol": symbol.upper(), "active": []}
+
+
+@app.get("/api/sector-breadth")
+async def sector_breadth_rankings(limit: int = 60):
+    """Breadth-weighted sector composition (task #56): Avg Score vs Breadth-Wtd
+    (tiered participation in the universe's top 10/20/30%). Sorted by
+    Breadth-Wtd — rewards deep, broad leadership over a single megacap."""
+    from .tickers import all_tickers
+    from .rs_acceleration import sector_breadth_from_universe
+    tradier = TradierClient()
+    try:
+        tickers = all_tickers()[:limit]
+        results = await compute_rts_universe(tradier, tickers)
+        sectors = await asyncio.to_thread(sector_breadth_from_universe, results)
+        return {"count": len(sectors), "sectors": sectors}
     finally:
         await tradier.close()
 

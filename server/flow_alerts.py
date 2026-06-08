@@ -800,6 +800,63 @@ def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) 
         alert["_pre_whale_conviction"] = conviction
         conviction = "HIGH"
         alert["conviction"] = "HIGH"
+
+    # ── Dealer-structure (bear-day) guardrail — task #54 Layer 3 ──────────
+    # Read the SPY/QQQ short-gamma tape. On a risk-off (short-gamma) index
+    # tape, LONG/bullish flow tends to get run over, so down-weight it one
+    # conviction notch; bearish flow is tagged 'structure-confirmed'.
+    #
+    # SHADOW BY DEFAULT: with structure_regime.STRUCTURE_GATE_ACTIVE=False the
+    # notch is always 0 — we only ATTACH the tag/reason (for Telegram + the
+    # [STRUCTURE] log line) and change NO conviction. Flipping the flag after
+    # live validation activates the actual demotion.
+    #
+    # Whale / INFORMED-FLOW alerts are exempt from demotion (they're our
+    # highest-value catches and were just promoted) — they still get tagged.
+    try:
+        from .structure_regime import (
+            evaluate_alert as _struct_eval,
+            apply_notch as _struct_notch,
+        )
+        _sv = _struct_eval(alert.get("sentiment", ""), alert.get("ticker", ""))
+        if _sv.get("tag"):
+            _ms = _sv.get("structure") or {}
+            alert["_structure_tag"] = _sv["tag"]
+            alert["_structure_reason"] = _sv.get("reason", "")
+            alert["_structure_regime"] = _ms.get("regime")
+            alert["_structure_score"] = _ms.get("score")
+            _protected = bool(alert.get("is_whale") or alert.get("is_insider"))
+            _delta = _sv.get("notch_delta", 0)
+            if _delta and not _protected:
+                _new_conv = _struct_notch(conviction, _delta)
+                if _new_conv != conviction:
+                    alert["_pre_structure_conviction"] = conviction
+                    conviction = _new_conv
+                    alert["conviction"] = _new_conv
+            print(
+                f"[STRUCTURE] {alert.get('ticker')} {alert.get('sentiment')} "
+                f"tag={_sv['tag']!r} notch={_delta} "
+                f"regime={_ms.get('regime')} score={_ms.get('score')} "
+                f"protected={_protected} active={_ms.get('gate_active')}",
+                flush=True,
+            )
+    except Exception as _se:
+        print(f"[flow] structure guardrail error: {_se!r}", flush=True)
+
+    # ── Analogue confluence tag (task #55 follow-up) ─────────────────────
+    # Tag the alert with whether its direction ALIGNS with the index base-rate
+    # bias (SPX/NDX active-pattern forward returns). Reads a pre-warmed cache
+    # (no I/O). Tag-only — no conviction change (market context, not a gate).
+    try:
+        from .analogue_confluence import evaluate_flow_confluence
+        _av = evaluate_flow_confluence(alert.get("sentiment", ""))
+        if _av.get("tag"):
+            alert["_analogue_tag"] = _av["tag"]
+            alert["_analogue_note"] = _av.get("note", "")
+            alert["_analogue_aligned"] = _av.get("aligned")
+    except Exception as _ae:
+        print(f"[flow] analogue confluence error: {_ae!r}", flush=True)
+
     with _conn() as c:
         c.execute(
             """INSERT INTO flow_alerts
@@ -1079,6 +1136,62 @@ def _detect_sentiment(option_type: str, side: str) -> str:
     return "BEARISH" if side == "ASK" else "BULLISH"
 
 
+# 0DTE put-side override thresholds (task #58 — 6/5 forensic).
+ODTE_PUT_ATM_PCT = 0.03          # |strike-spot|/spot within 3% = near-the-money
+ODTE_PUT_MIN_VOI = 3.0           # vol/oi: fresh directional volume, not stale OI
+ODTE_PUT_MIN_NOTIONAL = 1_000_000
+
+
+def _0dte_put_directional_override(
+    otype: str, side: str, sentiment: str, *, opt_exp: str, strike: float,
+    spot: float, vol: float, oi: float, notional: float,
+    gex_regime: str | None, gex_signal: str | None,
+) -> tuple[str, bool]:
+    """Reclassify NEUTRAL(MID) → BEARISH for large near-the-money 0DTE puts on a
+    short-gamma / risk-off tape.
+
+    6/5 forensic (docs/research/forensic_jun05_bearday.md): on the −2.58% crash,
+    the day's biggest 0DTE put prints came through as NEUTRAL(MID) — e.g. SPY
+    750P $94M at MID — because the frantic 0DTE tape lands mid-of-a-wide-NBBO.
+    But when the index is in DANGER/NEG-gamma, a flood of ATM 0DTE put volume is
+    directional put-BUYING (panic/hedge), not two-sided. Surface it as bearish.
+
+    Narrow + structure-gated to avoid false positives. Only flips MID (a
+    no-signal NEUTRAL); genuine BID put-writing is left alone. Returns
+    (sentiment, overridden).
+    """
+    if otype != "put" or sentiment != "NEUTRAL" or side != "MID":
+        return sentiment, False
+    if not spot or spot <= 0:
+        return sentiment, False
+    if notional < ODTE_PUT_MIN_NOTIONAL:
+        return sentiment, False
+    if abs(strike - spot) / spot > ODTE_PUT_ATM_PCT:
+        return sentiment, False
+    voi = (vol / oi) if oi else (999.0 if vol else 0.0)
+    if voi < ODTE_PUT_MIN_VOI:
+        return sentiment, False
+    # 0DTE only
+    try:
+        from datetime import date
+        if (date.fromisoformat(str(opt_exp)) - date.today()).days != 0:
+            return sentiment, False
+    except Exception:
+        return sentiment, False
+    # short-gamma / risk-off context: the ticker's OWN GEX (SPY/QQQ ARE the
+    # index), else the cached market structure (#54).
+    risk_off = (gex_regime == "NEG") or (gex_signal in ("DANGER", "MAGNET FADE"))
+    if not risk_off:
+        try:
+            from .structure_regime import get_market_structure
+            risk_off = bool(get_market_structure().get("risk_off"))
+        except Exception:
+            risk_off = False
+    if not risk_off:
+        return sentiment, False
+    return "BEARISH", True
+
+
 async def _send_telegram(alert: dict[str, Any]) -> None:
     s = get_settings()
     if not s.telegram_bot_token or not s.telegram_chat_id:
@@ -1285,6 +1398,21 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
             sentiment = _detect_sentiment(otype, side)
             notional = vol * last * 100
 
+            # 0DTE put-side override (task #58 — 6/5 forensic). On a short-gamma
+            # / DANGER tape, large ATM 0DTE puts at MID are directional
+            # put-buying, not neutral. Reclassify NEUTRAL(MID) → BEARISH so the
+            # crash-day puts (SPY 750P $94M) stop reading as no-signal.
+            sentiment, _odte_flip = _0dte_put_directional_override(
+                otype, side, sentiment, opt_exp=opt_exp, strike=strike,
+                spot=spot, vol=vol, oi=oi, notional=notional,
+                gex_regime=(state.get("regime") if state else None),
+                gex_signal=(state.get("signal") if state else None),
+            )
+            if _odte_flip:
+                print(f"[0DTE-PUT] {ticker} {int(strike)}P MID->BEARISH "
+                      f"(${notional:,.0f}, voi={round(vol_oi,1)}, "
+                      f"regime={state.get('regime') if state else None})", flush=True)
+
             # Dedup AFTER sentiment computed so the bucket is part of the
             # key — catches the flip-day case (BEARISH on 5/15 120C at
             # 10:16 AM, then BULLISH at 11:30 AM = re-fire).
@@ -1329,6 +1457,7 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
                 "delta": round(delta, 3),
                 "notional": round(notional),
                 "spot": spot,
+                "_odte_side_override": _odte_flip,
             }
             gex_info = {
                 "king": state.get("king") if state else None,

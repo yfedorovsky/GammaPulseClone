@@ -121,6 +121,23 @@ def _ensure_schema(db_path: str = DB_PATH) -> None:
             ("skew_25d", "REAL"),
             ("macro_event_flag", "TEXT"),
             ("alert_source_cluster", "TEXT"),
+            # entry_was_stale is written by the INSERT but was never in the
+            # CREATE/migration path — fine on prod (column predates a since-
+            # edited list) but breaks fresh DBs. Add it so new DBs match.
+            ("entry_was_stale", "INTEGER"),
+            # #60 (4-LLM synthesis 6/8): next-morning settled-OI confirmation.
+            # Pan-Poteshman: predictive power is in buy-to-OPEN volume. A flagged
+            # contract whose settled OI rises by ≥ a fraction of the flagged
+            # volume by next morning = genuine new positioning (opening); one
+            # whose OI doesn't rise was a close/churn. Splitting win rates by
+            # this cohort is the operational gate for that construct.
+            ("oi_at_fire", "INTEGER"),       # OI on the contract at alert time
+            ("flagged_volume", "INTEGER"),   # the alert's contract volume
+            ("oi_next_morning", "INTEGER"),  # settled OI next trading morning
+            ("oi_delta", "INTEGER"),         # oi_next_morning − oi_at_fire
+            ("oi_confirmed", "INTEGER"),     # 1 opening / 0 closing-churn / NULL pending
+            ("oi_status", "TEXT"),           # confirmed/unconfirmed/no_data/expired_no_data
+            ("oi_checked_at", "REAL"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE alert_outcomes ADD COLUMN {col} {decl}")
@@ -171,6 +188,8 @@ def log_alert(
     earnings_in_window: int | None = None,
     earnings_days_to: int | None = None,
     ivr_at_alert: float | None = None,
+    oi_at_fire: int | None = None,
+    flagged_volume: int | None = None,
     raw_alert: dict | None = None,
     db_path: str = DB_PATH,
 ) -> str | None:
@@ -185,6 +204,16 @@ def log_alert(
         _ensure_schema(db_path)
         ts = fired_at or time.time()
         aid = make_alert_id(ticker, alert_type, ts, strike, expiration)
+        # #60: capture OI + volume at fire time for next-morning confirmation.
+        # Auto-extract from the raw payload when not passed explicitly, so the
+        # contract-bearing call sites (flow/cluster/whale) need no changes.
+        if (oi_at_fire is None or flagged_volume is None) and raw_alert:
+            if oi_at_fire is None:
+                _o = raw_alert.get("oi", raw_alert.get("open_interest"))
+                oi_at_fire = int(_o) if _o not in (None, "") else None
+            if flagged_volume is None:
+                _v = raw_alert.get("volume", raw_alert.get("vol"))
+                flagged_volume = int(_v) if _v not in (None, "") else None
         # Pull the latest snapshot's is_stale flag for this ticker. If the most
         # recent snapshot was flagged stale, the alert was scored against
         # frozen data and should be marked. Added 2026-05-21 PM.
@@ -203,7 +232,7 @@ def log_alert(
                     target_premium, stop_premium, vix_at_alert, gex_regime,
                     gex_signal, king, floor, ceiling, earnings_in_window,
                     earnings_days_to, ivr_at_alert, outcome_status, raw_alert_json,
-                    entry_was_stale
+                    entry_was_stale, oi_at_fire, flagged_volume
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?,
@@ -211,7 +240,7 @@ def log_alert(
                     ?, ?, ?, ?,
                     ?, ?, ?, ?, ?,
                     ?, ?, 'pending', ?,
-                    ?
+                    ?, ?, ?
                 )""",
                 (
                     aid, ts, alert_type, ticker.upper(), direction, grade,
@@ -221,7 +250,7 @@ def log_alert(
                     gex_signal, king, floor, ceiling, earnings_in_window,
                     earnings_days_to, ivr_at_alert,
                     json.dumps(raw_alert, default=str) if raw_alert else None,
-                    entry_was_stale,
+                    entry_was_stale, oi_at_fire, flagged_volume,
                 ),
             )
             conn.commit()
@@ -492,6 +521,194 @@ async def backfill_outcomes(db_path: str = DB_PATH, max_age_days: int = 7) -> di
     return stats
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# #60 — next-morning settled-OI confirmation cohort (4-LLM synthesis 6/8)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Settled OI must rise by ≥ this fraction of the flagged volume for the alert to
+# count as genuine new positioning (opening). Below it, the flagged volume was
+# mostly closing/churn against existing OI.
+OI_CONFIRM_FRACTION: float = 0.50
+
+
+def classify_oi(oi_now: int | None, oi_at_fire: int | None,
+                flagged_volume: int | None,
+                frac: float = OI_CONFIRM_FRACTION) -> tuple[int | None, str]:
+    """Pure classifier. Returns (oi_confirmed, oi_status).
+
+    confirmed (1) : ΔOI ≥ frac · flagged_volume → opening / new positioning
+    unconfirmed(0): ΔOI below that → close or churn against existing OI
+    no_data       : missing inputs → cannot classify
+    """
+    if oi_now is None or oi_at_fire is None or not flagged_volume:
+        return None, "no_data"
+    delta = oi_now - oi_at_fire
+    if delta >= frac * flagged_volume:
+        return 1, "confirmed"
+    return 0, "unconfirmed"
+
+
+def _today_midnight_local() -> float:
+    n = _dt.datetime.now()
+    return n.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+def _select_oi_pending(db_path: str, now: float, max_age_days: int) -> list:
+    """Contract-bearing rows fired on a PRIOR day with no OI verdict yet.
+    Fired-before-today gate ensures OCC settled OI has updated overnight."""
+    _ensure_schema(db_path)
+    cutoff_min = now - max_age_days * 86400
+    before = _today_midnight_local()
+    conn = sqlite3.connect(db_path)
+    try:
+        return conn.execute(
+            """SELECT alert_id, ticker, expiration, strike, option_type,
+                      oi_at_fire, flagged_volume
+               FROM alert_outcomes
+               WHERE oi_status IS NULL
+                 AND strike IS NOT NULL AND expiration IS NOT NULL
+                 AND option_type IS NOT NULL
+                 AND fired_at > ? AND fired_at < ?""",
+            (cutoff_min, before),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def _write_oi_result(db_path: str, alert_id: str, oi_now: int | None,
+                     oi_at_fire: int | None, flagged_volume: int | None,
+                     confirmed: int | None, status: str, now: float) -> None:
+    oi_delta = (oi_now - oi_at_fire) if (oi_now is not None and oi_at_fire is not None) else None
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """UPDATE alert_outcomes SET
+                oi_next_morning = ?, oi_delta = ?, oi_confirmed = ?,
+                oi_status = ?, oi_checked_at = ?
+               WHERE alert_id = ?""",
+            (oi_now, oi_delta, confirmed, status, now, alert_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def _tradier_chain_oi(tradier, ticker: str, exp: str) -> dict[tuple[float, str], int]:
+    """{(strike, option_type) -> open_interest} for one expiration."""
+    out: dict[tuple[float, str], int] = {}
+    try:
+        chain = await tradier.chain(ticker, exp)
+    except Exception as e:
+        print(f"[alert_outcomes] OI chain fetch failed {ticker} {exp}: {e!r}")
+        return out
+    for o in chain or []:
+        try:
+            k = (float(o.get("strike")), (o.get("option_type") or "").lower())
+            out[k] = int(o.get("open_interest") or 0)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+async def run_oi_confirmation(db_path: str = DB_PATH, max_age_days: int = 7,
+                              now: float | None = None, fetcher=None) -> dict:
+    """Confirm/deny next-morning OI growth on flagged contracts, splitting them
+    into opening vs closing-churn cohorts. Idempotent — only touches rows whose
+    oi_status is still NULL and that fired on a prior day. `fetcher(ticker, exp)`
+    is injectable for tests; defaults to a Tradier chain lookup."""
+    now = now if now is not None else time.time()
+    rows = _select_oi_pending(db_path, now, max_age_days)
+    stats = {"processed": 0, "confirmed": 0, "unconfirmed": 0,
+             "no_data": 0, "expired_no_data": 0, "deferred": 0}
+    if not rows:
+        return stats
+
+    from collections import defaultdict
+    by_exp: dict[tuple[str, str], list] = defaultdict(list)
+    for r in rows:
+        by_exp[(r[1], r[2])].append(r)
+
+    tradier = None
+    if fetcher is None:
+        from server.tradier import TradierClient
+        tradier = TradierClient()
+
+        async def fetcher(tk, ex):  # noqa: ANN001
+            return await _tradier_chain_oi(tradier, tk, ex)
+
+    today_date = _dt.date.fromtimestamp(now)
+    try:
+        for (ticker, exp), grp in by_exp.items():
+            # Expiration already passed → settled OI is meaningless; stop retrying.
+            exp_passed = False
+            try:
+                exp_passed = _dt.date.fromisoformat(exp) < today_date
+            except (ValueError, TypeError):
+                exp_passed = False
+
+            oi_map = {} if exp_passed else await fetcher(ticker, exp)
+            for (alert_id, _t, _e, strike, otype, oi_fire, fvol) in grp:
+                stats["processed"] += 1
+                oi_now = None
+                if not exp_passed:
+                    oi_now = oi_map.get((float(strike), (otype or "").lower()))
+                if oi_now is None and not exp_passed and oi_map:
+                    # chain returned but contract absent → treat as 0 settled OI
+                    oi_now = 0
+                if oi_now is None and not exp_passed and not oi_map:
+                    # provider miss this run — leave pending, retry next loop
+                    stats["deferred"] += 1
+                    continue
+                if exp_passed:
+                    _write_oi_result(db_path, alert_id, None, oi_fire, fvol,
+                                     None, "expired_no_data", now)
+                    stats["expired_no_data"] += 1
+                    continue
+                confirmed, status = classify_oi(oi_now, oi_fire, fvol)
+                _write_oi_result(db_path, alert_id, oi_now, oi_fire, fvol,
+                                 confirmed, status, now)
+                stats[status] = stats.get(status, 0) + 1
+    finally:
+        if tradier is not None:
+            await tradier.close()
+    return stats
+
+
+def get_oi_confirmation_report(days: int = 30, db_path: str = DB_PATH) -> list[dict[str, Any]]:
+    """Win rates split by OI-confirmation cohort per alert type. The synthesis
+    hypothesis: confirmed (opening) flow should out-win unconfirmed (churn)."""
+    _ensure_schema(db_path)
+    cutoff = time.time() - days * 86400
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            """SELECT alert_type,
+                      CASE oi_confirmed WHEN 1 THEN 'confirmed'
+                           WHEN 0 THEN 'unconfirmed' ELSE 'unknown' END AS cohort,
+                      COUNT(*) AS n,
+                      SUM(CASE WHEN verdict_eod='WIN' THEN 1 ELSE 0 END) AS wins,
+                      SUM(CASE WHEN verdict_eod='LOSS' THEN 1 ELSE 0 END) AS losses,
+                      SUM(CASE WHEN verdict_eod='FLAT' THEN 1 ELSE 0 END) AS flat
+               FROM alert_outcomes
+               WHERE fired_at > ? AND outcome_status != 'pending'
+                 AND oi_confirmed IS NOT NULL
+               GROUP BY alert_type, cohort
+               ORDER BY alert_type, cohort""",
+            (cutoff,),
+        ).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        decided = r[2] - r[5]  # exclude FLAT from win-rate denominator
+        out.append({
+            "alert_type": r[0], "cohort": r[1], "n": r[2],
+            "wins": r[3], "losses": r[4], "flat": r[5],
+            "win_rate_eod": (r[3] / decided * 100) if decided > 0 else None,
+        })
+    return out
+
+
 async def run_outcome_backfill_loop(stop_event: asyncio.Event,
                                      interval_s: int = 1800) -> None:
     """Background task: backfill outcomes every 30 min during RTH + once
@@ -509,6 +726,15 @@ async def run_outcome_backfill_loop(stop_event: asyncio.Event,
                 print(f"[alert_outcomes] backfill: {stats}")
         except Exception as e:
             print(f"[alert_outcomes] backfill loop error: {e}")
+        # #60: confirm next-morning OI growth on prior-day flagged contracts.
+        # Idempotent + self-limiting (only NULL-status prior-day rows), so it's
+        # safe to run every loop — it no-ops once the morning pass is done.
+        try:
+            oi_stats = await run_oi_confirmation()
+            if oi_stats["processed"] > 0:
+                print(f"[alert_outcomes] OI confirmation: {oi_stats}")
+        except Exception as e:
+            print(f"[alert_outcomes] OI confirmation error: {e}")
     print("[alert_outcomes] backfill loop stopped")
 
 

@@ -216,6 +216,9 @@ TIER_3 = [
     "IONQ",   # IonQ — trapped-ion, most liquid pure-play quantum
     "RGTI",   # Rigetti — superconducting, NVDA partnership
     "QBTS",   # D-Wave Quantum — annealing, was in Stockbee scan 20%+ week
+    "QUBT",   # Quantum Computing Inc — added 6/8 (coverage gap)
+    "SOUN",   # SoundHound AI — added 6/8: high-flow AI voice name (coverage gap)
+    "OSCR",   # Oscar Health — added 6/8: liquid health-fintech flow name (coverage gap)
     # Nuclear / SMR (added 2026-04-16 — White House space nuclear directive Apr 14)
     "SMR", "NNE", "UUUU",
     # EVs & clean energy
@@ -229,6 +232,9 @@ TIER_3 = [
     "BAX", "RMD", "DXCM", "IDXX", "A",
     # Crypto-related (MSTR = BTC proxy, Qullamaggie + Stockbee momentum leader)
     "MARA", "RIOT", "MSTR", "CLSK", "HUT", "BITF",
+    "GLXY",  # Galaxy Digital — added 6/8: FL0WG0D $3M 31C 6/26 ASK whale (303%)
+             # was a coverage gap (not in universe → 0 alerts). Crypto/digital-asset.
+    "BMNR",  # Bitmine Immersion — ETH-treasury proxy (added 6/8, coverage gap)
     "CIFR",  # Cipher Mining — BTC miner pivoted to AI hosting (Fluidstack/Google deal)
     "WULF",  # TeraWulf — BTC miner. Added 5/19: UW unusual-flow tape showed
              # WULF $27C 7/17 with 78% bullish premium skew (most lopsided

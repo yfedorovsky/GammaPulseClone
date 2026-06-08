@@ -119,6 +119,24 @@ def _record_sent(ticker: str = "") -> None:
         _ticker_daily_count[key] = _ticker_daily_count.get(key, 0) + 1
 
 
+# High-value alert banners that must NEVER be eaten by the global rate_window
+# or per-ticker cooldown (task #52). These are our most valuable signals —
+# whale accumulation, multi-leg clusters, multi-tenor ladders, informed flow,
+# consolidated baskets. They bypass rate_window + cooldown (force) but are
+# still bounded by the per-ticker DAILY cap so a single hot name can't flood.
+_HIGH_VALUE_MARKERS = (
+    "WHALE ACCUMULATION", "MULTI-TENOR LADDER", "INTRADAY CLUSTER",
+    "CLUSTER FLOW", "CLUSTER RESOLUTION", "INFORMED FLOW", "🐋",
+    "BASKET",
+)
+
+
+def _is_high_value_alert(text: str) -> bool:
+    """True for whale/cluster/ladder/informed/basket banners (content-based so
+    it covers EVERY dispatch path, not just ones that remember force=True)."""
+    return any(m in text for m in _HIGH_VALUE_MARKERS)
+
+
 async def send(
     text: str,
     ticker: str = "",
@@ -143,6 +161,20 @@ async def send(
     s = get_settings()
     if not s.telegram_bot_token or not s.telegram_chat_id:
         return False
+
+    # Auto-elevate high-value alerts (task #52). The global 3-per-10-min
+    # rate_window was eating our best signals on a busy tape (MRVL/COIN/DDOG
+    # whales 6/8 — 85+ rate_window drops). Whale/cluster/ladder/informed/basket
+    # bypass the global rate_window (priority) so a hot TAPE can't drop them.
+    #
+    # IMPORTANT: priority, NOT force. force also bypassed the per-ticker
+    # cooldown, which on a hot tape let a single name fire 40× (12:48 6/8 spam
+    # flood). priority keeps the per-ticker cooldown as the anti-spam bound, so
+    # each name fires at most once per cooldown; the consolidated CLUSTER FLOW
+    # alert still captures a multi-leg whale in one message. Content-based →
+    # covers net_flow_signals, sweep_detector, whale_cluster, flow_alerts.
+    if not force and not priority and _is_high_value_alert(text):
+        priority = True
 
     allowed, drop_reason = _can_send(ticker, priority, force)
     if not allowed:
@@ -224,6 +256,33 @@ def format_flow_alert(alert: dict[str, Any]) -> str:
         whale_banner = (
             f"🐋🐋🐋 <b>WHALE ACCUMULATION</b> 🐋🐋🐋\n"
             f"<i>{wreasons}</i>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        )
+
+    # ⚠️ Dealer-structure tag (task #54 Layer 3). Set by flow_alerts when the
+    # SPY/QQQ index tape is short-gamma: "⚠️ SHORT-GAMMA TAPE (VOLATILE)" on a
+    # bullish alert, "✅ structure-confirmed (...)" on a bearish one. Purely
+    # informational in shadow mode (no scoring change); becomes a real
+    # down-weight once STRUCTURE_GATE_ACTIVE is flipped on.
+    structure_banner = ""
+    _stag = alert.get("_structure_tag")
+    if _stag:
+        _sreason = alert.get("_structure_reason") or ""
+        structure_banner = (
+            f"{_stag}\n"
+            f"<i>{_sreason}</i>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        )
+
+    # 🎯 Analogue confluence tag (task #55 follow-up). Set by flow_alerts when
+    # the alert's direction aligns with / fights the index base-rate bias.
+    analogue_banner = ""
+    _atag = alert.get("_analogue_tag")
+    if _atag:
+        _anote = alert.get("_analogue_note") or ""
+        analogue_banner = (
+            f"{_atag}\n"
+            f"<i>{_anote}</i>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
         )
     otype = (alert.get("option_type") or "").upper()
@@ -336,6 +395,8 @@ def format_flow_alert(alert: dict[str, Any]) -> str:
     return (
         f"{insider_banner}"
         f"{whale_banner}"
+        f"{structure_banner}"
+        f"{analogue_banner}"
         f"{emoji} <b>FLOW{conv_badge}</b>: {alert['ticker']}\n"
         f"<b>{action}</b>\n"
         f"${alert['strike']} {otype} {alert.get('expiration', '')}\n"

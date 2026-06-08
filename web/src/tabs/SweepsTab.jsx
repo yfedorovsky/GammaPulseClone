@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { api } from '../api.js';
 import { fmtBig } from '../lib/format.js';
 import HitRateStrip from '../components/HitRateStrip.jsx';
@@ -113,7 +113,16 @@ export default function SweepsTab({ onClickTicker }) {
   const [sortDesc, setSortDesc] = useState(true);
   const [groupMode, setGroupMode] = useState('contract');  // default to UW-style aggregated view
 
+  // Single-flight guard — prevents the auto-refresh interval from piling up
+  // concurrent /api/sweeps requests when the backend is slow. Without this,
+  // a slow query (e.g. heavy DB write contention) cascades: req#1 hangs 60s,
+  // refresh fires req#2/3/4/5/6 on top of it, the tab is stuck on "Loading"
+  // forever because no response ever completes before the next one queues.
+  const inFlightRef = useRef(false);
+
   const load = useCallback(async () => {
+    if (inFlightRef.current) return;  // skip if previous request still pending
+    inFlightRef.current = true;
     try {
       let since = 0;
       if (timeframe.seconds === 'today') {
@@ -125,7 +134,7 @@ export default function SweepsTab({ onClickTicker }) {
         since = Math.floor(Date.now() / 1000) - timeframe.seconds;
       }
       // else: null = 'All' → since=0 = everything
-      const resp = await api.sweeps(since, 500, '', minNotional);
+      const resp = await api.sweepsWithTimeout(since, 500, '', minNotional, 20_000);
       setSweeps(resp.sweeps || []);
       setError(null);
       setLastRefresh(Date.now());
@@ -133,6 +142,7 @@ export default function SweepsTab({ onClickTicker }) {
       setError(e.message || 'Failed to load sweeps');
     } finally {
       setLoading(false);
+      inFlightRef.current = false;
     }
   }, [timeframe, minNotional]);
 
