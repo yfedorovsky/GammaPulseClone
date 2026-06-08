@@ -1747,20 +1747,20 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                                     text = format_resolution_telegram(payload)
                                 else:
                                     text = format_hot_flow_summary(payload)
-                                # 2026-06-05 (#52): cluster summaries are already
-                                # COLLAPSED high-signal alerts (the filter exists
-                                # to turn N legs into 1 summary). They were being
-                                # sent with no force/priority and dying on the
-                                # 3-per-10-min global rate_window — the MRVL
-                                # 34-leg $195M cluster was dropped 104x today.
-                                # Force CLUSTER/RESOLUTION past the rate window
-                                # (daily_cap=6/ticker still bounds spam); give
-                                # HOT_FLOW priority (bypass rate_window, keep the
-                                # 1h ticker cooldown).
-                                _force_summary = _kind in ("CLUSTER", "CLUSTER_RESOLUTION")
+                                # Cluster summaries are COLLAPSED high-signal
+                                # alerts (N legs → 1 summary), so they ride
+                                # priority. #52-fix-2 (2026-06-08): they used to
+                                # also use force=True, which bypassed the per-
+                                # ticker cooldown AND the global ceiling — on a
+                                # broad tape ~20 tickers each clustered and
+                                # flooded Telegram every 15-30s. Now priority
+                                # ONLY: the bounded MAX_PRIORITY_PER_WINDOW +
+                                # per-ticker cooldown throttle the cross-ticker
+                                # flood, while genuine whale/informed/ladder
+                                # alerts (top-value) stay exempt and always fire.
                                 await send(
                                     text, ticker=payload.get("ticker", ""),
-                                    priority=True, force=_force_summary,
+                                    priority=True,
                                 )
                                 fired_summaries += 1
                                 # Performance database log (2026-05-20)

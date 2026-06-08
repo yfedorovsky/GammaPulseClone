@@ -37,6 +37,7 @@ def check(name, cond, detail=""):
 
 def _reset():
     tg._message_times.clear()
+    tg._priority_times.clear()
     tg._ticker_last_sent.clear()
     tg._ticker_daily_count.clear()
 
@@ -138,11 +139,73 @@ def test_per_ticker_cooldown_caps_spam():
     check("single name capped to 1 (no spam flood)", landed == 1, f"landed={landed}")
 
 
+# ── #52-fix-2: bounded priority window kills the cross-ticker flood ────────
+def _gate(text, ticker):
+    """Mimic send()'s gating (no httpx). Returns True if it would send."""
+    priority = tg._is_high_value_alert(text)
+    top = tg._is_top_value_alert(text)
+    allowed, _ = tg._can_send(ticker, priority=priority, force=False, top_value=top)
+    if allowed:
+        tg._record_sent(ticker, priority=priority, top_value=top)
+    return allowed
+
+
+def test_top_value_classification():
+    check("WHALE is top-value", tg._is_top_value_alert("🐋🐋🐋 WHALE ACCUMULATION 🐋🐋🐋"))
+    check("INFORMED is top-value", tg._is_top_value_alert("⚡ INFORMED FLOW (5/6)"))
+    check("LADDER is top-value", tg._is_top_value_alert("🐋 MULTI-TENOR LADDER"))
+    check("CLUSTER FLOW is NOT top-value",
+          tg._is_top_value_alert("🟢 CLUSTER FLOW: MRVL (BULLISH)") is False)
+    check("CLUSTER RESOLUTION is NOT top-value",
+          tg._is_top_value_alert("⚡ CLUSTER RESOLUTION — SMH") is False)
+
+
+def test_cluster_flood_bounded():
+    """20 distinct-ticker CLUSTER FLOW alerts on a broad tape → only
+    MAX_PRIORITY_PER_WINDOW land (the 6/8 flood fix)."""
+    _reset()
+    tickers = ["META", "AVGO", "AMD", "COIN", "ORCL", "LLY", "UNH", "HOOD",
+               "AAOI", "DELL", "SMH", "SOXX", "IWM", "BE", "COHR", "NVDA",
+               "MU", "TSLA", "GOOGL", "C"]
+    landed = sum(_gate(f"🟢 CLUSTER FLOW: {tk} (BULLISH) 8 legs in 60s", tk)
+                 for tk in tickers)
+    check("cluster flood capped at MAX_PRIORITY_PER_WINDOW",
+          landed == tg.MAX_PRIORITY_PER_WINDOW, f"landed={landed}")
+
+
+def test_top_value_exempt_when_priority_window_full():
+    """Even with the priority window saturated by clusters, a genuine WHALE
+    (top-value) still fires — never starved by cluster noise."""
+    _reset()
+    # saturate the priority window with cluster alerts on distinct tickers
+    for i in range(tg.MAX_PRIORITY_PER_WINDOW):
+        _gate(f"🟢 CLUSTER FLOW: CL{i} (BULLISH) 5 legs", f"CL{i}")
+    # a cluster on a NEW ticker is now dropped (window full)
+    cluster_blocked = not _gate("🟢 CLUSTER FLOW: XYZ (BULLISH) 5 legs", "XYZ")
+    check("further cluster dropped when window full", cluster_blocked)
+    # but a whale on a fresh ticker still lands
+    whale_lands = _gate("🐋🐋🐋 WHALE ACCUMULATION 🐋🐋🐋 $5M ASK", "ARM")
+    check("top-value whale still lands despite full priority window", whale_lands)
+
+
+def test_top_value_still_respects_cooldown():
+    """Top-value exemption is from the global window only — per-ticker cooldown
+    still prevents a single whale name from spamming."""
+    _reset()
+    first = _gate("🐋🐋🐋 WHALE ACCUMULATION 🐋🐋🐋", "ARM")
+    second = _gate("🐋🐋🐋 WHALE ACCUMULATION 🐋🐋🐋 $9M", "ARM")
+    check("first whale lands", first)
+    check("second same-ticker whale blocked by cooldown", not second)
+
+
 def main() -> int:
     print("=== telegram high-value auto-elevation (task #52) tests ===")
     for fn in (test_detector, test_rate_window_bypass, test_cooldown_bypass,
                test_daily_cap_bounds_force, test_busy_tape_bypass,
-               test_per_ticker_cooldown_caps_spam):
+               test_per_ticker_cooldown_caps_spam,
+               test_top_value_classification, test_cluster_flood_bounded,
+               test_top_value_exempt_when_priority_window_full,
+               test_top_value_still_respects_cooldown):
         print(f"\n{fn.__name__}:")
         fn()
     _reset()

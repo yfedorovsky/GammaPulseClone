@@ -9,6 +9,7 @@ All modules should use send() instead of their own Telegram calls.
 """
 from __future__ import annotations
 
+import os
 import time
 from collections import deque
 from typing import Any
@@ -18,9 +19,16 @@ import httpx
 from .config import get_settings
 
 # ── Rate limiting ─────────────────────────────────────────────────────
-MAX_MESSAGES_PER_WINDOW = 3      # max messages in the window
+MAX_MESSAGES_PER_WINDOW = 3      # max NORMAL messages in the window
 WINDOW_SECONDS = 600              # 10 minute window
 TICKER_COOLDOWN_SECONDS = 3600    # 1 hour per ticker
+
+# #52-fix-2 (2026-06-08): priority alerts used to bypass the global window
+# ENTIRELY, so on a broad tape ~20 different tickers each fired one CLUSTER FLOW
+# and flooded Telegram every 15-30s. Give priority its OWN bounded global window
+# instead of no ceiling. The rare TOP-value signals (whale/informed/ladder/
+# basket) stay exempt so a genuine whale is never starved by cluster noise.
+MAX_PRIORITY_PER_WINDOW = int(os.getenv("TELEGRAM_MAX_PRIORITY_PER_WINDOW", "6"))
 
 # Per-ticker DAILY cap. Max 5 alerts per ticker per session for normal
 # alerts; 6 for priority/force alerts. Resets each calendar day at
@@ -35,7 +43,8 @@ TICKER_COOLDOWN_SECONDS = 3600    # 1 hour per ticker
 PER_TICKER_DAILY_CAP = 5
 PER_TICKER_DAILY_CAP_PRIORITY = 6
 
-_message_times: deque[float] = deque()
+_message_times: deque[float] = deque()       # NORMAL alerts
+_priority_times: deque[float] = deque()      # PRIORITY (non-top) alerts — #52-fix-2
 _ticker_last_sent: dict[str, float] = {}
 # (ticker, day_str) -> count
 _ticker_daily_count: dict[tuple[str, str], int] = {}
@@ -48,26 +57,26 @@ def _today_str() -> str:
 
 
 def _can_send(
-    ticker: str = "", priority: bool = False, force: bool = False
+    ticker: str = "", priority: bool = False, force: bool = False,
+    top_value: bool = False,
 ) -> tuple[bool, str]:
     """Check if we can send a message without being spammy.
 
     Returns (allowed, reason). reason is "" when allowed; otherwise a
     short tag identifying why the message was dropped. Reason tags:
-      - "daily_cap"     — ticker hit PER_TICKER_DAILY_CAP[_PRIORITY]
-      - "rate_window"   — non-priority hit MAX_MESSAGES_PER_WINDOW
-      - "ticker_cd"     — ticker still in TICKER_COOLDOWN_SECONDS window
+      - "daily_cap"      — ticker hit PER_TICKER_DAILY_CAP[_PRIORITY]
+      - "rate_window"    — non-priority hit MAX_MESSAGES_PER_WINDOW
+      - "priority_window"— priority (cluster-class) hit MAX_PRIORITY_PER_WINDOW
+      - "ticker_cd"      — ticker still in TICKER_COOLDOWN_SECONDS window
 
-    Added 2026-05-20 (Option C — instrumentation-only). Behaviour
-    unchanged; the only change is that drops are now observable so we
-    can see WHY alerts don't reach Telegram during high-volume tape.
+    `top_value` = the rarest, highest-value alerts (whale/informed/ladder/
+    basket). They skip BOTH global windows so a genuine whale is never starved
+    by cluster noise — bounded only by per-ticker cooldown + daily cap.
     """
     now = time.time()
 
     # Per-ticker DAILY cap — applies to ALL alerts including force,
-    # but priority/force gets the higher cap (10/day vs 5/day).
-    # Without this gate, force=True alerts in the same ticker can spam
-    # 20+ times in a session.
+    # but priority/force gets the higher cap (6/day vs 5/day).
     if ticker:
         day = _today_str()
         key = (ticker, day)
@@ -78,15 +87,24 @@ def _can_send(
     if force:
         return True, ""  # Mir Discord signals bypass per-message rate limits
 
-    # Priority messages (A/A+ signals) bypass rate limit but not ticker cooldown
-    if not priority:
-        # Trim old timestamps
+    if priority:
+        # #52-fix-2: priority no longer bypasses the global ceiling entirely.
+        # Top-value (whale/informed/ladder/basket) stays exempt; everything
+        # else priority (cluster flow/resolution) goes through a SEPARATE,
+        # more generous bounded window so a broad tape can't flood.
+        if not top_value:
+            while _priority_times and _priority_times[0] < now - WINDOW_SECONDS:
+                _priority_times.popleft()
+            if len(_priority_times) >= MAX_PRIORITY_PER_WINDOW:
+                return False, "priority_window"
+    else:
+        # Normal alerts — the tight global window.
         while _message_times and _message_times[0] < now - WINDOW_SECONDS:
             _message_times.popleft()
         if len(_message_times) >= MAX_MESSAGES_PER_WINDOW:
             return False, "rate_window"
 
-    # Per-ticker cooldown
+    # Per-ticker cooldown (applies to priority + normal; force already returned)
     if ticker:
         last = _ticker_last_sent.get(ticker, 0)
         if now - last < TICKER_COOLDOWN_SECONDS:
@@ -109,9 +127,16 @@ def reset_drop_stats() -> None:
         _drop_counts[k] = 0
 
 
-def _record_sent(ticker: str = "") -> None:
+def _record_sent(ticker: str = "", priority: bool = False,
+                 top_value: bool = False) -> None:
     now = time.time()
-    _message_times.append(now)
+    # Account against the window the alert actually consumed: priority
+    # (non-top) → priority window; everything else → normal window. Top-value
+    # consumes neither global window (only per-ticker bounds).
+    if priority and not top_value:
+        _priority_times.append(now)
+    elif not priority:
+        _message_times.append(now)
     if ticker:
         _ticker_last_sent[ticker] = now
         # Bump daily counter
@@ -130,11 +155,26 @@ _HIGH_VALUE_MARKERS = (
     "BASKET",
 )
 
+# TOP-value subset — the rarest, highest-conviction signals. These skip BOTH
+# global windows (only per-ticker cooldown + daily cap bound them) so they're
+# never starved by the much-more-frequent CLUSTER FLOW noise on a broad tape.
+# CLUSTER FLOW / CLUSTER RESOLUTION / INTRADAY CLUSTER are high-value but NOT
+# top — they ride the bounded priority window (MAX_PRIORITY_PER_WINDOW).
+_TOP_VALUE_MARKERS = (
+    "WHALE ACCUMULATION", "MULTI-TENOR LADDER", "INFORMED FLOW", "🐋", "BASKET",
+)
+
 
 def _is_high_value_alert(text: str) -> bool:
     """True for whale/cluster/ladder/informed/basket banners (content-based so
     it covers EVERY dispatch path, not just ones that remember force=True)."""
     return any(m in text for m in _HIGH_VALUE_MARKERS)
+
+
+def _is_top_value_alert(text: str) -> bool:
+    """True only for the rarest high-conviction signals (whale/informed/ladder/
+    basket) — exempt from both global windows."""
+    return any(m in text for m in _TOP_VALUE_MARKERS)
 
 
 async def send(
@@ -176,7 +216,10 @@ async def send(
     if not force and not priority and _is_high_value_alert(text):
         priority = True
 
-    allowed, drop_reason = _can_send(ticker, priority, force)
+    # Top-value (whale/informed/ladder/basket) is exempt from both global
+    # windows; cluster-class priority rides the bounded priority window.
+    top_value = _is_top_value_alert(text)
+    allowed, drop_reason = _can_send(ticker, priority, force, top_value=top_value)
     if not allowed:
         # Option C instrumentation (2026-05-20): observe WHY each alert
         # was dropped so we can later distinguish rate-limiter noise from
@@ -205,7 +248,7 @@ async def send(
                 },
                 timeout=10,
             )
-        _record_sent(ticker)
+        _record_sent(ticker, priority=priority, top_value=top_value)
         return True
     except Exception as e:
         print(f"[TELEGRAM] send failed: {e}")
