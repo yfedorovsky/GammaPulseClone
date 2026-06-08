@@ -42,3 +42,8 @@ paper_executions.db
 
 # OAuth token caches (sensitive)
 .etrade_tokens.json
+
+# AutoResearch (Phase 1+) — offline research venv + run artifacts
+.venv-autoresearch/
+autoresearch/_artifacts/
+autoresearch/trials_ledger.json

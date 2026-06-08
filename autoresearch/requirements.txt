@@ -1,0 +1,33 @@
+# AutoResearch loop — Phase 1+ dependencies (OFFLINE research venv ONLY).
+#
+# Install into a SEPARATE venv, never the live trading app's environment, so the
+# latency-critical live process stays clean:
+#
+#   py -3.12 -m venv .venv-autoresearch
+#   .venv-autoresearch/Scripts/python -m pip install -r autoresearch/requirements.txt
+#
+# Python 3.12 is required: arch's binary wheels + the scientific stack below are
+# the versions verified on 2026-06-08 on this machine.
+#
+# DEPENDENCY DECISION (2026-06-08): the charter named pypbo + mlfinlab + arch.
+# Reality on PyPI:
+#   - arch       : available, maintained  -> USED (Hansen SPA, stationary bootstrap).
+#   - pypbo      : NOT on PyPI (GitHub-only, unmaintained, pins old pandas).
+#   - mlfinlab   : NOT on PyPI (Hudson & Thames took it commercial; OSS pulled).
+# Decision (human-approved): VENDOR the DSR / PBO / MinTRL/MinBTL and
+# CPCV/purge/embargo math directly into autoresearch/ with paper citations and
+# deterministic tests, rather than depend on unmaintained/conflicting packages.
+# Only arch is an external runtime dep.
+
+arch==8.0.0
+
+# --- transitively pinned by arch (captured via pip freeze for reproducibility) ---
+numpy==2.4.6
+scipy==1.17.1
+pandas==3.0.3
+statsmodels==0.14.6
+patsy==1.0.2
+python-dateutil==2.9.0.post0
+packaging==26.2
+six==1.17.0
+tzdata==2026.2
