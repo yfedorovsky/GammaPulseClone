@@ -10,6 +10,7 @@ All modules should use send() instead of their own Telegram calls.
 from __future__ import annotations
 
 import os
+import re
 import time
 from collections import deque
 from typing import Any
@@ -34,6 +35,15 @@ MAX_PRIORITY_PER_WINDOW = int(os.getenv("TELEGRAM_MAX_PRIORITY_PER_WINDOW", "6")
 # top-value (it fired 11× — too frequent to be exempt).
 MAX_TOP_VALUE_PER_WINDOW = int(os.getenv("TELEGRAM_MAX_TOP_VALUE_PER_WINDOW", "6"))
 
+# #52-fix-4 (2026-06-08): the bounded windows were pure FIFO — a 26-leg MSFT
+# CLUSTER was dropped because smaller clusters filled the 6 slots first. Add
+# significance-ranked admission: when a window is full (soft cap), an alert may
+# still go through if it's MORE significant than the weakest entry currently in
+# the window, up to a HARD cap. So the big one is never dropped because small
+# ones arrived first; the hard cap still bounds a pathological escalating stream.
+MAX_PRIORITY_HARD = MAX_PRIORITY_PER_WINDOW * 2
+MAX_TOP_VALUE_HARD = MAX_TOP_VALUE_PER_WINDOW * 2
+
 # Per-ticker DAILY cap. Max 5 alerts per ticker per session for normal
 # alerts; 6 for priority/force alerts. Resets each calendar day at
 # midnight ET.
@@ -47,9 +57,11 @@ MAX_TOP_VALUE_PER_WINDOW = int(os.getenv("TELEGRAM_MAX_TOP_VALUE_PER_WINDOW", "6
 PER_TICKER_DAILY_CAP = 5
 PER_TICKER_DAILY_CAP_PRIORITY = 6
 
-_message_times: deque[float] = deque()       # NORMAL alerts
-_priority_times: deque[float] = deque()      # PRIORITY (cluster-class) — #52-fix-2
-_top_value_times: deque[float] = deque()     # TOP-value (whale/informed) — #52-fix-3
+_message_times: deque[float] = deque()              # NORMAL alerts (ts only)
+# PRIORITY/TOP windows hold (ts, significance) so a bigger alert can preempt a
+# weaker one when the window is full (#52-fix-4).
+_priority_times: deque[tuple[float, float]] = deque()    # cluster-class
+_top_value_times: deque[tuple[float, float]] = deque()   # whale/informed/ladder
 _ticker_last_sent: dict[str, float] = {}
 # (ticker, day_str) -> count
 _ticker_daily_count: dict[tuple[str, str], int] = {}
@@ -61,9 +73,49 @@ def _today_str() -> str:
     return _dt.datetime.now().date().isoformat()
 
 
+_SIG_COUNT_RE = re.compile(r"(\d+)\s*(?:legs|strikes|expirations)")
+# $ amount with an explicit M/B suffix (avoids matching bare strike prices like
+# "$335" in a cluster's "$335–$510" strike range — those carry no M/B).
+_SIG_NOTIONAL_RE = re.compile(r"\$(\d+(?:\.\d+)?)\s*([MB])")
+
+
+def _alert_significance(text: str) -> float:
+    """Coarse significance score for ranked window admission. Combines the
+    multi-leg/strike/expiration breadth (cluster size) with $M/$B notional.
+    Bigger = more likely to preempt a weaker alert when a window is full."""
+    sig = 0.0
+    m = _SIG_COUNT_RE.search(text)
+    if m:
+        sig += float(m.group(1))
+    d = _SIG_NOTIONAL_RE.search(text)
+    if d:
+        sig += float(d.group(1)) * (1000.0 if d.group(2) == "B" else 1.0)
+    return sig
+
+
+def _window_admits(window: "deque[tuple[float, float]]", now: float,
+                   sig: float, soft: int, hard: int) -> bool:
+    """Significance-ranked admission (#52-fix-4). Trims expired entries, then:
+      - under the SOFT cap  → always admit
+      - between soft & HARD → admit only if `sig` beats the weakest entry now in
+        the window (so a bigger alert is never blocked by smaller ones that
+        merely arrived first)
+      - at/above HARD cap   → block (bounds a pathological escalating stream)
+    """
+    while window and window[0][0] < now - WINDOW_SECONDS:
+        window.popleft()
+    n = len(window)
+    if n < soft:
+        return True
+    if n < hard:
+        weakest = min(s for _, s in window)
+        return sig > weakest
+    return False
+
+
 def _can_send(
     ticker: str = "", priority: bool = False, force: bool = False,
-    top_value: bool = False,
+    top_value: bool = False, significance: float = 0.0,
 ) -> tuple[bool, str]:
     """Check if we can send a message without being spammy.
 
@@ -93,19 +145,18 @@ def _can_send(
         return True, ""  # Mir Discord signals bypass per-message rate limits
 
     if priority:
-        # #52-fix-2/3: priority no longer bypasses the global ceiling. Top-value
-        # (whale/informed/ladder) rides a SEPARATE, more generous window so it's
-        # rarely starved by cluster noise; cluster-class rides the tighter
-        # priority window. Neither is unbounded any more.
+        # #52-fix-2/3/4: priority no longer bypasses the global ceiling. Top-
+        # value (whale/informed/ladder) rides a SEPARATE, more generous window;
+        # cluster-class rides the tighter priority window. Both use
+        # significance-ranked admission so a bigger alert preempts smaller ones
+        # rather than being dropped because they filled the window first.
         if top_value:
-            while _top_value_times and _top_value_times[0] < now - WINDOW_SECONDS:
-                _top_value_times.popleft()
-            if len(_top_value_times) >= MAX_TOP_VALUE_PER_WINDOW:
+            if not _window_admits(_top_value_times, now, significance,
+                                  MAX_TOP_VALUE_PER_WINDOW, MAX_TOP_VALUE_HARD):
                 return False, "top_value_window"
         else:
-            while _priority_times and _priority_times[0] < now - WINDOW_SECONDS:
-                _priority_times.popleft()
-            if len(_priority_times) >= MAX_PRIORITY_PER_WINDOW:
+            if not _window_admits(_priority_times, now, significance,
+                                  MAX_PRIORITY_PER_WINDOW, MAX_PRIORITY_HARD):
                 return False, "priority_window"
     else:
         # Normal alerts — the tight global window.
@@ -138,13 +189,14 @@ def reset_drop_stats() -> None:
 
 
 def _record_sent(ticker: str = "", priority: bool = False,
-                 top_value: bool = False) -> None:
+                 top_value: bool = False, significance: float = 0.0) -> None:
     now = time.time()
-    # Account against the window the alert actually consumed.
+    # Account against the window the alert actually consumed. Priority/top
+    # windows store (ts, significance) for ranked preemption (#52-fix-4).
     if priority and top_value:
-        _top_value_times.append(now)
+        _top_value_times.append((now, significance))
     elif priority:
-        _priority_times.append(now)
+        _priority_times.append((now, significance))
     else:
         _message_times.append(now)
     if ticker:
@@ -227,10 +279,13 @@ async def send(
     if not force and not priority and _is_high_value_alert(text):
         priority = True
 
-    # Top-value (whale/informed/ladder/basket) is exempt from both global
-    # windows; cluster-class priority rides the bounded priority window.
+    # Top-value (whale/informed/ladder) rides its own bounded window; cluster-
+    # class priority rides the tighter one. Significance (cluster size + $)
+    # lets a bigger alert preempt smaller ones when a window is full (#52-fix-4).
     top_value = _is_top_value_alert(text)
-    allowed, drop_reason = _can_send(ticker, priority, force, top_value=top_value)
+    significance = _alert_significance(text)
+    allowed, drop_reason = _can_send(ticker, priority, force,
+                                     top_value=top_value, significance=significance)
     if not allowed:
         # Option C instrumentation (2026-05-20): observe WHY each alert
         # was dropped so we can later distinguish rate-limiter noise from
@@ -259,7 +314,8 @@ async def send(
                 },
                 timeout=10,
             )
-        _record_sent(ticker, priority=priority, top_value=top_value)
+        _record_sent(ticker, priority=priority, top_value=top_value,
+                     significance=significance)
         return True
     except Exception as e:
         print(f"[TELEGRAM] send failed: {e}")

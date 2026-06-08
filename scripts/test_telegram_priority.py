@@ -145,9 +145,11 @@ def _gate(text, ticker):
     """Mimic send()'s gating (no httpx). Returns True if it would send."""
     priority = tg._is_high_value_alert(text)
     top = tg._is_top_value_alert(text)
-    allowed, _ = tg._can_send(ticker, priority=priority, force=False, top_value=top)
+    sig = tg._alert_significance(text)
+    allowed, _ = tg._can_send(ticker, priority=priority, force=False,
+                              top_value=top, significance=sig)
     if allowed:
-        tg._record_sent(ticker, priority=priority, top_value=top)
+        tg._record_sent(ticker, priority=priority, top_value=top, significance=sig)
     return allowed
 
 
@@ -167,12 +169,12 @@ def test_top_value_classification():
 
 
 def test_top_value_window_is_bounded():
-    """#52-fix-3: even genuine whales are now globally bounded (not unlimited) —
-    distinct-ticker whales cap at MAX_TOP_VALUE_PER_WINDOW."""
+    """#52-fix-3: even genuine whales are globally bounded (not unlimited).
+    Equal-significance whales cap at the SOFT window (no preemption)."""
     _reset()
-    landed = sum(_gate(f"🐋🐋🐋 WHALE ACCUMULATION 🐋🐋🐋 ${i}M ASK", f"WH{i}")
+    landed = sum(_gate(f"🐋🐋🐋 WHALE ACCUMULATION 🐋🐋🐋 $5M ASK", f"WH{i}")
                  for i in range(20))
-    check("top-value flood capped at MAX_TOP_VALUE_PER_WINDOW",
+    check("equal-sig top-value flood capped at MAX_TOP_VALUE_PER_WINDOW",
           landed == tg.MAX_TOP_VALUE_PER_WINDOW, f"landed={landed}")
 
 
@@ -222,6 +224,42 @@ def test_top_value_still_respects_cooldown():
     check("second same-ticker whale blocked by cooldown", not second)
 
 
+# ── #52-fix-4: significance-ranked preemption ─────────────────────────────
+def test_significance_scorer():
+    check("legs parsed", tg._alert_significance("CLUSTER FLOW: MSFT 26 legs in 60s $335–$510") == 26)
+    check("strikes parsed", tg._alert_significance("BASKET — MRVL 15 strikes") == 15)
+    check("$M notional parsed", tg._alert_significance("WHALE ACCUMULATION $3.3M ASK") == 3.3)
+    check("$B scaled to thousands", tg._alert_significance("WHALE $1.5B ASK") == 1500.0)
+    check("strike range NOT counted as notional ($335–$510)",
+          tg._alert_significance("CLUSTER FLOW: MSFT 26 legs $335–$510") == 26)
+    check("legs + $M combine",
+          tg._alert_significance("BASKET 10 strikes $4M") == 14.0)
+
+
+def test_big_cluster_preempts_when_full():
+    """The MSFT case: window full of small clusters, a 26-leg cluster still
+    gets through by preempting (significance > weakest)."""
+    _reset()
+    for i in range(tg.MAX_PRIORITY_PER_WINDOW):  # fill with small 3-leg clusters
+        _gate(f"🟢 CLUSTER FLOW: SM{i} (BULLISH) 3 legs in 60s", f"SM{i}")
+    # equal-size small cluster is dropped (no preemption)
+    small_blocked = not _gate("🟢 CLUSTER FLOW: SMALL (BULLISH) 3 legs", "SMALL")
+    check("equal small cluster dropped when full", small_blocked)
+    # the big 26-leg MSFT cluster preempts and lands
+    big_lands = _gate("🟢 CLUSTER FLOW: MSFT (BULLISH) 26 legs in 60s $335–$510", "MSFT")
+    check("26-leg MSFT cluster preempts a full window of small clusters", big_lands)
+
+
+def test_preemption_bounded_by_hard_cap():
+    """Escalating significance can preempt, but only up to the HARD cap — not
+    unbounded."""
+    _reset()
+    landed = sum(_gate(f"🟢 CLUSTER FLOW: T{i} (BULLISH) {i+1} legs", f"T{i}")
+                 for i in range(30))  # strictly ascending leg counts
+    check("escalating-sig clusters bounded at MAX_PRIORITY_HARD",
+          landed == tg.MAX_PRIORITY_HARD, f"landed={landed} hard={tg.MAX_PRIORITY_HARD}")
+
+
 def main() -> int:
     print("=== telegram high-value auto-elevation (task #52) tests ===")
     for fn in (test_detector, test_rate_window_bypass, test_cooldown_bypass,
@@ -230,7 +268,9 @@ def main() -> int:
                test_top_value_classification, test_cluster_flood_bounded,
                test_top_value_exempt_when_priority_window_full,
                test_top_value_still_respects_cooldown,
-               test_top_value_window_is_bounded, test_basket_rides_priority_window):
+               test_top_value_window_is_bounded, test_basket_rides_priority_window,
+               test_significance_scorer, test_big_cluster_preempts_when_full,
+               test_preemption_bounded_by_hard_cap):
         print(f"\n{fn.__name__}:")
         fn()
     _reset()
