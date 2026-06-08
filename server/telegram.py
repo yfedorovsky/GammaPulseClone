@@ -25,10 +25,14 @@ TICKER_COOLDOWN_SECONDS = 3600    # 1 hour per ticker
 
 # #52-fix-2 (2026-06-08): priority alerts used to bypass the global window
 # ENTIRELY, so on a broad tape ~20 different tickers each fired one CLUSTER FLOW
-# and flooded Telegram every 15-30s. Give priority its OWN bounded global window
-# instead of no ceiling. The rare TOP-value signals (whale/informed/ladder/
-# basket) stay exempt so a genuine whale is never starved by cluster noise.
+# and flooded Telegram every 15-30s. Give priority its OWN bounded global window.
 MAX_PRIORITY_PER_WINDOW = int(os.getenv("TELEGRAM_MAX_PRIORITY_PER_WINDOW", "6"))
+# #52-fix-3 (2026-06-08): the TOP-value exemption (whale/informed/ladder) was
+# UNBOUNDED globally — validation showed ~14 distinct whale/basket tickers each
+# firing one on a broad tape, still spammy. Bound top-value too (a generous
+# window so genuine whales are rarely starved), and demote BASKET out of
+# top-value (it fired 11× — too frequent to be exempt).
+MAX_TOP_VALUE_PER_WINDOW = int(os.getenv("TELEGRAM_MAX_TOP_VALUE_PER_WINDOW", "6"))
 
 # Per-ticker DAILY cap. Max 5 alerts per ticker per session for normal
 # alerts; 6 for priority/force alerts. Resets each calendar day at
@@ -44,7 +48,8 @@ PER_TICKER_DAILY_CAP = 5
 PER_TICKER_DAILY_CAP_PRIORITY = 6
 
 _message_times: deque[float] = deque()       # NORMAL alerts
-_priority_times: deque[float] = deque()      # PRIORITY (non-top) alerts — #52-fix-2
+_priority_times: deque[float] = deque()      # PRIORITY (cluster-class) — #52-fix-2
+_top_value_times: deque[float] = deque()     # TOP-value (whale/informed) — #52-fix-3
 _ticker_last_sent: dict[str, float] = {}
 # (ticker, day_str) -> count
 _ticker_daily_count: dict[tuple[str, str], int] = {}
@@ -88,11 +93,16 @@ def _can_send(
         return True, ""  # Mir Discord signals bypass per-message rate limits
 
     if priority:
-        # #52-fix-2: priority no longer bypasses the global ceiling entirely.
-        # Top-value (whale/informed/ladder/basket) stays exempt; everything
-        # else priority (cluster flow/resolution) goes through a SEPARATE,
-        # more generous bounded window so a broad tape can't flood.
-        if not top_value:
+        # #52-fix-2/3: priority no longer bypasses the global ceiling. Top-value
+        # (whale/informed/ladder) rides a SEPARATE, more generous window so it's
+        # rarely starved by cluster noise; cluster-class rides the tighter
+        # priority window. Neither is unbounded any more.
+        if top_value:
+            while _top_value_times and _top_value_times[0] < now - WINDOW_SECONDS:
+                _top_value_times.popleft()
+            if len(_top_value_times) >= MAX_TOP_VALUE_PER_WINDOW:
+                return False, "top_value_window"
+        else:
             while _priority_times and _priority_times[0] < now - WINDOW_SECONDS:
                 _priority_times.popleft()
             if len(_priority_times) >= MAX_PRIORITY_PER_WINDOW:
@@ -130,12 +140,12 @@ def reset_drop_stats() -> None:
 def _record_sent(ticker: str = "", priority: bool = False,
                  top_value: bool = False) -> None:
     now = time.time()
-    # Account against the window the alert actually consumed: priority
-    # (non-top) → priority window; everything else → normal window. Top-value
-    # consumes neither global window (only per-ticker bounds).
-    if priority and not top_value:
+    # Account against the window the alert actually consumed.
+    if priority and top_value:
+        _top_value_times.append(now)
+    elif priority:
         _priority_times.append(now)
-    elif not priority:
+    else:
         _message_times.append(now)
     if ticker:
         _ticker_last_sent[ticker] = now
@@ -155,13 +165,14 @@ _HIGH_VALUE_MARKERS = (
     "BASKET",
 )
 
-# TOP-value subset — the rarest, highest-conviction signals. These skip BOTH
-# global windows (only per-ticker cooldown + daily cap bound them) so they're
-# never starved by the much-more-frequent CLUSTER FLOW noise on a broad tape.
-# CLUSTER FLOW / CLUSTER RESOLUTION / INTRADAY CLUSTER are high-value but NOT
-# top — they ride the bounded priority window (MAX_PRIORITY_PER_WINDOW).
+# TOP-value subset — the rarest, highest-conviction signals. They ride a
+# separate, generous bounded window (MAX_TOP_VALUE_PER_WINDOW) so they're rarely
+# starved by the much-more-frequent CLUSTER FLOW noise. CLUSTER FLOW /
+# RESOLUTION / INTRADAY CLUSTER and BASKET ride the tighter priority window —
+# BASKET was demoted from top-value (#52-fix-3) because it fired across ~11
+# tickers on a broad tape, too frequent to be exempt.
 _TOP_VALUE_MARKERS = (
-    "WHALE ACCUMULATION", "MULTI-TENOR LADDER", "INFORMED FLOW", "🐋", "BASKET",
+    "WHALE ACCUMULATION", "MULTI-TENOR LADDER", "INFORMED FLOW", "🐋",
 )
 
 

@@ -38,6 +38,7 @@ def check(name, cond, detail=""):
 def _reset():
     tg._message_times.clear()
     tg._priority_times.clear()
+    tg._top_value_times.clear()
     tg._ticker_last_sent.clear()
     tg._ticker_daily_count.clear()
 
@@ -158,6 +159,29 @@ def test_top_value_classification():
           tg._is_top_value_alert("🟢 CLUSTER FLOW: MRVL (BULLISH)") is False)
     check("CLUSTER RESOLUTION is NOT top-value",
           tg._is_top_value_alert("⚡ CLUSTER RESOLUTION — SMH") is False)
+    # #52-fix-3: BASKET demoted out of top-value (too frequent to be exempt)
+    check("BASKET is NOT top-value (demoted)",
+          tg._is_top_value_alert("🔴 BASKET — MRVL 15 strikes") is False)
+    check("BASKET still high-value (rides priority window)",
+          tg._is_high_value_alert("🔴 BASKET — MRVL 15 strikes"))
+
+
+def test_top_value_window_is_bounded():
+    """#52-fix-3: even genuine whales are now globally bounded (not unlimited) —
+    distinct-ticker whales cap at MAX_TOP_VALUE_PER_WINDOW."""
+    _reset()
+    landed = sum(_gate(f"🐋🐋🐋 WHALE ACCUMULATION 🐋🐋🐋 ${i}M ASK", f"WH{i}")
+                 for i in range(20))
+    check("top-value flood capped at MAX_TOP_VALUE_PER_WINDOW",
+          landed == tg.MAX_TOP_VALUE_PER_WINDOW, f"landed={landed}")
+
+
+def test_basket_rides_priority_window():
+    """BASKET now shares the bounded priority window with clusters."""
+    _reset()
+    landed = sum(_gate(f"🔴 BASKET — B{i} 15 strikes CALL", f"B{i}") for i in range(20))
+    check("basket flood capped at MAX_PRIORITY_PER_WINDOW",
+          landed == tg.MAX_PRIORITY_PER_WINDOW, f"landed={landed}")
 
 
 def test_cluster_flood_bounded():
@@ -205,7 +229,8 @@ def main() -> int:
                test_per_ticker_cooldown_caps_spam,
                test_top_value_classification, test_cluster_flood_bounded,
                test_top_value_exempt_when_priority_window_full,
-               test_top_value_still_respects_cooldown):
+               test_top_value_still_respects_cooldown,
+               test_top_value_window_is_bounded, test_basket_rides_priority_window):
         print(f"\n{fn.__name__}:")
         fn()
     _reset()
