@@ -375,6 +375,11 @@ async def _send_exit_telegram(signal: dict[str, Any]) -> None:
                 json={"chat_id": s.telegram_chat_id, "text": text},
                 timeout=10,
             )
+        try:
+            from . import telegram_audit
+            telegram_audit.record_sent(text=text, ticker=signal.get("ticker", ""))
+        except Exception:
+            pass
     except Exception as e:
         print(f"[TELEGRAM] exit signal send failed: {e}")
 

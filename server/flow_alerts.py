@@ -929,6 +929,32 @@ def get_recent_flow(ticker: str, minutes: int = 30) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+# Side-source instrumentation (2026-06-08). A flow-alert side comes from EITHER
+# the OPRA tick tracker (authoritative aggregate) OR the snapshot `_detect_side`
+# fallback (a single-`last` GUESS that demonstrably mis-sides block trades —
+# MSTR 125C 6/8 printed near the ask in the snapshot while 99% of 51,847 contracts
+# actually hit the bid on the tape). This counter measures how often we're guessing
+# so the whale-tag-on-unconfirmed-side fix can be sized against real data. Pure
+# visibility — no behaviour change.
+_SIDE_SRC = {"tick": 0, "snapshot": 0}
+_SIDE_SRC_LAST_LOG = [0.0]
+
+
+def _record_side_source(src: str) -> None:
+    try:
+        _SIDE_SRC[src] = _SIDE_SRC.get(src, 0) + 1
+        now = time.time()
+        if now - _SIDE_SRC_LAST_LOG[0] >= 300:
+            t, s = _SIDE_SRC["tick"], _SIDE_SRC["snapshot"]
+            tot = t + s or 1
+            print(f"[SIDE_SRC] tick={t} snapshot={s} "
+                  f"snapshot_rate={100*s/tot:.0f}% (cumulative; snapshot sides are "
+                  f"unconfirmed guesses)", flush=True)
+            _SIDE_SRC_LAST_LOG[0] = now
+    except Exception:
+        pass
+
+
 def _detect_side(
     bid: float,
     ask: float,
@@ -1237,6 +1263,11 @@ async def _send_telegram(alert: dict[str, Any]) -> None:
                 json={"chat_id": s.telegram_chat_id, "text": text},
                 timeout=10,
             )
+        try:
+            from . import telegram_audit
+            telegram_audit.record_sent(text=text, ticker=alert.get("ticker", ""))
+        except Exception:
+            pass
     except Exception as e:
         print(f"[TELEGRAM] send failed: {e}")
 
@@ -1386,15 +1417,20 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
             side = _get_tick_side_tracker().latest_side(
                 ticker, strike, opt_exp, otype,
             )
+            side_source = "tick"
             if side is None:
                 # Pass delta/vol/oi/notional so the snapshot fallback can
                 # apply directional bias on deep-ITM, V/OI-shock, and
                 # stale-last contracts (Bug #2 layered fix 2026-05-12).
+                # NOTE: this side is a GUESS — a single `last` can't see where
+                # block size actually executed (MSTR 125C 6/8 false ASK).
+                side_source = "snapshot"
                 est_notional = vol * last * 100 if last > 0 else 0
                 side = _detect_side(
                     bid, ask, last,
                     delta=delta, vol=vol, oi=oi, notional=est_notional,
                 )
+            _record_side_source(side_source)
             sentiment = _detect_sentiment(otype, side)
             notional = vol * last * 100
 

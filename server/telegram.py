@@ -301,6 +301,11 @@ async def send(
             print(f"[TELEGRAM-DROP] reason={drop_reason} ticker={tag}{prio_str} text={preview!r}")
         except Exception:
             pass
+        try:
+            from . import telegram_audit
+            telegram_audit.record_drop(text=text, ticker=ticker, drop_reason=drop_reason)
+        except Exception:
+            pass
         return False
 
     try:
@@ -316,6 +321,11 @@ async def send(
             )
         _record_sent(ticker, priority=priority, top_value=top_value,
                      significance=significance)
+        try:
+            from . import telegram_audit
+            telegram_audit.record_sent(text=text, ticker=ticker)
+        except Exception:
+            pass
         return True
     except Exception as e:
         print(f"[TELEGRAM] send failed: {e}")
