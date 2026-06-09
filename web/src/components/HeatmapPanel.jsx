@@ -194,8 +194,13 @@ function HeatmapPanel({ ticker, panelIdx, expLabelOverride, matrixKing }) {
   // Expected-range indicator for the header (floor–ceiling)
   const rangeText = floor && ceiling ? `$${floor}–$${ceiling}` : '';
 
-  // Expected Move: spot * IV * sqrt(1/252)
-  const iv = exp_data.iv || data?.iv || 0;
+  // Expected Move (1 trading day): spot * IV * sqrt(1/252).
+  // The backend reports IV in PERCENT (e.g. 17.3), but this formula needs a
+  // FRACTION (0.173). Without normalizing, EM printed 100x too large — SPY showed
+  // "EM ±$799.05 (109.1%)" instead of the correct "±$7.99 (1.1%)". Normalize
+  // defensively: anything > 1 is treated as a percent and divided by 100.
+  const ivRaw = exp_data.iv || data?.iv || 0;
+  const iv = ivRaw > 1 ? ivRaw / 100 : ivRaw;
   const expectedMove = useMemo(() => {
     if (!spot || !iv) return null;
     const em = spot * iv * Math.sqrt(1 / 252);

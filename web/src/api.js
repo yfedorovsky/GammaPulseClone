@@ -118,6 +118,8 @@ export function connectPriceStream(onPrice, initialTickers = []) {
   let pollTimer = null;
   let tickers = [...initialTickers];
   let closed = false;
+  let lastStreamMsgAt = Date.now();  // last NATIVE (ws/sse) message — drives reconnect
+  let watchdog = null;
 
   function startPolling() {
     mode = 'poll';
@@ -152,6 +154,7 @@ export function connectPriceStream(onPrice, initialTickers = []) {
     }, 6000);
     es.onmessage = (ev) => {
       gotFirst = true;
+      lastStreamMsgAt = Date.now();
       clearTimeout(fallbackTimer);
       try {
         onPrice(JSON.parse(ev.data));
@@ -187,6 +190,7 @@ export function connectPriceStream(onPrice, initialTickers = []) {
       }
     };
     ws.onmessage = (ev) => {
+      lastStreamMsgAt = Date.now();
       try {
         onPrice(JSON.parse(ev.data));
       } catch {}
@@ -205,15 +209,39 @@ export function connectPriceStream(onPrice, initialTickers = []) {
 
   startWS();
 
+  // Robustness watchdog (fixes the silent-stale-quote bug). A WebSocket can go
+  // half-open on a backend restart and NEVER fire onclose, so the WS→SSE→poll
+  // fallback never triggers and the quote freezes. Every SAFETY_MS we (1) do an
+  // unconditional REST refresh so the quote is never staler than the interval,
+  // and (2) if the native stream has been silent past RECONNECT_MS while still in
+  // ws mode, tear the chain down and rebuild it (auto-falls to SSE/poll).
+  const SAFETY_MS = 30000;
+  const RECONNECT_MS = 60000;
+  watchdog = setInterval(async () => {
+    if (closed || !tickers.length) return;
+    try {
+      onPrice(await api.quotes(tickers));   // belt-and-suspenders refresh
+    } catch { /* ignore; retry next tick */ }
+    if (mode === 'ws' && Date.now() - lastStreamMsgAt > RECONNECT_MS) {
+      try { ws?.close(); } catch {}
+      try { es?.close(); } catch {}
+      ws = null;
+      es = null;
+      startWS();   // rebuild; openTimer/onclose chain handles SSE/poll fallback
+    }
+  }, SAFETY_MS);
+
   return {
     close() {
       closed = true;
       try { ws?.close(); } catch {}
       try { es?.close(); } catch {}
       if (pollTimer) clearInterval(pollTimer);
+      if (watchdog) clearInterval(watchdog);
       ws = null;
       es = null;
       pollTimer = null;
+      watchdog = null;
     },
     setTickers(list) {
       tickers = [...list];
