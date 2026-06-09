@@ -120,7 +120,7 @@ class GateConfig:
     # trading day, so a small fraction already embargoes the hold horizon (C5).
     cpcv_embargo_pct: float = 0.02
     cpcv_median_sharpe_min: float = 0.0
-    pbo_blocks: int = 16
+    pbo_blocks: Optional[int] = None   # None -> adaptive block-size by T (FIX-1).
     orthogonality_max_abs_corr: float = 0.7
     spa_reps: int = 1000
     dedup_jaccard_max: float = 0.9
@@ -310,10 +310,16 @@ class ValidationGate:
                                message="no config_matrix — overfitting not assessed (shadow)")
         M = np.asarray(cand.config_matrix, dtype=float)
         try:
-            res = cscv_pbo(M, n_blocks=self.cfg.pbo_blocks)
+            res = cscv_pbo(M, n_blocks=self.cfg.pbo_blocks)   # auto block-size (FIX-1).
         except ValueError as e:
             return StageResult("PBO", WARN, tier=SHADOW, role="diagnostic",
                                message=f"PBO not assessed: {e}")
+        if res.pbo is None:
+            # Too few obs for a meaningful PBO -> N/A diagnostic, NOT danger. Power
+            # is judged by MIN_LENGTH / the win-rate CI instead (FIX-1).
+            return StageResult("PBO", WARN, tier=SHADOW, role="diagnostic",
+                               detail={"pbo": None, "status": res.status},
+                               message=f"PBO N/A ({res.status}: T too small) — leaning on win-rate CI")
         pbo = res.pbo
         if pbo >= self.cfg.pbo_danger:
             tier, st, note = REJECT, FAIL, "DANGER (>=0.50): IS-winner ~ random OOS"
@@ -329,9 +335,13 @@ class ValidationGate:
                            message=f"PBO={pbo:.3f} — {note}")
 
     def _stage_dsr(self, sr, skew, kurt, T) -> StageResult:
-        # DIAGNOSTIC / SECONDARY (C1).
-        all_sr = self.ledger.all_sharpes()  # includes this candidate (recorded above).
-        res = deflated_sharpe_ratio(sr, all_sr, T=int(T), skew=skew, kurt=kurt)
+        # DIAGNOSTIC / SECONDARY (C1). FIX-3: variance from SCORED trials only
+        # (never seeds at SR=0); the N hurdle uses the effective GLOBAL count
+        # (seeds + family N_eff + scored).
+        scored_sr = self.ledger.scored_sharpes()  # includes this candidate (recorded above).
+        n_eff = self.ledger.effective_total_n()
+        res = deflated_sharpe_ratio(sr, scored_sr, T=int(T), skew=skew, kurt=kurt,
+                                    n_trials=int(round(n_eff)))
         dsr = res.dsr
         if dsr >= self.cfg.dsr_admit:
             tier, st, note = SHIP, PASS, f"admit (>={self.cfg.dsr_admit})"

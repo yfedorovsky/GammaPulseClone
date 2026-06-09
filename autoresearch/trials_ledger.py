@@ -32,7 +32,7 @@ from typing import Callable, Optional, Sequence
 
 # Runtime ledger path (gitignored). Tests pass an explicit temp path.
 DEFAULT_LEDGER_PATH = str(Path(__file__).resolve().parent / "trials_ledger.json")
-_SCHEMA = "autoresearch.trials_ledger/v1"
+_SCHEMA = "autoresearch.trials_ledger/v2"   # v2: three-register model (FIX-3).
 
 
 @dataclass
@@ -67,18 +67,21 @@ class TrialLedger:
     def _read_doc(self) -> dict:
         p = Path(self.path)
         if not p.exists():
-            return {"schema": _SCHEMA, "trials": [], "audit_log": [], "seeded": False}
+            return {"schema": _SCHEMA, "n_independent_seeds": 0, "scored_trials": [],
+                    "family_matrices": {}, "audit_log": [], "seeded": False}
         with self._lock_free_open(p) as fh:
             doc = json.load(fh)
         if doc.get("schema") != _SCHEMA:
             raise ValueError(f"ledger schema mismatch at {self.path}: {doc.get('schema')!r}")
-        doc.setdefault("trials", [])
+        doc.setdefault("n_independent_seeds", 0)
+        doc.setdefault("scored_trials", [])
+        doc.setdefault("family_matrices", {})
         doc.setdefault("audit_log", [])
         doc.setdefault("seeded", False)
         return doc
 
-    def _trials_list(self) -> list[dict]:
-        return self._read_doc()["trials"]
+    def _scored(self) -> list[dict]:
+        return self._read_doc()["scored_trials"]
 
     def _write_doc(self, doc: dict) -> None:
         p = Path(self.path)
@@ -91,18 +94,36 @@ class TrialLedger:
             os.fsync(fh.fileno())
         os.replace(tmp, p)  # atomic on POSIX and Windows.
 
-    # --- public API --------------------------------------------------------
+    # --- public API (FIX-3 three-register model) ---------------------------
+    #
+    #   n_independent_seeds : count of distinct prior searches (face value).
+    #                         Adds to N in E[max SR|N] but NEVER to Var(SR).
+    #   scored_trials       : Sharpes of ACTUALLY-evaluated hypotheses. The ONLY
+    #                         source of Var(SR^) — seeds at SR=0 must never corrupt it.
+    #   family_matrices     : per-family (T x M) SR arrays for correlated sweeps;
+    #                         each family contributes a participation-ratio N_eff.
 
     def count(self) -> int:
-        """Global N: total trials ever recorded (seeds + formal experiments)."""
-        return len(self._trials_list())
+        """Face-value global N: seeds + scored trials + family sweep members."""
+        doc = self._read_doc()
+        fam_members = sum(len(m[0]) if m and isinstance(m[0], list) else 0
+                          for m in doc["family_matrices"].values())
+        return int(doc["n_independent_seeds"]) + len(doc["scored_trials"]) + fam_members
+
+    def n_independent_seeds(self) -> int:
+        return int(self._read_doc()["n_independent_seeds"])
 
     def trials(self) -> list[Trial]:
-        return [Trial(**t) for t in self._trials_list()]
+        """Scored (actually-evaluated) trials only."""
+        return [Trial(**t) for t in self._scored()]
 
+    def scored_sharpes(self) -> list[float]:
+        """Sharpes of evaluated hypotheses — the ONLY source of Var(SR^) (FIX-3)."""
+        return [float(t["sharpe"]) for t in self._scored()]
+
+    # Backward-compat alias; now means "scored sharpes" (seeds are NOT included).
     def all_sharpes(self) -> list[float]:
-        """Every recorded Sharpe — used for the cross-trial variance in DSR."""
-        return [float(t["sharpe"]) for t in self._trials_list()]
+        return self.scored_sharpes()
 
     def audit_log(self) -> list[dict]:
         return list(self._read_doc()["audit_log"])
@@ -111,17 +132,16 @@ class TrialLedger:
                *, skew: Optional[float] = None, kurtosis: Optional[float] = None,
                trial_id: Optional[str] = None, meta: Optional[dict] = None,
                family: Optional[str] = None) -> Trial:
-        """Append ONE formally-scored experiment and return it. Increments N.
+        """Append ONE formally-scored experiment to the Var register. Increments N.
 
-        This is the SINGLE increment point for the global trial count. Only
-        formal, logged experiments that reach numerical scoring belong here — NOT
-        LLM brainstorming (C4). ``family`` groups near-duplicate variants for the
-        effective-N (N_eff) deflation.
+        The SINGLE increment point for evaluated hypotheses. Only formal, logged
+        experiments that reach numerical scoring belong here — NOT LLM brainstorming
+        and NOT seeds.
         """
         with self._lock:
             doc = self._read_doc()
-            trials = doc["trials"]
-            seq = len(trials) + 1
+            scored = doc["scored_trials"]
+            seq = len(scored) + 1
             m = dict(meta or {})
             if family is not None:
                 m["family"] = family
@@ -133,19 +153,17 @@ class TrialLedger:
                 kurtosis=None if kurtosis is None else float(kurtosis),
                 meta=m,
             )
-            trials.append(asdict(tr))
+            scored.append(asdict(tr))
             self._write_doc(doc)
             return tr
 
-    # --- C4: seeding + effective-N + throughput ----------------------------
-
-    def seed(self, n: int, reason: str, *, sharpe: float = 0.0) -> int:
-        """Seed the GLOBAL trial count with prior ad-hoc search (C4).
+    def seed(self, n: int, reason: str) -> int:
+        """Seed N_independent_seeds with prior ad-hoc search (C4/FIX-3).
 
         Documents, once, that ~N scored backtests + the cross-LLM rounds preceded
-        this loop, so the DSR/MinBTL hurdle does not pretend the program started
-        from zero trials. Idempotent: re-seeding is a no-op (audited). Returns the
-        number of seed trials actually added.
+        this loop. Seeds add to N in E[max SR|N] but contribute **0 to the Var
+        register** — they are a COUNT, not Sharpes (seeds at SR=0 corrupting Var was
+        the bug). Idempotent: re-seeding is an audited no-op. Returns N added.
         """
         with self._lock:
             doc = self._read_doc()
@@ -155,57 +173,80 @@ class TrialLedger:
                      "note": "already seeded"})
                 self._write_doc(doc)
                 return 0
-            trials = doc["trials"]
-            base = len(trials)
-            for i in range(int(n)):
-                seq = base + i + 1
-                trials.append(asdict(Trial(
-                    seq=seq, trial_id=f"seed-{seq:06d}", recorded_at=self._clock(),
-                    label="seed", sharpe=float(sharpe), n_obs=0,
-                    meta={"seed": True, "family": "seed"})))
+            doc["n_independent_seeds"] = int(doc["n_independent_seeds"]) + int(n)
             doc["seeded"] = True
             doc["audit_log"].append(
                 {"action": "seed", "n": int(n), "reason": reason, "at": self._clock()})
             self._write_doc(doc)
             return int(n)
 
+    def register_family(self, family: str, sr_matrix: Sequence[Sequence[float]]) -> None:
+        """Register a correlated parameter-sweep family as a (T x M) SR matrix.
+
+        Correlated sweeps go HERE (not as M individual scored trials), so the family
+        contributes only its participation-ratio N_eff to the global N — not M.
+        """
+        with self._lock:
+            doc = self._read_doc()
+            doc["family_matrices"][family] = [list(map(float, row)) for row in sr_matrix]
+            self._write_doc(doc)
+
+    @staticmethod
+    def _participation_ratio_from_matrix(mat: list) -> float:
+        """N_eff = (Σλ)²/Σλ² of the column-correlation matrix of a (T x M) SR array."""
+        import numpy as _np
+        A = _np.asarray(mat, dtype=float)
+        if A.ndim != 2 or A.shape[1] == 0:
+            return 0.0
+        M = A.shape[1]
+        if M == 1:
+            return 1.0
+        C = _np.corrcoef(A, rowvar=False)
+        C = _np.nan_to_num(C, nan=0.0)
+        lam = _np.clip(_np.linalg.eigvalsh(C), 0.0, None)
+        denom = float((lam ** 2).sum())
+        return float((lam.sum() ** 2) / denom) if denom > 0 else float(M)
+
+    def family_neff(self) -> dict[str, float]:
+        doc = self._read_doc()
+        return {fam: self._participation_ratio_from_matrix(mat)
+                for fam, mat in doc["family_matrices"].items()}
+
+    def effective_total_n(self) -> float:
+        """Final N for DSR = seeds + Σ_family N_eff + #scored standalone trials (FIX-3)."""
+        doc = self._read_doc()
+        fam = sum(self._participation_ratio_from_matrix(m)
+                  for m in doc["family_matrices"].values())
+        return float(doc["n_independent_seeds"]) + fam + len(doc["scored_trials"])
+
+    def effective_n(self, correlation: Optional[Sequence[Sequence[float]]] = None) -> float:
+        """Participation-ratio N_eff of a correlation matrix, or the global
+        ``effective_total_n()`` when no matrix is given.
+
+        Unlike the old version, this NEVER family-collapses independent seeds — only
+        a registered, structurally-dependent sweep (via its correlation matrix)
+        reduces below face value (FIX-3).
+        """
+        if correlation is not None:
+            import numpy as _np
+            C = _np.asarray(correlation, dtype=float)
+            if C.ndim != 2 or C.shape[0] != C.shape[1] or C.shape[0] == 0:
+                raise ValueError("correlation must be a non-empty square matrix")
+            lam = _np.clip(_np.linalg.eigvalsh(C), 0.0, None)
+            denom = float((lam ** 2).sum())
+            return float((lam.sum() ** 2) / denom) if denom > 0 else float(C.shape[0])
+        return self.effective_total_n()
+
     def count_by_family(self) -> dict[str, int]:
+        """Scored-trial counts per family tag (standalone evaluations)."""
         out: dict[str, int] = {}
-        for t in self._trials_list():
+        for t in self._scored():
             fam = (t.get("meta") or {}).get("family") or t.get("label") or "?"
             out[fam] = out.get(fam, 0) + 1
         return out
 
-    def effective_n(self, correlation: Optional[Sequence[Sequence[float]]] = None) -> float:
-        """Effective number of INDEPENDENT trials (N_eff).
-
-        With a trial-by-trial ``correlation`` matrix (e.g. of return vectors), uses
-        the participation ratio (sum λ)^2 / sum(λ^2) of its eigenvalues — so a
-        cluster of near-duplicate variants collapses toward one independent trial.
-        Without a matrix, falls back to the number of distinct trial families
-        (a conservative cluster count). N_eff feeds the deflation N so re-running
-        correlated variants does not permanently lock the DSR gate.
-        """
-        if correlation is not None:
-            import numpy as _np  # lazy: keep the stdlib import surface clean.
-            C = _np.asarray(correlation, dtype=float)
-            if C.ndim != 2 or C.shape[0] != C.shape[1] or C.shape[0] == 0:
-                raise ValueError("correlation must be a non-empty square matrix")
-            lam = _np.linalg.eigvalsh(C)
-            lam = _np.clip(lam, 0.0, None)
-            denom = float((lam ** 2).sum())
-            if denom <= 0:
-                return float(C.shape[0])
-            return float((lam.sum() ** 2) / denom)
-        return float(len(self.count_by_family()))
-
     def throughput_remaining(self, family: str, cap: int) -> int:
-        """Remaining full-gate slots for a signal family vs a per-period cap (C4).
-
-        The follow-up caps full-gate throughput to a single-digit number of
-        materially-distinct candidates per family per quarter; everything else
-        stays in cheap triage. Returns max(0, cap - formal trials in `family`).
-        """
+        """Remaining full-gate slots for a family vs a per-period cap (C4)."""
         used = self.count_by_family().get(family, 0)
         return max(0, int(cap) - used)
 

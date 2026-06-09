@@ -141,12 +141,14 @@ def simulate_option_pnl(*, ticker: str, expiration: str, strike: float,
     stop_level = entry * (1 + stop_pct / 100.0)
     risk = abs(stop_pct) / 100.0
     for b in bars:
-        if b.bid >= tp_level:
-            pnl = (b.bid - entry) / entry
-            return OptionPnLResult("OK", pnl * 100, pnl / risk, "TP", entry, len(bars))
+        # Worst-case tiebreak: if a single 1-minute bar's range spans BOTH the stop
+        # and the TP, assume the STOP filled first (we cannot see intrabar order).
         if b.bid <= stop_level:
             pnl = (b.bid - entry) / entry
             return OptionPnLResult("OK", pnl * 100, pnl / risk, "STOP", entry, len(bars))
+        if b.bid >= tp_level:
+            pnl = (b.bid - entry) / entry
+            return OptionPnLResult("OK", pnl * 100, pnl / risk, "TP", entry, len(bars))
     pnl = (bars[-1].bid - entry) / entry
     return OptionPnLResult("OK", pnl * 100, pnl / risk, "EOD", entry, len(bars))
 

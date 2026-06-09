@@ -398,22 +398,94 @@ DEFAULT_ALPHA = 0.05
 DEFAULT_MIN_N_REGIME = 45   # below this, no regime-specific verdict (pooled fallback).
 
 
-def always_valid_lcb(wins: int, n: int, alpha: float = DEFAULT_ALPHA) -> float:
-    """Time-uniform (always-valid) lower confidence bound on a [0,1] mean.
+# Which always-valid LCB method actually ran (set on each call). The calibrated
+# betting CS (confseq) is preferred; the stdlib bound is a FLAGGED approximation
+# with an unverified boundary constant (FIX-2 / Round-3 audit) — never silently
+# mistake one for the other.
+_LCB_METHOD = "uninitialized"
 
-    Empirical-Bernstein with a law-of-iterated-logarithm boundary (Howard-Ramdas
-    family): radius ~ sqrt(2 v B / n) + 3 B/n with B = ln(1/alpha) + 3 ln ln(e n).
-    Valid SIMULTANEOUSLY over all n, so re-checking every day carries no optional-
-    stopping bias — unlike a fixed-n Wilson bound. Deliberately conservative (wider
-    than Wilson), which is the point: "desks almost never kill on a single breach."
+
+def lcb_method() -> str:
+    """Name of the always-valid LCB implementation used by the last call."""
+    return _LCB_METHOD
+
+
+def _confseq_betting_lcb(wins: int, n: int, alpha: float) -> float:
+    """One-sided lower betting confidence sequence (Waudby-Smith & Ramdas 2023).
+
+    Uses the calibrated `confseq` library if it is installed. Raises ImportError
+    when unavailable so the caller can fall back.
     """
-    if n <= 0:
-        return 0.0
+    from confseq.betting import betting_cs  # type: ignore
+    import numpy as _np
+    obs = _np.array([1.0] * wins + [0.0] * (n - wins), dtype=float)
+    out = betting_cs(obs, alpha=alpha, running_intersection=True)
+    lower = out[0] if isinstance(out, (tuple, list)) else out["lower"]
+    return float(lower[-1])
+
+
+def _approx_eb_lcb(wins: int, n: int, alpha: float) -> float:
+    """Pure-stdlib empirical-Bernstein LIL-style time-uniform lower bound.
+
+    radius ~ sqrt(2 v B / n) + 3 B/n with B = ln(1/alpha) + 3 ln ln(e n). Right
+    FAMILY and conservatism, but the loglog coefficient (3) is UNVERIFIED -> use
+    only as a fallback, flagged "approx", when `confseq` is unavailable.
+    """
     mu = wins / n
     var = mu * (1.0 - mu)
     beta = math.log(1.0 / alpha) + 3.0 * math.log(max(1.0, math.log(math.e * n)))
     radius = math.sqrt(2.0 * var * beta / n) + 3.0 * beta / n
     return max(0.0, mu - radius)
+
+
+def always_valid_lcb(wins: int, n: int, alpha: float = DEFAULT_ALPHA) -> float:
+    """Time-uniform (always-valid) lower confidence bound on a [0,1] mean.
+
+    Valid SIMULTANEOUSLY over all n, so daily re-checks carry no optional-stopping
+    bias (unlike fixed-n Wilson). Prefers the calibrated `confseq` betting CS;
+    falls back to a FLAGGED stdlib approximation if `confseq` is not installed.
+    Inspect ``lcb_method()`` to see which ran. Used for RETIREMENT (a wide lower
+    bound rarely false-retires); promotion uses a SEPARATE bound (see
+    ``jeffreys_interval`` / ``promotion_ready``).
+    """
+    global _LCB_METHOD
+    if n <= 0:
+        _LCB_METHOD = "n=0"
+        return 0.0
+    try:
+        v = _confseq_betting_lcb(wins, n, alpha)
+        _LCB_METHOD = "betting_cs (confseq, WSR-2023, calibrated)"
+        return max(0.0, min(1.0, v))
+    except Exception:
+        _LCB_METHOD = "approx_eb (UNVERIFIED loglog constant; confseq unavailable)"
+        return _approx_eb_lcb(wins, n, alpha)
+
+
+def jeffreys_interval(wins: int, n: int, alpha: float = DEFAULT_ALPHA) -> tuple[float, float]:
+    """Two-sided Jeffreys (1-alpha) credible interval: Beta(w+.5, n-w+.5)."""
+    if n <= 0:
+        return (0.0, 1.0)
+    a, b = wins + 0.5, n - wins + 0.5
+    lo = 0.0 if wins == 0 else _beta_ppf(alpha / 2, a, b)
+    hi = 1.0 if wins == n else _beta_ppf(1 - alpha / 2, a, b)
+    return (lo, hi)
+
+
+def promotion_ready(wins: int, n: int, breakeven: float = DEFAULT_BREAKEVEN,
+                    alpha: float = DEFAULT_ALPHA) -> bool:
+    """Shadow->ship promotion gate — a SEPARATE monitor from retirement (FIX-2).
+
+    The retirement time-uniform LCB must NOT be reused for promotion: the error to
+    control reverses (false-retire vs false-promote), so the asymmetry flips. This
+    uses a one-sided Jeffreys lower bound (fixed-n; promotion is a one-time,
+    human-gated decision, not a continuously re-checked sequence) and promotes only
+    when we are confident the rate clears breakeven.
+    """
+    if n <= 0:
+        return False
+    a, b = wins + 0.5, n - wins + 0.5
+    one_sided_lower = 0.0 if wins == 0 else _beta_ppf(alpha, a, b)
+    return one_sided_lower > breakeven
 
 
 def eb_shrink_rates(cohorts: dict, kappa_bounds: tuple = (2.0, 1000.0)) -> dict:
@@ -538,6 +610,7 @@ def monitor_signals(
             continue
 
         lcb = always_valid_lcb(wins, n, alpha)
+        meth = lcb_method()
         rate_breach = lcb < breakeven
 
         exp_det = None
@@ -575,7 +648,7 @@ def monitor_signals(
             shrunk_rate=sr.get("shrunk"), always_valid_lcb=lcb,
             breach=breach, breach_streak=streak,
             expectancy_recent=exp_recent.get(cohort),
-            expectancy_deteriorating=exp_det, reason=reason))
+            expectancy_deteriorating=exp_det, reason=f"{reason} [LCB via {meth}]"))
 
     verdicts.sort(key=lambda v: (_VERDICT_SEVERITY.get(v.verdict, 99), -v.n, v.cohort))
     return verdicts, new_state

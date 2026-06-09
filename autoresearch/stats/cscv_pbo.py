@@ -36,7 +36,8 @@ def _sharpe_cols(block: np.ndarray) -> np.ndarray:
 
 @dataclass
 class PBOResult:
-    pbo: float                      # probability of backtest overfitting in [0, 1].
+    pbo: Optional[float]            # probability of backtest overfitting in [0,1], or None if N/A.
+    status: str                     # "OK" or "INSUFFICIENT_DATA".
     n_combinations: int
     n_configs: int
     n_blocks: int
@@ -45,19 +46,43 @@ class PBOResult:
     median_oos_rank_of_is_best: float = float("nan")
 
 
-def cscv_pbo(M, n_blocks: int = 16,
+def choose_blocks(T: int) -> Optional[int]:
+    """Pick the CSCV block count S for T observations (FIX-1 block-size table).
+
+    Each block must hold enough rows for a meaningful per-block Sharpe; at small T
+    a default S=16 gives 1-row blocks whose Sharpe is undefined (the "PBO=0.672 is
+    noise shown as danger" bug). Returns None when T is too small to assess PBO.
+        T<20  -> N/A · 20-40 S=4 · 40-80 S=6 · 80-160 S=8 · 160-500 S=12 · >=500 S=16
+    """
+    if T < 20:
+        return None
+    if T < 40:
+        return 4
+    if T < 80:
+        return 6
+    if T < 160:
+        return 8
+    if T < 500:
+        return 12
+    return 16
+
+
+def cscv_pbo(M, n_blocks=None,
              perf: Optional[Callable[[np.ndarray], np.ndarray]] = None) -> PBOResult:
     """Compute PBO from a (T, N) performance matrix via CSCV.
 
     Args:
         M: array-like, shape (T observations, N configurations). Each column is
            one strategy variant's per-observation returns.
-        n_blocks: S, an EVEN number of disjoint row blocks (default 16).
+        n_blocks: S, an EVEN number of disjoint row blocks. Default None ->
+            auto-select per ``choose_blocks(T)``. Returns an INSUFFICIENT_DATA
+            result (pbo=None) when T is too small for a meaningful PBO (FIX-1).
         perf: per-column performance metric on a block -> length-N vector.
               Defaults to per-column Sharpe.
 
     Returns:
-        PBOResult with ``pbo`` and the full logit distribution.
+        PBOResult. ``pbo`` is None with ``status='INSUFFICIENT_DATA'`` when T<20 or
+        blocks would hold <5 rows each — callers must treat that as N/A, NOT danger.
     """
     if perf is None:
         perf = _sharpe_cols
@@ -67,10 +92,19 @@ def cscv_pbo(M, n_blocks: int = 16,
     T, N = M.shape
     if N < 2:
         raise ValueError("need >= 2 configurations to assess overfitting")
+
+    if n_blocks is None:
+        n_blocks = choose_blocks(T)
+        if n_blocks is None:
+            return PBOResult(pbo=None, status="INSUFFICIENT_DATA", n_combinations=0,
+                             n_configs=N, n_blocks=0)
     if n_blocks < 2 or n_blocks % 2 != 0:
         raise ValueError("n_blocks (S) must be an even integer >= 2")
-    if T < n_blocks:
-        raise ValueError(f"need at least n_blocks={n_blocks} observations, got T={T}")
+    # Guard: each block needs >= 5 rows for a meaningful per-block Sharpe, and T
+    # must clear the small-T floor. Otherwise PBO is numerical noise -> N/A.
+    if T < 20 or T // n_blocks < 5:
+        return PBOResult(pbo=None, status="INSUFFICIENT_DATA", n_combinations=0,
+                         n_configs=N, n_blocks=n_blocks)
 
     # Equal blocks; trim the remainder rows so blocks are exactly equal-sized.
     block_size = T // n_blocks
@@ -101,6 +135,7 @@ def cscv_pbo(M, n_blocks: int = 16,
     pbo = float(np.mean(logits_arr <= 0.0))
     return PBOResult(
         pbo=pbo,
+        status="OK",
         n_combinations=len(logits),
         n_configs=N,
         n_blocks=n_blocks,
@@ -109,4 +144,4 @@ def cscv_pbo(M, n_blocks: int = 16,
     )
 
 
-__all__ = ["cscv_pbo", "PBOResult"]
+__all__ = ["cscv_pbo", "choose_blocks", "PBOResult"]

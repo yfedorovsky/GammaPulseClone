@@ -39,14 +39,18 @@ def _tmp_ledger_path() -> str:
 
 
 def _seed_ledger(path: str, sharpes: list[float]) -> None:
+    # These synthetic priors are EVALUATED trials with real Sharpes, so they go in
+    # the v2 scored_trials register (they feed both Var(SR^) and N).
     trials = [
-        {"seq": i + 1, "trial_id": f"seed-{i+1:06d}", "recorded_at": 1_700_000_000.0,
-         "label": "seed", "sharpe": float(s), "n_obs": 250,
+        {"seq": i + 1, "trial_id": f"prior-{i+1:06d}", "recorded_at": 1_700_000_000.0,
+         "label": "prior", "sharpe": float(s), "n_obs": 250,
          "skew": 0.0, "kurtosis": 3.0, "meta": {}}
         for i, s in enumerate(sharpes)
     ]
     Path(path).write_text(
-        json.dumps({"schema": "autoresearch.trials_ledger/v1", "trials": trials}),
+        json.dumps({"schema": "autoresearch.trials_ledger/v2", "n_independent_seeds": 0,
+                    "scored_trials": trials, "family_matrices": {},
+                    "audit_log": [], "seeded": False}),
         encoding="utf-8",
     )
 

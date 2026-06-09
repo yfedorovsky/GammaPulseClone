@@ -11,6 +11,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import numpy as np  # noqa: E402
+
 from autoresearch.trials_ledger import TrialLedger, Trial  # noqa: E402
 
 
@@ -116,20 +118,51 @@ def test_seed_then_record_continues_count():
     led = TrialLedger(_tmp_path(), clock=_fixed_clock)
     led.seed(50, reason="prior")
     led.record("newcand", 1.2, 250, family="soe")
-    assert led.count() == 51
-    assert led.count_by_family()["seed"] == 50
-    assert led.count_by_family()["soe"] == 1
+    assert led.count() == 51                          # 50 seeds + 1 scored
+    assert led.n_independent_seeds() == 50
+    assert led.count_by_family()["soe"] == 1          # only SCORED trials are family-counted
+    assert "seed" not in led.count_by_family()        # seeds are a count, not scored trials
 
 
-def test_effective_n_family_fallback():
+def test_seed_does_not_enter_variance_register():
     led = TrialLedger(_tmp_path(), clock=_fixed_clock)
-    # 5 near-duplicate variants in one family + 2 in another => 2 effective.
-    for i in range(5):
-        led.record(f"v{i}", 1.0, 100, family="famA")
-    for i in range(2):
-        led.record(f"w{i}", 1.0, 100, family="famB")
-    assert led.count() == 7
-    assert led.effective_n() == 2.0
+    led.record("a", 0.5, 100)
+    led.record("b", 1.5, 100)
+    before = sorted(led.scored_sharpes())
+    led.seed(300, reason="prior ad-hoc + LLM rounds")
+    after = sorted(led.scored_sharpes())
+    assert before == after == [0.5, 1.5]              # seeds NEVER touch Var(SR^)
+    assert led.n_independent_seeds() == 300
+    # N rises with seeds even though the variance source is unchanged.
+    assert led.effective_total_n() == 300 + 2
+
+
+def test_effective_total_n_formula_with_family():
+    rng = np.random.default_rng(3)
+    led = TrialLedger(_tmp_path(), clock=_fixed_clock)
+    led.seed(300, reason="prior")
+    led.record("standalone1", 1.0, 200)
+    led.record("standalone2", 0.8, 200)
+    # A correlated 10-variant sweep registered as one family -> N_eff ~ 1-2, not 10.
+    base = rng.normal(0, 1, 100)
+    mat = np.column_stack([base + 0.01 * rng.normal(0, 1, 100) for _ in range(10)])
+    led.register_family("ema_sweep", mat.tolist())
+    neff = led.family_neff()["ema_sweep"]
+    assert 1.0 <= neff <= 2.5, neff
+    total = led.effective_total_n()
+    assert abs(total - (300 + 2 + neff)) < 1e-6, total
+
+
+def test_family_neff_independent_vs_correlated():
+    rng = np.random.default_rng(4)
+    led = TrialLedger(_tmp_path(), clock=_fixed_clock)
+    indep = rng.normal(0, 1, (200, 10))               # independent columns -> ~10
+    led.register_family("indep", indep.tolist())
+    assert led.family_neff()["indep"] > 7.0
+    base = rng.normal(0, 1, 200)
+    corr = np.column_stack([base + 0.01 * rng.normal(0, 1, 200) for _ in range(10)])
+    led.register_family("corr", corr.tolist())
+    assert led.family_neff()["corr"] < 2.5
 
 
 def test_effective_n_from_correlation_participation_ratio():
@@ -159,7 +192,9 @@ TESTS = [
     test_empty_count_zero,
     test_seed_increments_global_n_and_is_idempotent,
     test_seed_then_record_continues_count,
-    test_effective_n_family_fallback,
+    test_seed_does_not_enter_variance_register,
+    test_effective_total_n_formula_with_family,
+    test_family_neff_independent_vs_correlated,
     test_effective_n_from_correlation_participation_ratio,
     test_throughput_cap,
     test_record_increments_global_n,

@@ -180,3 +180,57 @@ python scripts/test_trials_ledger.py                                # 14 (stdlib
 - MLflow tracking + AST/embedding dedup (replace token-Jaccard).
 - Phase 2 miner — now unblocked by C2 + C6, but still gated on the DB accruing
   enough independent cluster history to clear MinTRL at the family (pooled) level.
+
+---
+
+# Phase 1.6 — Code-review + Perplexity Round-3 gate fixes (FIX-1/2/3)
+
+Applied `CODE_REVIEW_FIXES.md` in priority order. None had produced a wrong
+verdict (redundant gates masked them), but they bite once a borderline candidate
+appears — fixed before Phase 2 turns the miner loose. **97 tests, 0 failures.**
+
+**FIX-1 — PBO small-T guard (active error).** `cscv_pbo` had a fixed `S=16`; at
+T=21 that gave 1-row blocks whose Sharpe is undefined, so "PBO=0.672" was
+numerical noise shown as danger. Now: adaptive block-size table
+(`choose_blocks`: T<20 N/A · 20–40 S=4 · 40–80 S=6 · 80–160 S=8 · 160–500 S=12 ·
+≥500 S=16) + a `T//S<5` guard returning `pbo=None`/`INSUFFICIENT_DATA`. The gate
+treats `pbo is None` as an **N/A diagnostic (SHADOW), never danger**, and leans on
+the win-rate CI at small T.
+
+**FIX-2 — always-valid CS → `confseq`; split retire vs promote.** Tried to install
+`confseq` (calibrated betting CS, WSR-2023) — its C++/boost wheel **does not build
+on this Windows venv**. Per the doc's contingency, `always_valid_lcb` now *tries*
+`confseq.betting.betting_cs` and **falls back to the stdlib empirical-Bernstein
+bound flagged `approx (UNVERIFIED loglog constant)`** via `lcb_method()`, so the
+two are never confused. Added `confseq` to requirements as optional (build note).
+Added a **separate promotion monitor** (`jeffreys_interval` / `promotion_ready`,
+Jeffreys bound) — retirement uses the wide time-uniform LOWER CS; promotion must
+not reuse it (the controlled error reverses).
+
+**FIX-3 — three-counter trial ledger (schema v2).** Replaced the single Sharpe
+list (which had seeds at SR=0 corrupting `Var(SR^)`) with three registers:
+`n_independent_seeds` (count → adds to N, never to Var), `scored_trials` (the ONLY
+source of `Var(SR^)`), `family_matrices` (per-family T×M SR arrays → participation-
+ratio `N_eff`). **Final N = seeds + Σ_family N_eff + #scored**; `deflated_sharpe_ratio`
+gained an `n_trials` override decoupling N from the variance source.
+`effective_n()` no longer family-collapses independent seeds — only a registered
+correlated sweep reduces below face value.
+
+Minor: `option_pnl` checks STOP before TP within a bar (worst-case tiebreak);
+`sharpe_ratio` docstring corrected to ddof=1.
+
+## Re-run verdicts (live DB, seeded N≈300, post-fix)
+```
+ZERO_DTE_BP vs SOE_A : REJECT (PBO, DSR)   [verdict UNCHANGED, numbers now honest]
+   PBO=0.833 via valid S=4 (5-row blocks) — not the old S=16 1-row-block noise.
+   DSR=0.899 (<0.90) with scored-only variance + N=301; E[max|N]=0.000 because a
+   single scored trial has no dispersion yet (deflation honestly inert until
+   scored hypotheses accumulate). MIN_LENGTH STAGING; economics +0.52 (SHADOW).
+
+SOE_BP vs SOE_A : REJECT (MIN_LENGTH, CPCV, PBO, DSR, ECONOMIC)
+   Negative option edge (-0.107 R). With a 2nd scored trial now present, scored
+   dispersion is non-zero so E[max|N=302]=0.861 and the global-N deflation
+   activates (DSR=0.000) — the three-register model working as intended.
+```
+Both honest quarantines; the fixes change the *reasoning quality*, not the
+(correct) REJECT outcomes — as predicted in the review.

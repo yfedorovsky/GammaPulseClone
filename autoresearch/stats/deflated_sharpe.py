@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Optional, Sequence
 
 import numpy as np
 from scipy.stats import norm
@@ -28,7 +28,7 @@ EULER_MASCHERONI = 0.5772156649015329
 
 
 def sharpe_ratio(returns: Sequence[float]) -> float:
-    """Per-observation Sharpe = mean / std (population std, ddof=0)."""
+    """Per-observation Sharpe = mean / sample std (ddof=1)."""
     r = np.asarray(returns, dtype=float)
     if r.size < 2:
         return 0.0
@@ -98,23 +98,29 @@ class DSRResult:
 
 
 def deflated_sharpe_ratio(sr_observed: float, sr_estimates: Sequence[float],
-                          T: int, skew: float = 0.0, kurt: float = 3.0) -> DSRResult:
+                          T: int, skew: float = 0.0, kurt: float = 3.0,
+                          n_trials: Optional[int] = None) -> DSRResult:
     """DSR = PSR evaluated at SR* = E[max Sharpe | N trials].
 
     Args:
         sr_observed: the candidate's per-observation Sharpe.
-        sr_estimates: ALL trial Sharpes (global) — supplies both N (=len) and the
-            cross-trial variance Var(SR) that the E[max] estimator needs.
+        sr_estimates: the Sharpes that supply the cross-trial variance Var(SR^).
+            Per FIX-3 these are the **scored-trial Sharpes only** — never seeds at
+            SR=0 (which would corrupt the variance).
         T: observation count behind ``sr_observed``.
         skew, kurt: candidate's skew and NON-excess kurtosis.
+        n_trials: GLOBAL effective N for the E[max] hurdle (seeds + family N_eff +
+            scored). Defaults to len(sr_estimates) when not supplied. Decoupling N
+            from the variance source is the FIX-3 correction.
     """
     est = np.asarray(sr_estimates, dtype=float)
-    n = int(est.size)
-    var = float(est.var(ddof=1)) if n >= 2 else 0.0
-    sr0 = expected_max_sharpe(max(n, 1), var)
+    n_var = int(est.size)
+    var = float(est.var(ddof=1)) if n_var >= 2 else 0.0
+    N = int(n_trials) if n_trials is not None else n_var
+    sr0 = expected_max_sharpe(max(N, 1), var)
     dsr = probabilistic_sharpe_ratio(sr_observed, sr0, T, skew, kurt)
     return DSRResult(dsr=dsr, sr_observed=sr_observed, sr0=sr0,
-                     n_trials=n, sr_variance=var, T=T)
+                     n_trials=N, sr_variance=var, T=T)
 
 
 def min_track_record_length(sr: float, skew: float, kurt: float,

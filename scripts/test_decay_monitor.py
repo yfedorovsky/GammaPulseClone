@@ -28,6 +28,9 @@ from autoresearch.decay_monitor import (  # noqa: E402
     compute_signal_health,
     wilson_interval,
     always_valid_lcb,
+    lcb_method,
+    jeffreys_interval,
+    promotion_ready,
     eb_shrink_rates,
     monitor_signals,
 )
@@ -300,6 +303,34 @@ def test_eb_shrink_small_cohort_toward_pool():
     assert res["tiny"]["ci_low"] <= res["tiny"]["shrunk"] <= res["tiny"]["ci_high"]
 
 
+# === FIX-2: confseq fallback flag + split retire/promote ===
+
+def test_lcb_method_flagged_when_confseq_absent():
+    # confseq does not build on this venv -> the stdlib fallback must be FLAGGED.
+    _ = always_valid_lcb(120, 300)
+    m = lcb_method()
+    assert ("betting_cs" in m) or ("approx" in m and "UNVERIFIED" in m), m
+
+
+def test_jeffreys_interval_brackets_and_unit():
+    lo, hi = jeffreys_interval(30, 100)
+    assert 0.0 <= lo <= 0.30 <= hi <= 1.0
+    assert jeffreys_interval(0, 10)[0] == 0.0
+    assert jeffreys_interval(10, 10)[1] == 1.0
+
+
+def test_promotion_is_separate_from_retirement_bound():
+    # Promotion must NOT reuse the (wide) retirement LCB. A strong, well-powered
+    # signal promotes; a thin or near-breakeven one does not.
+    assert promotion_ready(700, 1000, breakeven=0.227) is True     # 70% over n=1000
+    assert promotion_ready(6, 20, breakeven=0.227) is False        # thin
+    assert promotion_ready(60, 200, breakeven=0.227) is True       # 30% over 200, clears 22.7%
+    # The promotion lower bound differs from the retirement always-valid LCB.
+    rj_lo = jeffreys_interval(60, 200)[0]
+    av = always_valid_lcb(60, 200)
+    assert abs(rj_lo - av) > 1e-6
+
+
 TESTS = [
     test_wilson_ordering_and_point,
     test_always_valid_lcb_is_conservative_vs_wilson,
@@ -308,6 +339,9 @@ TESTS = [
     test_monitor_two_check_hysteresis,
     test_monitor_economic_gate_blocks_retire_without_deterioration,
     test_eb_shrink_small_cohort_toward_pool,
+    test_lcb_method_flagged_when_confseq_absent,
+    test_jeffreys_interval_brackets_and_unit,
+    test_promotion_is_separate_from_retirement_bound,
     test_clopper_pearson_brackets_point,
     test_clopper_pearson_known_value,
     test_wilson_zero_n_safe,

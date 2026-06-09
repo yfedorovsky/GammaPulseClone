@@ -21,6 +21,14 @@
 
 arch==8.0.0
 
+# OPTIONAL (FIX-2): calibrated always-valid confidence sequence (betting CS,
+# Waudby-Smith & Ramdas 2023). MIT, github.com/gostevehoward/confseq. It is a C++
+# extension (pybind11 + boost) and may FAIL to build without a C++ toolchain
+# (it did not build on this Windows venv). When absent, decay_monitor falls back
+# to a pure-stdlib empirical-Bernstein bound that is explicitly FLAGGED
+# "approx (UNVERIFIED constant)" via lcb_method(), so the two are never confused.
+# confseq
+
 # --- transitively pinned by arch (captured via pip freeze for reproducibility) ---
 numpy==2.4.6
 scipy==1.17.1

@@ -16,7 +16,7 @@ from autoresearch.stats.deflated_sharpe import (  # noqa: E402
     sharpe_ratio, probabilistic_sharpe_ratio, expected_max_sharpe,
     deflated_sharpe_ratio, min_track_record_length, min_backtest_length, _moments,
 )
-from autoresearch.stats.cscv_pbo import cscv_pbo  # noqa: E402
+from autoresearch.stats.cscv_pbo import cscv_pbo, choose_blocks  # noqa: E402
 from autoresearch.stats.cpcv import cpcv_splits, cpcv_oos_sharpes  # noqa: E402
 from autoresearch.stats.spa import spa_beats_baseline  # noqa: E402
 
@@ -111,14 +111,43 @@ def test_pbo_high_for_pure_noise():
 def test_pbo_input_validation():
     rng = np.random.default_rng(9)
     for bad in (lambda: cscv_pbo(rng.normal(size=(100, 5)), n_blocks=15),  # odd S
-                lambda: cscv_pbo(rng.normal(size=(100, 1)), n_blocks=8),   # N<2
-                lambda: cscv_pbo(rng.normal(size=(4, 5)), n_blocks=8)):    # T<S
+                lambda: cscv_pbo(rng.normal(size=(100, 1)), n_blocks=8)):  # N<2
         try:
             bad()
         except ValueError:
             pass
         else:
             raise AssertionError("expected ValueError")
+
+
+def test_choose_blocks_table():
+    # FIX-1 block-size table.
+    assert choose_blocks(10) is None and choose_blocks(19) is None
+    assert choose_blocks(20) == 4 and choose_blocks(39) == 4
+    assert choose_blocks(40) == 6 and choose_blocks(79) == 6
+    assert choose_blocks(80) == 8 and choose_blocks(159) == 8
+    assert choose_blocks(160) == 12 and choose_blocks(499) == 12
+    assert choose_blocks(500) == 16 and choose_blocks(5000) == 16
+
+
+def test_pbo_na_at_small_t():
+    rng = np.random.default_rng(21)
+    # T<20 -> N/A under auto block-size.
+    res = cscv_pbo(rng.normal(size=(18, 8)))
+    assert res.pbo is None and res.status == "INSUFFICIENT_DATA", res
+    # The old bug: explicit n_blocks=16 at T=21 -> 1-row blocks -> now guarded to N/A.
+    res2 = cscv_pbo(rng.normal(size=(21, 8)), n_blocks=16)
+    assert res2.pbo is None and res2.status == "INSUFFICIENT_DATA", res2
+    # But auto block-size at T=21 picks S=4 (5-row blocks) -> assessable.
+    res3 = cscv_pbo(rng.normal(size=(21, 8)))
+    assert res3.pbo is not None and res3.n_blocks == 4, res3
+
+
+def test_pbo_valid_at_large_t():
+    rng = np.random.default_rng(22)
+    res = cscv_pbo(rng.normal(size=(200, 10)))   # auto -> S=12, blocks of ~16 rows.
+    assert res.pbo is not None and res.status == "OK"
+    assert res.n_blocks == 12 and 0.0 <= res.pbo <= 1.0
 
 
 # === CPCV ===
@@ -208,6 +237,9 @@ TESTS = [
     test_pbo_low_for_genuine_signal,
     test_pbo_high_for_pure_noise,
     test_pbo_input_validation,
+    test_choose_blocks_table,
+    test_pbo_na_at_small_t,
+    test_pbo_valid_at_large_t,
     test_cpcv_split_count_and_disjoint,
     test_cpcv_no_horizon_no_embargo_is_complement,
     test_cpcv_purges_overlapping_horizon,
