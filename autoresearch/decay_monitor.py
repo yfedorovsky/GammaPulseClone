@@ -410,15 +410,15 @@ def lcb_method() -> str:
     return _LCB_METHOD
 
 
-def _confseq_betting_lcb(wins: int, n: int, alpha: float) -> float:
-    """One-sided lower betting confidence sequence (Waudby-Smith & Ramdas 2023).
+def _confseq_lcb_stream(xs, alpha: float) -> float:
+    """Lower betting CS from an ORDERED stream via the calibrated `confseq` lib.
 
-    Uses the calibrated `confseq` library if it is installed. Raises ImportError
-    when unavailable so the caller can fall back.
+    Raises ImportError when unavailable so the caller can fall back. The betting CS
+    is sequential — it MUST get the real order, never a counts reconstruction.
     """
     from confseq.betting import betting_cs  # type: ignore
     import numpy as _np
-    obs = _np.array([1.0] * wins + [0.0] * (n - wins), dtype=float)
+    obs = _np.asarray(list(xs), dtype=float)
     out = betting_cs(obs, alpha=alpha, running_intersection=True)
     lower = out[0] if isinstance(out, (tuple, list)) else out["lower"]
     return float(lower[-1])
@@ -452,13 +452,43 @@ def always_valid_lcb(wins: int, n: int, alpha: float = DEFAULT_ALPHA) -> float:
     if n <= 0:
         _LCB_METHOD = "n=0"
         return 0.0
+    # COUNT-only path: the betting CS is sequential and cannot be validly rebuilt
+    # from (wins, n) — a counts reconstruction under-covers (coverage sim). So from
+    # counts alone we use the conservative, count-valid empirical-Bernstein bound.
+    # When ordered outcomes ARE available, prefer always_valid_lcb_stream (tighter,
+    # coverage-validated betting CS).
+    _LCB_METHOD = "approx_eb (count-only; betting CS needs ordered data)"
+    return _approx_eb_lcb(wins, n, alpha)
+
+
+def always_valid_lcb_stream(xs, alpha: float = DEFAULT_ALPHA) -> float:
+    """Time-uniform lower bound from an ORDERED [0,1] outcome stream.
+
+    The correct, tight retirement bound: the betting CS (WSR-2023) fed the real
+    observation order. Prefers the calibrated `confseq` library; falls back to our
+    pure-python betting CS (coverage-VALIDATED by scripts/test_betting_cs.py);
+    last-resort is the count empirical-Bernstein bound. Inspect ``lcb_method()``.
+    """
+    global _LCB_METHOD
+    xs = list(xs)
+    n = len(xs)
+    if n == 0:
+        _LCB_METHOD = "n=0"
+        return 0.0
     try:
-        v = _confseq_betting_lcb(wins, n, alpha)
+        v = _confseq_lcb_stream(xs, alpha)
         _LCB_METHOD = "betting_cs (confseq, WSR-2023, calibrated)"
         return max(0.0, min(1.0, v))
     except Exception:
-        _LCB_METHOD = "approx_eb (UNVERIFIED loglog constant; confseq unavailable)"
-        return _approx_eb_lcb(wins, n, alpha)
+        pass
+    try:
+        from .stats.betting_cs import betting_ci
+        v = betting_ci(xs, alpha)[0]
+        _LCB_METHOD = "betting_cs (pure-python WSR-2023, coverage-validated)"
+        return max(0.0, min(1.0, v))
+    except Exception:
+        _LCB_METHOD = "approx_eb (last-resort)"
+        return _approx_eb_lcb(int(sum(xs)), n, alpha)
 
 
 def jeffreys_interval(wins: int, n: int, alpha: float = DEFAULT_ALPHA) -> tuple[float, float]:
@@ -554,6 +584,25 @@ def _recent_counts(con, cohort_col: str, lo_ts: float, hi_ts: float) -> dict:
     return out
 
 
+def _recent_sequences(con, cohort_col: str, lo_ts: float, hi_ts: float) -> dict:
+    """Per-cohort ORDERED [1/0] outcome stream over [lo_ts, hi_ts), by fire time.
+
+    The betting CS is sequential, so the retirement LCB needs the real order — not
+    just (wins, n). 1.0 == WIN, 0.0 == LOSS; FLAT excluded.
+    """
+    sql = (
+        f"SELECT {cohort_col}, verdict_eod FROM alert_outcomes "
+        f"WHERE outcome_status != 'pending' AND {cohort_col} IS NOT NULL "
+        f"  AND verdict_eod IN ('WIN','LOSS') "
+        f"  AND fired_at >= ? AND fired_at < ? "
+        f"ORDER BY fired_at ASC"
+    )
+    out: dict = {}
+    for cohort, verdict in con.execute(sql, (lo_ts, hi_ts)).fetchall():
+        out.setdefault(cohort, []).append(1.0 if verdict == "WIN" else 0.0)
+    return out
+
+
 def monitor_signals(
     db_path: str = LIVE_DB_PATH,
     *,
@@ -585,9 +634,10 @@ def monitor_signals(
 
     con = _open_ro(db_path)
     try:
-        counts = _recent_counts(con, "alert_type", lo, now)
+        seqs = _recent_sequences(con, "alert_type", lo, now)
     finally:
         con.close()
+    counts = {c: (int(sum(xs)), len(xs)) for c, xs in seqs.items()}
 
     shrunk = eb_shrink_rates({k: v for k, v in counts.items() if v[1] > 0})
 
@@ -609,7 +659,7 @@ def monitor_signals(
                        f"pooled fallback {sr.get('shrunk', float('nan')):.1%})"))
             continue
 
-        lcb = always_valid_lcb(wins, n, alpha)
+        lcb = always_valid_lcb_stream(seqs[cohort], alpha)
         meth = lcb_method()
         rate_breach = lcb < breakeven
 

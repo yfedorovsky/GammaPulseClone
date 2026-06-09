@@ -28,6 +28,7 @@ from autoresearch.decay_monitor import (  # noqa: E402
     compute_signal_health,
     wilson_interval,
     always_valid_lcb,
+    always_valid_lcb_stream,
     lcb_method,
     jeffreys_interval,
     promotion_ready,
@@ -306,10 +307,16 @@ def test_eb_shrink_small_cohort_toward_pool():
 # === FIX-2: confseq fallback flag + split retire/promote ===
 
 def test_lcb_method_flagged_when_confseq_absent():
-    # confseq does not build on this venv -> the stdlib fallback must be FLAGGED.
-    _ = always_valid_lcb(120, 300)
-    m = lcb_method()
-    assert ("betting_cs" in m) or ("approx" in m and "UNVERIFIED" in m), m
+    # confseq does not build on this venv. Two distinct, correctly-labelled paths:
+    #  - COUNT-only -> conservative empirical-Bernstein (flagged "approx_eb").
+    #  - ordered STREAM -> the pure-python betting CS, which is COVERAGE-VALIDATED
+    #    (scripts/test_betting_cs.py), NOT an unverified approximation.
+    _ = always_valid_lcb(120, 300)                  # count-only path
+    m_count = lcb_method()
+    assert "approx_eb" in m_count and "count-only" in m_count, m_count
+    _ = always_valid_lcb_stream([1.0, 0.0] * 60)    # ordered stream path
+    m_stream = lcb_method()
+    assert "betting_cs" in m_stream and "coverage-validated" in m_stream, m_stream
 
 
 def test_jeffreys_interval_brackets_and_unit():
