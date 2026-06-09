@@ -24,6 +24,8 @@ try:  # Windows cp1252 console chokes on the verdict emoji.
 except Exception:
     pass
 
+from datetime import datetime, timezone  # noqa: E402
+
 from autoresearch.decay_monitor import DEFAULT_BREAKEVEN, DEFAULT_MIN_N, LIVE_DB_PATH  # noqa: E402
 from autoresearch.signal_health_card import (  # noqa: E402
     build_cards, render_json, render_markdown,
@@ -37,10 +39,27 @@ def main() -> int:
     ap.add_argument("--min-n", type=float, default=DEFAULT_MIN_N)
     ap.add_argument("--md-out", help="write the full Markdown report here.")
     ap.add_argument("--json-out", help="write the cards as JSON here.")
+    ap.add_argument("--economics", action="store_true",
+                    help="compute per-cohort option-PnL expectancy via ThetaData "
+                         "NBBO (slower; needs Theta Terminal up + the venv).")
     args = ap.parse_args()
 
-    cards, _ = build_cards(args.db, breakeven=args.breakeven, min_n=args.min_n)
-    md = render_markdown(cards)
+    now = datetime.now(timezone.utc).timestamp()
+    exp_recent = exp_prior = None
+    if args.economics:
+        # First pass (cheap) just to learn the cohort list.
+        cohorts = [c.cohort for c in
+                   build_cards(args.db, now_ts=now, breakeven=args.breakeven,
+                               min_n=args.min_n)[0]]
+        from autoresearch.cohort_economics import cohort_expectancy
+        from autoresearch.option_pnl import ThetaNBBOSource
+        exp_recent, exp_prior, _cov = cohort_expectancy(
+            args.db, cohorts, ThetaNBBOSource(), now_ts=now)
+
+    cards, _ = build_cards(args.db, now_ts=now, breakeven=args.breakeven,
+                           min_n=args.min_n, expectancy_recent=exp_recent,
+                           expectancy_prior=exp_prior)
+    md = render_markdown(cards, now_ts=now)
 
     if args.md_out:
         Path(args.md_out).write_text(md, encoding="utf-8")

@@ -197,6 +197,10 @@ def _pct(x: Optional[float]) -> str:
     return "—" if x is None else f"{x:.1%}"
 
 
+def _r(x: Optional[float]) -> str:
+    return "—" if x is None else f"{x:+.2f}R"
+
+
 _VERDICT_EMOJI = {
     HEALTHY: "🟢", WATCH: "🟡", RETIRE_CANDIDATE: "🔴", UNTRUSTED: "⚪",
 }
@@ -222,13 +226,17 @@ def render_markdown(cards: list[SignalHealthCard], *, now_ts: Optional[float] = 
 
     # Summary table.
     lines += ["## Summary", "",
-              "| Signal | Verdict | 60d WR (n) | AV-LCB | Trend | Action |",
-              "|---|---|---|---|---|---|"]
+              "| Signal | Verdict | 60d WR (n) | AV-LCB | Exp (R) | Trend | Action |",
+              "|---|---|---|---|---|---|---|"]
     for c in cards:
         emo = _VERDICT_EMOJI.get(c.verdict, "")
+        # Flag the dangerous case: directionally HEALTHY but economically negative.
+        exp = _r(c.expectancy_recent)
+        if c.expectancy_recent is not None and c.expectancy_recent < 0 and c.verdict == HEALTHY:
+            exp += " ⚠️"
         lines.append(
             f"| {c.cohort} | {emo} {c.verdict} | {_pct(c.rate_60d)} ({c.n_60d}) | "
-            f"{_pct(c.always_valid_lcb)} | {c.trend} | {c.suggested_action} |")
+            f"{_pct(c.always_valid_lcb)} | {exp} | {c.trend} | {c.suggested_action} |")
     lines.append("")
 
     # One card per signal.

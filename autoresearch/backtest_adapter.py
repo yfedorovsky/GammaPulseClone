@@ -143,24 +143,32 @@ def _daily_series(trades: list[dict], all_days: list[str]) -> np.ndarray:
 
 def load_clusters_economic(db_path: str, alert_type: str, source: NBBOSource,
                            tp_pct: float = 100.0, stop_pct: float = -50.0,
-                           limit: Optional[int] = None) -> tuple[list[dict], dict]:
+                           limit: Optional[int] = None,
+                           lo_ts: Optional[float] = None,
+                           hi_ts: Optional[float] = None) -> tuple[list[dict], dict]:
     """C5+C6: economic decision clusters with realized option-PnL R-multiples.
 
     One cluster = (ticker, ET day, direction). Representative = earliest fire; its
     slippage-aware option PnL (autoresearch/option_pnl) is the cluster's realized
     outcome. Returns (clusters ordered by representative time, coverage dict).
+
+    ``lo_ts``/``hi_ts`` optionally restrict to fired_at in [lo_ts, hi_ts) — used by
+    the Signal Health Card to compute windowed (recent vs prior) cohort expectancy.
     """
+    where = ["alert_type = ?", "outcome_status != 'pending'",
+             "verdict_eod IN ('WIN','LOSS')", "strike IS NOT NULL",
+             "expiration IS NOT NULL", "option_type IS NOT NULL"]
+    params: list = [alert_type]
+    if lo_ts is not None:
+        where.append("fired_at >= ?"); params.append(float(lo_ts))
+    if hi_ts is not None:
+        where.append("fired_at < ?"); params.append(float(hi_ts))
     con = _open_ro(db_path)
     try:
         rows = con.execute(
             "SELECT fired_at, ticker, direction, strike, expiration, option_type, score "
-            "FROM alert_outcomes "
-            "WHERE alert_type = ? AND outcome_status != 'pending' "
-            "  AND verdict_eod IN ('WIN','LOSS') "
-            "  AND strike IS NOT NULL AND expiration IS NOT NULL "
-            "  AND option_type IS NOT NULL "
-            "ORDER BY fired_at ASC",
-            (alert_type,),
+            "FROM alert_outcomes WHERE " + " AND ".join(where) + " ORDER BY fired_at ASC",
+            tuple(params),
         ).fetchall()
     finally:
         con.close()
