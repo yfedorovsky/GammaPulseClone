@@ -39,6 +39,7 @@ from .stats.cscv_pbo import cscv_pbo
 from .stats.cpcv import cpcv_splits, cpcv_oos_sharpes
 from .stats.spa import spa_beats_baseline
 from .trials_ledger import TrialLedger
+from .dedup import is_duplicate
 
 PASS, FAIL, WARN, SKIP = "PASS", "FAIL", "WARN", "SKIP"
 
@@ -123,7 +124,9 @@ class GateConfig:
     pbo_blocks: Optional[int] = None   # None -> adaptive block-size by T (FIX-1).
     orthogonality_max_abs_corr: float = 0.7
     spa_reps: int = 1000
-    dedup_jaccard_max: float = 0.9
+    dedup_jaccard_max: float = 0.9        # token-Jaccard lexical-dup threshold.
+    dedup_charngram_max: float = 0.85     # char-trigram lexical-dup threshold (paraphrase).
+    dedup_structural_min: float = 0.6     # same cohort+sign + claim/mechanism overlap.
     min_regime_n: int = 20
 
     # --- C1 diagnostic bands (PBO is NOT a p-value; 0.50 is the danger line) ---
@@ -210,12 +213,14 @@ def _jaccard(a: set[str], b: set[str]) -> float:
 
 class ValidationGate:
     def __init__(self, ledger: TrialLedger, config: Optional[GateConfig] = None,
-                 existing_claims: Optional[list[str]] = None):
+                 existing_claims: Optional[list[str]] = None,
+                 existing_cards: Optional[list] = None):
         self.ledger = ledger
         self.cfg = config or GateConfig()
-        # Semantic-dedup corpus. Phase 1 uses token-Jaccard; embedding/AST dedup
-        # (AlphaAgent-style) is a later upgrade — see PROJECT.md.
-        self._existing = [_normalize_claim(c) for c in (existing_claims or [])]
+        # Novelty corpus for Stage-0 dedup. Prefer full prior TestCards (enables
+        # the structural cohort+sign rule); bare claim strings are accepted too
+        # (lexical-only). See autoresearch/dedup.py.
+        self._corpus: list = list(existing_cards or []) + list(existing_claims or [])
 
     def evaluate(self, cand: Candidate) -> GateReport:
         stages: list[StageResult] = []
@@ -255,13 +260,17 @@ class ValidationGate:
         err = cand.card.validate()
         if err:
             return StageResult("TEST_CARD", FAIL, tier=REJECT, message=f"invalid card: {err}")
-        claim = _normalize_claim(cand.card.claim)
-        for prior in self._existing:
-            j = _jaccard(claim, prior)
-            if j >= self.cfg.dedup_jaccard_max:
-                return StageResult("TEST_CARD", FAIL, tier=REJECT,
-                                   detail={"jaccard": j},
-                                   message=f"semantic duplicate of an existing card (Jaccard {j:.2f})")
+        dup = is_duplicate(
+            cand.card, self._corpus,
+            token_max=self.cfg.dedup_jaccard_max,
+            charngram_max=self.cfg.dedup_charngram_max,
+            structural_min=self.cfg.dedup_structural_min,
+        )
+        if dup.is_dup:
+            return StageResult("TEST_CARD", FAIL, tier=REJECT,
+                               detail={"kind": dup.kind, "score": round(dup.score, 3),
+                                       "match": dup.match_id},
+                               message=f"duplicate ({dup.kind}): {dup.reason}")
         return StageResult("TEST_CARD", PASS, tier=SHIP, message="card complete, not a duplicate")
 
     def _stage_minlen(self, r, sr, skew, kurt, global_n) -> StageResult:
