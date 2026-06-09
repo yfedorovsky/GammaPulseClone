@@ -22,6 +22,9 @@ python scripts\signal_health_report.py --md-out health.md
 
 # FULL (adds tradable option-PnL expectancy; needs ThetaData Terminal UP + the venv; slower)
 .venv-autoresearch\Scripts\python scripts\signal_health_report.py --economics --md-out health.md
+
+# + LABEL CONFIDENCE (tape-verifies flow-derived cohorts' side tags; Theta up; slowest)
+.venv-autoresearch\Scripts\python scripts\signal_health_report.py --economics --label-confidence --md-out health.md
 ```
 Open `health.md`. Useful flags: `--breakeven 0.227` (your R:R breakeven), `--min-n 30`.
 
@@ -42,6 +45,13 @@ Open `health.md`. Useful flags: `--breakeven 0.227` (your R:R breakeven), `--min
 - **Exp (R):** the tradable option-PnL expectancy (FULL only). **⚠️ = HEALTHY on
   direction but NEGATIVE after slippage** — the trap to respect. Directional
   accuracy ≠ money.
+- **Label:** side-label confidence for flow-derived cohorts (WHALE / INFORMED /
+  FLOW_* / CLUSTER_*) — the share of clusters whose SIDE tag the OPRA tape
+  actually confirms. `🔒 HIGH` = labels tape-backed · `❓ LOW` = the cohort's
+  direction labels are mostly guesses or tape-contradicted (MSTR 125C class) ·
+  `❓ UNVERIFIED` = not yet tape-checked (run `--label-confidence`) · `—` = cohort
+  exempt (direction not derived from flow side tags). Live measurement 2026-06-09:
+  FLOW_MEDIUM = **12% tape-confirmed** → LOW. See SIDE_CONFIDENCE.md.
 - **Trend / Action:** 60d-vs-prior-60d move + the suggested next step (none /
   investigate / prepare-retirement / accumulate-data).
 
@@ -54,10 +64,16 @@ Open `health.md`. Useful flags: `--breakeven 0.227` (your R:R breakeven), `--min
 ## What's built (and runnable)
 - **Signal Health Card** (above) — `scripts\signal_health_report.py`.
 - **Validation gate** (`autoresearch\gate.py`) — the strict fitness function a
-  hypothesis must clear: card+dedup → MinTRL → CPCV → PBO → DSR → Hansen SPA vs
-  baseline → economic null. Run an ad-hoc cohort through it:
-  `.venv-autoresearch\Scripts\python scripts\run_gate_on_cohort.py`.
+  hypothesis must clear: card+dedup → **label confidence (tape)** → MinTRL → CPCV
+  → PBO → DSR → Hansen SPA vs baseline → economic null. Run an ad-hoc cohort
+  through it: `.venv-autoresearch\Scripts\python scripts\run_gate_on_cohort.py`
+  (`--no-tape` to skip side verification).
   (Today it correctly quarantines everything at MIN_LENGTH — not enough data yet.)
+- **Side-label confidence** (`autoresearch\side_confirmation.py` +
+  `label_confidence.py`) — replays the OPRA tape (ThetaData trade+NBBO) to check
+  whether a flow-derived cohort's SIDE tags are real; quarantines cohorts whose
+  "edge" rests on snapshot guesses, REJECTs labeling artifacts. Design + the
+  live-system persistence proposal: SIDE_CONFIDENCE.md.
 - Building blocks: decay monitor, option-PnL re-sim, hierarchical pooling, the
   trials ledger, structural+lexical dedup, the betting confidence sequence.
 
@@ -73,9 +89,11 @@ Open `health.md`. Useful flags: `--breakeven 0.227` (your R:R breakeven), `--min
 ```
 python scripts\test_signal_health_card.py        # 21
 python scripts\test_dedup.py                      # 12
+python scripts\test_side_confirmation.py          # 58  (tape verification + label bands)
 python scripts\test_betting_cs.py                 # coverage sim (slow-ish)
-.venv-autoresearch\Scripts\python scripts\test_decay_monitor.py   # 24
-.venv-autoresearch\Scripts\python scripts\test_gate_acceptance.py # 12
+.venv-autoresearch\Scripts\python scripts\test_decay_monitor.py    # 24
+.venv-autoresearch\Scripts\python scripts\test_gate_acceptance.py  # 12
+.venv-autoresearch\Scripts\python scripts\test_label_conf_gate.py  # 18  (LABEL_CONF stage)
 ```
 
 ## Hard rules (do not break)

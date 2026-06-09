@@ -9,6 +9,7 @@ Usage:
     python scripts/signal_health_report.py
     python scripts/signal_health_report.py --md-out health.md --json-out health.json
     python scripts/signal_health_report.py --breakeven 0.227 --min-n 30
+    python scripts/signal_health_report.py --economics --label-confidence  (Theta up)
 """
 from __future__ import annotations
 
@@ -42,23 +43,50 @@ def main() -> int:
     ap.add_argument("--economics", action="store_true",
                     help="compute per-cohort option-PnL expectancy via ThetaData "
                          "NBBO (slower; needs Theta Terminal up + the venv).")
+    ap.add_argument("--label-confidence", action="store_true",
+                    help="tape-verify side labels for flow-derived cohorts "
+                         "(WHALE/INFORMED/FLOW_*/CLUSTER_*) via ThetaData "
+                         "trade_quote (slower; needs Theta Terminal up). "
+                         "Without it those cohorts honestly read UNVERIFIED.")
     args = ap.parse_args()
 
     now = datetime.now(timezone.utc).timestamp()
-    exp_recent = exp_prior = None
-    if args.economics:
+    cohorts = None
+    if args.economics or args.label_confidence:
         # First pass (cheap) just to learn the cohort list.
         cohorts = [c.cohort for c in
                    build_cards(args.db, now_ts=now, breakeven=args.breakeven,
                                min_n=args.min_n)[0]]
+
+    exp_recent = exp_prior = None
+    if args.economics:
         from autoresearch.cohort_economics import cohort_expectancy
         from autoresearch.option_pnl import ThetaNBBOSource
         exp_recent, exp_prior, _cov = cohort_expectancy(
             args.db, cohorts, ThetaNBBOSource(), now_ts=now)
 
+    label_conf = None
+    if args.label_confidence:
+        from autoresearch.backtest_adapter import load_clusters_economic
+        from autoresearch.label_confidence import (
+            check_cohort_side_labels, is_side_label_dependent)
+        from autoresearch.option_pnl import ThetaNBBOSource
+        from autoresearch.side_confirmation import ThetaTradeTapeSource
+        nbbo, tape = ThetaNBBOSource(), ThetaTradeTapeSource()
+        label_conf = {}
+        for cohort in cohorts:
+            if not is_side_label_dependent(cohort):
+                continue
+            # Same cluster cap as cohort_economics — bounds the NBBO re-sim load;
+            # the tape check itself further samples (LabelConfidenceConfig.sample_max).
+            clusters, _cov = load_clusters_economic(args.db, cohort, nbbo, limit=400)
+            if clusters:
+                label_conf[cohort] = check_cohort_side_labels(cohort, clusters, tape)
+
     cards, _ = build_cards(args.db, now_ts=now, breakeven=args.breakeven,
                            min_n=args.min_n, expectancy_recent=exp_recent,
-                           expectancy_prior=exp_prior)
+                           expectancy_prior=exp_prior,
+                           label_confidence=label_conf)
     md = render_markdown(cards, now_ts=now)
 
     if args.md_out:

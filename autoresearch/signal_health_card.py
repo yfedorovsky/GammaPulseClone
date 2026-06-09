@@ -40,6 +40,15 @@ from autoresearch.decay_monitor import (
     monitor_signals,
     wilson_interval,
 )
+from autoresearch.label_confidence import (
+    LABEL_HIGH,
+    LABEL_LOW,
+    is_side_label_dependent,
+)
+
+# Label-confidence display states (beyond the bands themselves).
+LABEL_UNVERIFIED = "UNVERIFIED"   # side-dependent cohort, no tape check attached.
+LABEL_EXEMPT = "EXEMPT"           # direction not derived from flow side tags.
 
 # A 60d-vs-prior-60d win-rate move bigger than this (in rate points) is a trend.
 DEFAULT_TREND_DELTA = 0.05
@@ -82,6 +91,12 @@ class SignalHealthCard:
     # economics (optional)
     expectancy_recent: Optional[float]
     expectancy_deteriorating: Optional[bool]
+    # side-label confidence (optional; EXEMPT for non-flow-derived cohorts)
+    label_band: str = LABEL_EXEMPT      # HIGH/MEDIUM/LOW/UNKNOWN/UNVERIFIED/EXEMPT.
+    label_confirm_frac: Optional[float] = None
+    label_invert_frac: Optional[float] = None
+    label_n_with_data: int = 0
+    label_artifact: bool = False
     reason: str = ""
 
 
@@ -126,6 +141,7 @@ def build_cards(
     prior_state: Optional[dict] = None,
     expectancy_recent: Optional[dict] = None,
     expectancy_prior: Optional[dict] = None,
+    label_confidence: Optional[dict] = None,
 ) -> tuple[list[SignalHealthCard], dict]:
     """Build one health card per ``alert_type`` cohort from the live DB.
 
@@ -134,6 +150,13 @@ def build_cards(
     trend, then maps everything to a suggested action. Returns
     (cards sorted worst-first, new_state) — pass ``new_state`` back as
     ``prior_state`` next run so the hysteresis persists.
+
+    ``label_confidence`` is an optional ``{cohort: LabelConfidenceResult}`` map
+    (from ``label_confidence.check_cohort_side_labels``). Side-label-dependent
+    cohorts (FLOW_*/WHALE/INFORMED/CLUSTER_*) without an entry read UNVERIFIED;
+    non-flow cohorts read EXEMPT. The verdict is NOT altered (retirement stays
+    outcome-driven) — label confidence gates trust/promotion in the gate; the
+    card surfaces it.
     """
     now = float(now_ts) if now_ts is not None else datetime.now(timezone.utc).timestamp()
 
@@ -169,6 +192,16 @@ def build_cards(
         trend, tdelta = classify_trend(r60, rprior, n60, np_, min_n, trend_delta)
         action = suggested_action(v.verdict, v.breach_streak, trend)
 
+        lband, lconf, linv, ln, lart = LABEL_EXEMPT, None, None, 0, False
+        if is_side_label_dependent(v.cohort):
+            lc = (label_confidence or {}).get(v.cohort)
+            if lc is None:
+                lband = LABEL_UNVERIFIED
+            else:
+                lband = lc.band
+                lconf, linv = lc.confirm_frac, lc.invert_frac
+                ln, lart = lc.n_with_data, lc.edge_is_artifact
+
         cards.append(SignalHealthCard(
             cohort=v.cohort, verdict=v.verdict, suggested_action=action,
             breakeven=breakeven,
@@ -179,6 +212,8 @@ def build_cards(
             trend=trend, trend_delta=tdelta,
             expectancy_recent=v.expectancy_recent,
             expectancy_deteriorating=v.expectancy_deteriorating,
+            label_band=lband, label_confirm_frac=lconf, label_invert_frac=linv,
+            label_n_with_data=ln, label_artifact=lart,
             reason=v.reason,
         ))
 
@@ -206,6 +241,21 @@ _VERDICT_EMOJI = {
 }
 
 
+def _label_cell(c: "SignalHealthCard") -> str:
+    """Render the side-label-confidence column."""
+    if c.label_band == LABEL_EXEMPT:
+        return "—"
+    if c.label_band == LABEL_UNVERIFIED:
+        return "❓ UNVERIFIED"
+    emo = "🔒" if c.label_band == LABEL_HIGH else ("❓" if c.label_band == LABEL_LOW else "·")
+    out = f"{emo} {c.label_band}"
+    if c.label_confirm_frac is not None:
+        out += f" ({c.label_confirm_frac:.0%} tape, n={c.label_n_with_data})"
+    if c.label_artifact:
+        out += " ⚠️ARTIFACT"
+    return out
+
+
 def render_json(cards: list[SignalHealthCard]) -> list[dict]:
     return [asdict(c) for c in cards]
 
@@ -226,8 +276,8 @@ def render_markdown(cards: list[SignalHealthCard], *, now_ts: Optional[float] = 
 
     # Summary table.
     lines += ["## Summary", "",
-              "| Signal | Verdict | 60d WR (n) | AV-LCB | Exp (R) | Trend | Action |",
-              "|---|---|---|---|---|---|---|"]
+              "| Signal | Verdict | 60d WR (n) | AV-LCB | Exp (R) | Label | Trend | Action |",
+              "|---|---|---|---|---|---|---|---|"]
     for c in cards:
         emo = _VERDICT_EMOJI.get(c.verdict, "")
         # Flag the dangerous case: directionally HEALTHY but economically negative.
@@ -236,7 +286,8 @@ def render_markdown(cards: list[SignalHealthCard], *, now_ts: Optional[float] = 
             exp += " ⚠️"
         lines.append(
             f"| {c.cohort} | {emo} {c.verdict} | {_pct(c.rate_60d)} ({c.n_60d}) | "
-            f"{_pct(c.always_valid_lcb)} | {exp} | {c.trend} | {c.suggested_action} |")
+            f"{_pct(c.always_valid_lcb)} | {exp} | {_label_cell(c)} | {c.trend} | "
+            f"{c.suggested_action} |")
     lines.append("")
 
     # One card per signal.
@@ -261,6 +312,15 @@ def render_markdown(cards: list[SignalHealthCard], *, now_ts: Optional[float] = 
             det = "" if c.expectancy_deteriorating is None else (
                 " — DETERIORATING" if c.expectancy_deteriorating else " — stable/up")
             lines.append(f"- **Recent expectancy:** {c.expectancy_recent:+.3f} R{det}")
+        if c.label_band != LABEL_EXEMPT:
+            extra = ""
+            if c.label_confirm_frac is not None:
+                extra = (f" — tape-confirmed {_pct(c.label_confirm_frac)}, "
+                         f"inverted {_pct(c.label_invert_frac)} "
+                         f"(n={c.label_n_with_data})")
+            if c.label_artifact:
+                extra += " · ⚠️ edge is a LABELING ARTIFACT (confirmed-only subset contradicts)"
+            lines.append(f"- **Side-label confidence:** {_label_cell(c)}{extra}")
         if c.reason:
             lines.append(f"- _note: {c.reason}_")
         lines.append("")
@@ -269,7 +329,7 @@ def render_markdown(cards: list[SignalHealthCard], *, now_ts: Optional[float] = 
 
 __all__ = [
     "SignalHealthCard", "build_cards", "render_markdown", "render_json",
-    "classify_trend", "suggested_action",
+    "classify_trend", "suggested_action", "LABEL_UNVERIFIED", "LABEL_EXEMPT",
     "TREND_IMPROVING", "TREND_STABLE", "TREND_DETERIORATING", "TREND_INSUFFICIENT",
     "ACT_NONE", "ACT_INVESTIGATE", "ACT_PREPARE_RETIREMENT", "ACT_ACCUMULATE",
     "DEFAULT_TREND_DELTA",

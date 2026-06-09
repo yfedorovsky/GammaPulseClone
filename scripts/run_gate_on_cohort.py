@@ -20,6 +20,7 @@ from autoresearch.backtest_adapter import build_candidate, LIVE_DB_PATH  # noqa:
 from autoresearch.gate import TestCard, GateConfig, ValidationGate        # noqa: E402
 from autoresearch.trials_ledger import TrialLedger                        # noqa: E402
 from autoresearch.option_pnl import ThetaNBBOSource                       # noqa: E402
+from autoresearch.side_confirmation import ThetaTradeTapeSource           # noqa: E402
 
 
 def main(argv=None) -> int:
@@ -29,6 +30,9 @@ def main(argv=None) -> int:
     ap.add_argument("--db", default=LIVE_DB_PATH)
     ap.add_argument("--spot", action="store_true",
                     help="use the legacy directional-spot proxy instead of option PnL")
+    ap.add_argument("--no-tape", action="store_true",
+                    help="skip side-label tape verification (side-dependent cohorts "
+                         "then read UNVERIFIED and quarantine at LABEL_CONF)")
     ap.add_argument("--limit", type=int, default=None, help="cap clusters per cohort")
     ap.add_argument("--seed-n", type=int, default=300,
                     help="seed the GLOBAL trial count (C4); 0 to disable")
@@ -49,10 +53,11 @@ def main(argv=None) -> int:
     )
 
     source = None if args.spot else ThetaNBBOSource()
+    tape = None if (args.spot or args.no_tape) else ThetaTradeTapeSource()
     cand, diag = build_candidate(
         card, args.alert_type, db_path=args.db, baseline_alert_type=args.baseline,
         source=source, return_mode=("spot" if args.spot else "option_pnl"),
-        limit=args.limit,
+        limit=args.limit, tape_source=tape,
     )
 
     print("=" * 72)

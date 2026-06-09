@@ -4,6 +4,9 @@ Implements the ordered, cheap-rejection-first fitness function from the charter
 (docs/research/autoresearch/PROJECT.md and SYNTHESIS.md sec.5):
 
     0. TEST CARD + DEDUP   pre-registered card; reject semantic duplicates.   [cheap]
+    0.5 LABEL_CONF         side-label confidence (tape-confirmation fraction) for
+                           cohorts DEFINED by flow side tags; quarantines
+                           guessed-label cohorts, REJECTs labeling artifacts.
     1. MinTRL / MinBTL     cohort T must exceed the min length given GLOBAL N.
     2. CPCV                purged + embargoed OOS Sharpe distribution.
     3. PBO < 0.05          in-sample optimum must not rank below OOS median.
@@ -40,6 +43,9 @@ from .stats.cpcv import cpcv_splits, cpcv_oos_sharpes
 from .stats.spa import spa_beats_baseline
 from .trials_ledger import TrialLedger
 from .dedup import is_duplicate
+from .label_confidence import (
+    LabelConfidenceResult, LABEL_HIGH, LABEL_LOW, LABEL_MEDIUM, LABEL_UNKNOWN,
+)
 
 PASS, FAIL, WARN, SKIP = "PASS", "FAIL", "WARN", "SKIP"
 
@@ -107,6 +113,13 @@ class Candidate:
     # instead of (returns, baseline_returns); CPCV/DSR/PBO still use `returns`.
     spa_returns: Optional[Sequence[float]] = None
     spa_baseline_returns: Optional[Sequence[float]] = None
+    # Side-label confidence (the label-quality axis, orthogonal to MinTRL).
+    # True when the cohort's DIRECTION is derived from flow side tags
+    # (FLOW_*/WHALE/INFORMED/CLUSTER_*) — see label_confidence.is_side_label_dependent.
+    side_label_dependent: bool = False
+    # Tape-verification result from label_confidence.check_cohort_side_labels;
+    # None = labels unverified (which for a side-dependent cohort caps at SHADOW).
+    label_confidence: Optional[LabelConfidenceResult] = None
 
 
 @dataclass
@@ -246,6 +259,7 @@ class ValidationGate:
         # All remaining stages run (no short-circuit) so the report is a complete
         # diagnostic. The overall outcome is the WORST tier across them; SPA and
         # ECONOMIC are the hard gates, PBO and DSR are diagnostic bands (C1).
+        stages.append(self._stage_label_conf(cand))
         stages.append(self._stage_minlen(r, sr, skew, kurt, global_n))
         stages.append(self._stage_cpcv(r))
         stages.append(self._stage_pbo(cand))            # diagnostic
@@ -272,6 +286,50 @@ class ValidationGate:
                                        "match": dup.match_id},
                                message=f"duplicate ({dup.kind}): {dup.reason}")
         return StageResult("TEST_CARD", PASS, tier=SHIP, message="card complete, not a duplicate")
+
+    def _stage_label_conf(self, cand: Candidate) -> StageResult:
+        # LABEL QUALITY (orthogonal to MIN_LENGTH's data-volume axis). A cohort
+        # DEFINED by flow side tags (WHALE/INFORMED/FLOW_*) whose labels are
+        # snapshot guesses or tape-contradicted cannot be trusted no matter how
+        # large n is — every downstream stat would be garbage-in (MSTR 125C was
+        # tagged ASK while 99% of 51,847 contracts hit the BID on the tape).
+        # Quarantine (SHADOW) on unverified/low-confidence labels; REJECT only on
+        # positive evidence the edge is a labeling artifact (confirmed-only
+        # subset contradicts the full-cohort edge).
+        if not cand.side_label_dependent:
+            return StageResult("LABEL_CONF", PASS, tier=SHIP, role="gate",
+                               message="labels not side-derived (exempt)")
+        lc = cand.label_confidence
+        if lc is None:
+            return StageResult(
+                "LABEL_CONF", WARN, tier=SHADOW, role="gate",
+                message="side-defined cohort with UNVERIFIED labels — "
+                        "quarantined until tape-verified")
+        detail = {
+            "band": lc.band, "confirm_frac": lc.confirm_frac,
+            "confirm_lcb": lc.confirm_lcb, "invert_frac": lc.invert_frac,
+            "n_with_data": lc.n_with_data, "n_checked": lc.n_checked,
+            "edge_all": lc.edge_all, "edge_confirmed": lc.edge_confirmed,
+            "n_edge_confirmed": lc.n_edge_confirmed,
+            "edge_is_artifact": lc.edge_is_artifact,
+        }
+        if lc.edge_is_artifact:
+            return StageResult(
+                "LABEL_CONF", FAIL, tier=REJECT, role="gate", detail=detail,
+                message=f"edge is a LABELING ARTIFACT — full-cohort "
+                        f"{lc.edge_all:+.3f} vs confirmed-only "
+                        f"{lc.edge_confirmed:+.3f} (n={lc.n_edge_confirmed})")
+        if lc.band == LABEL_LOW:
+            return StageResult(
+                "LABEL_CONF", FAIL, tier=SHADOW, role="gate", detail=detail,
+                message=f"LOW label confidence — {lc.reason}; edge rests on "
+                        f"guessed/contradicted sides (quarantine, distinct from MinTRL)")
+        if lc.band in (LABEL_UNKNOWN, LABEL_MEDIUM):
+            return StageResult(
+                "LABEL_CONF", WARN, tier=SHADOW, role="gate", detail=detail,
+                message=f"{lc.band} label confidence — {lc.reason}")
+        return StageResult("LABEL_CONF", PASS, tier=SHIP, role="gate", detail=detail,
+                           message=f"HIGH label confidence — {lc.reason}")
 
     def _stage_minlen(self, r, sr, skew, kurt, global_n) -> StageResult:
         T = int(r.size)

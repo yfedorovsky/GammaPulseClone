@@ -234,3 +234,46 @@ SOE_BP vs SOE_A : REJECT (MIN_LENGTH, CPCV, PBO, DSR, ECONOMIC)
 ```
 Both honest quarantines; the fixes change the *reasoning quality*, not the
 (correct) REJECT outcomes — as predicted in the review.
+
+---
+
+# Phase 1.7 — Side-label confidence (the label-quality axis)
+
+**Added 2026-06-09.** OPRA-tape verification (6/8) proved flow-alert SIDE tags
+unreliable on big blocks (MSTR 125C tagged ASK; tape = 99.4% of 51,847 contracts
+at the BID). Side determines an alert's claimed direction, so side-defined
+cohorts (WHALE/INFORMED/FLOW_*) can show purely-artifactual "edges" no MinTRL
+gate can catch. Full design + live-system proposal: `SIDE_CONFIDENCE.md`.
+
+- **`side_confirmation.py`** — per-contract tape replay (ThetaData v3
+  `trade_quote`, cached): volume-weighted at-ask/at-bid/mid split → CONFIRMED /
+  INVERTED / AMBIGUOUS / NO_DATA vs the labeled (or direction-implied) side.
+  Golden test: reproduces the MSTR finding exactly (51,847 contracts, 99.4% bid
+  → INVERTED).
+- **`label_confidence.py`** — cohort aggregation over a deterministic strided
+  sample (cap 60): tape-confirmation fraction + Wilson LCB on it → bands
+  HIGH/MEDIUM/LOW/UNKNOWN; split-sample ARTIFACT test (full-cohort edge > 0 but
+  confirmed-only ≤ 0). Quarantine, never down-weight.
+- **Gate stage `LABEL_CONF`** (after TEST_CARD): exempt cohorts PASS; dependent
+  + unverified/LOW/MEDIUM/UNKNOWN → **SHADOW quarantine** (distinct from
+  MIN_LENGTH); dependent + artifact → **REJECT**.
+- **Health card "Label" column** (`--label-confidence`): 🔒 HIGH / ❓ LOW /
+  ❓ UNVERIFIED / — exempt.
+- **Live measurement (2026-06-09, first run):** FLOW_MEDIUM = **11.7%
+  tape-confirmed** (LCB 5.8%), 3.3% inverted, 51/60 ambiguous → LOW → gate
+  quarantines on labels *in addition to* its (already-negative) economics.
+
+**Discovered en route:** the live flow→`alert_outcomes` logging pipeline is DEAD
+— all FLOW rows are a one-time 5/13-14 backfill (`flow_alerts_backfill`); the
+2026-05-20 dispatch-site `log_alert` calls have never written a row (swallowed by
+`except Exception: pass`), so WHALE/INFORMED cohorts have **zero** outcome rows.
+Live-side fixes (persist `side_source`, fix the logging) are specified in
+SIDE_CONFIDENCE.md §6 and await operator sign-off.
+
+## Tests — 219 total, 0 failures
+```
+python scripts/test_side_confirmation.py                            # 58 (stdlib) NEW
+.venv-autoresearch/Scripts/python scripts/test_label_conf_gate.py   # 18 (venv)  NEW
+# all prior suites unchanged & green (decay 24, ledger 16, health card 21,
+# dedup 12, betting CS 13, stats 22, gate 12, adapter 10, option_pnl 7, pooling 6)
+```

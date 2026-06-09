@@ -32,9 +32,13 @@ from typing import Optional
 import numpy as np
 
 from .gate import TestCard, Candidate
+from .label_confidence import (
+    LabelConfidenceConfig, check_cohort_side_labels, is_side_label_dependent,
+)
 from .option_pnl import (
     NBBOSource, simulate_option_pnl, fire_hhmm_from_ts, et_day_from_ts,
 )
+from .side_confirmation import TradeTapeSource
 
 LIVE_DB_PATH = r"C:\Dev\GammaPulse\alert_outcomes.db"
 
@@ -210,7 +214,13 @@ def load_clusters_economic(db_path: str, alert_type: str, source: NBBOSource,
         clusters.append({"ticker": ticker, "day": day, "direction": direction,
                          "ret": float(res.r_multiple), "pnl_pct": float(res.pnl_pct),
                          "exit": res.exit_reason, "score": score,
-                         "n_alerts": g["n_alerts"]})
+                         "n_alerts": g["n_alerts"],
+                         # Representative contract spec + fire time — needed by
+                         # the side-label tape verification (label_confidence).
+                         "strike": float(rep["strike"]),
+                         "expiration": rep["expiration"],
+                         "option_type": rep["option_type"],
+                         "fired_at": float(rep["fired_at"])})
     coverage = {"n_clusters_attempted": n_attempt, "n_clusters_no_data": n_nodata,
                 "n_clusters_with_data": len(clusters), "n_alerts_total": len(rows)}
     return clusters, coverage
@@ -225,12 +235,20 @@ def build_candidate(card: TestCard, alert_type: str,
                     limit: Optional[int] = None,
                     vix_below: Optional[float] = None,
                     vix_atleast: Optional[float] = None,
-                    n_configs: int = 8) -> tuple[Candidate, dict]:
+                    n_configs: int = 8,
+                    tape_source: Optional[TradeTapeSource] = None,
+                    label_config: Optional[LabelConfidenceConfig] = None) -> tuple[Candidate, dict]:
     """Assemble a gate ``Candidate`` plus diagnostics.
 
     With an NBBO ``source`` and ``return_mode='option_pnl'`` (default), builds
     CLUSTER-level option-PnL R-multiple series (C5+C6). Without a source it falls
     back to the per-alert directional spot-return proxy (legacy / no-network).
+
+    With a ``tape_source`` (and economic clusters), side-label-dependent cohorts
+    (FLOW_*/WHALE/INFORMED/CLUSTER_*) get their side labels TAPE-VERIFIED
+    (label_confidence) and the result attached to the Candidate — the gate's
+    LABEL_CONF stage quarantines low-confidence-label cohorts. Without one, a
+    side-dependent cohort is honestly UNVERIFIED (also quarantined).
     """
     use_economic = source is not None and return_mode == "option_pnl"
 
@@ -259,10 +277,18 @@ def build_candidate(card: TestCard, alert_type: str,
     spa_returns = _daily_series(cand_items, all_days) if all_days else None
     spa_baseline = _daily_series(base_items, all_days) if all_days else None
 
+    side_dependent = is_side_label_dependent(alert_type)
+    label_conf = None
+    if side_dependent and tape_source is not None and use_economic and cand_items:
+        label_conf = check_cohort_side_labels(
+            alert_type, cand_items, tape_source, config=label_config)
+
     cand = Candidate(
         card=card, returns=rets, config_matrix=config_matrix,
         baseline_returns=spa_baseline, t1=t1,
         spa_returns=spa_returns, spa_baseline_returns=spa_baseline,
+        side_label_dependent=side_dependent,
+        label_confidence=label_conf,
     )
     diag = {
         "alert_type": alert_type,
@@ -277,6 +303,14 @@ def build_candidate(card: TestCard, alert_type: str,
         "config_matrix_shape": None if config_matrix is None else list(config_matrix.shape),
         "spa_grid_days": len(all_days),
         "coverage": cov,
+        "side_label_dependent": side_dependent,
+        "label_confidence": None if label_conf is None else {
+            "band": label_conf.band, "confirm_frac": label_conf.confirm_frac,
+            "confirm_lcb": label_conf.confirm_lcb,
+            "invert_frac": label_conf.invert_frac,
+            "n_with_data": label_conf.n_with_data,
+            "edge_is_artifact": label_conf.edge_is_artifact,
+        },
     }
     return cand, diag
 

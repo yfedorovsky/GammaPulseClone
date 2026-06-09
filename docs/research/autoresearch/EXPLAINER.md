@@ -139,6 +139,21 @@ checks first, expensive last. **File:** `autoresearch/gate.py`.
   test count). Ours checks both **wording similarity** and **structural** sameness
   (same signal + same direction + similar rationale = the same experiment).
 
+### Stage 0.5 — Label confidence (do the labels even mean anything?)
+Flow alerts get a **side** tag — ASK (someone aggressively *bought*) or BID
+(*sold*) — and that tag decides the alert's claimed direction. On big blocks the
+tag is often a **guess** (the live tracker falls back to a single snapshot print),
+and the real tape sometimes says the opposite: MSTR 125C was tagged ASK/bullish
+while 99.4% of 51,847 contracts actually hit the bid (selling). A cohort built on
+such labels can show a fake "edge" that no amount of data fixes — it's mislabeled,
+not under-sampled. So the gate **replays the OPRA tape** (every print + the quote
+it traded against) for a sample of each flow-derived cohort and computes the
+**tape-confirmation fraction**: how often the tape agrees with the label. Mostly
+guesses/contradictions → the cohort is **quarantined** on label quality (a
+different axis than "not enough data"); and if the edge *disappears* in the
+tape-confirmed subset, it's rejected as a **labeling artifact**. First live run:
+FLOW_MEDIUM was only **12% tape-confirmed**. (Detail: SIDE_CONFIDENCE.md.)
+
 ### Stage 1 — MinTRL / MinBTL (do we even have enough data?)
 - **MinTRL** = **Minimum Track Record Length** — the minimum number of trades needed
   to *statistically prove* a given edge. Small edges need *lots* of data.
@@ -262,6 +277,10 @@ shortcut version was invalid — which is exactly why you simulate instead of as
 | **SPA** | Superior Predictive Ability (Hansen — beat the baseline, not just zero) |
 | **VIX** | market fear index (expected volatility) |
 | **Wilson / Clopper-Pearson / Jeffreys** | three win-rate confidence-interval recipes |
+| **side (ASK/BID/MID)** | where an option trade executed vs the quote: at the ask = aggressive buy, at the bid = sell, between = unclear |
+| **tape / OPRA tape** | the full record of every option trade print (what ACTUALLY executed) |
+| **tape-confirmation fraction** | share of a cohort's alerts whose side tag the tape confirms (the label-quality metric) |
+| **labeling artifact** | an apparent edge that disappears in the tape-confirmed subset — it came from mislabeled trades |
 | **shadow mode** | computed/tagged but NOT changing live decisions (awaiting validation) |
 | **hysteresis** | require a condition to persist (≥2 checks) before acting |
 | **purge / embargo** | drop overlapping / buffer-skip trades so the future can't leak |
