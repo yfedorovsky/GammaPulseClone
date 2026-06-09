@@ -50,6 +50,11 @@ from autoresearch.label_confidence import (
 LABEL_UNVERIFIED = "UNVERIFIED"   # side-dependent cohort, no tape check attached.
 LABEL_EXEMPT = "EXEMPT"           # direction not derived from flow side tags.
 
+# A label grade computed on data older than this is flagged as a HISTORICAL
+# BASELINE — it measured the labeling code of that era (e.g. the 5/14 FLOW
+# backfill predates the #43/#47/#59 side-detection patches), not today's labels.
+LABEL_STALE_AFTER_DAYS = 7.0
+
 # A 60d-vs-prior-60d win-rate move bigger than this (in rate points) is a trend.
 DEFAULT_TREND_DELTA = 0.05
 
@@ -96,7 +101,11 @@ class SignalHealthCard:
     label_confirm_frac: Optional[float] = None
     label_invert_frac: Optional[float] = None
     label_n_with_data: int = 0
-    label_artifact: bool = False
+    label_n_low_resolution: int = 0
+    label_artifact: bool = False             # REJECT grade (sign-flip, large n).
+    label_artifact_suspected: bool = False   # SHADOW grade (small confirmed subset).
+    label_data_through: Optional[str] = None  # latest cluster day the grade saw.
+    label_stale: bool = False    # grade predates current code = historical baseline.
     reason: str = ""
 
 
@@ -192,7 +201,8 @@ def build_cards(
         trend, tdelta = classify_trend(r60, rprior, n60, np_, min_n, trend_delta)
         action = suggested_action(v.verdict, v.breach_streak, trend)
 
-        lband, lconf, linv, ln, lart = LABEL_EXEMPT, None, None, 0, False
+        lband, lconf, linv, ln = LABEL_EXEMPT, None, None, 0
+        llowres, lart, lsusp, lthru, lstale = 0, False, False, None, False
         if is_side_label_dependent(v.cohort):
             lc = (label_confidence or {}).get(v.cohort)
             if lc is None:
@@ -200,7 +210,14 @@ def build_cards(
             else:
                 lband = lc.band
                 lconf, linv = lc.confirm_frac, lc.invert_frac
-                ln, lart = lc.n_with_data, lc.edge_is_artifact
+                ln, llowres = lc.n_with_data, lc.n_low_resolution
+                lart, lsusp = lc.edge_is_artifact, lc.artifact_suspected
+                lthru = lc.data_through
+                if lthru is not None:
+                    cutoff = datetime.fromtimestamp(
+                        now - LABEL_STALE_AFTER_DAYS * SECONDS_PER_DAY,
+                        tz=timezone.utc).strftime("%Y-%m-%d")
+                    lstale = lthru < cutoff
 
         cards.append(SignalHealthCard(
             cohort=v.cohort, verdict=v.verdict, suggested_action=action,
@@ -213,7 +230,9 @@ def build_cards(
             expectancy_recent=v.expectancy_recent,
             expectancy_deteriorating=v.expectancy_deteriorating,
             label_band=lband, label_confirm_frac=lconf, label_invert_frac=linv,
-            label_n_with_data=ln, label_artifact=lart,
+            label_n_with_data=ln, label_n_low_resolution=llowres,
+            label_artifact=lart, label_artifact_suspected=lsusp,
+            label_data_through=lthru, label_stale=lstale,
             reason=v.reason,
         ))
 
@@ -253,6 +272,10 @@ def _label_cell(c: "SignalHealthCard") -> str:
         out += f" ({c.label_confirm_frac:.0%} tape, n={c.label_n_with_data})"
     if c.label_artifact:
         out += " ⚠️ARTIFACT"
+    elif c.label_artifact_suspected:
+        out += " ⚠️artifact?"
+    if c.label_stale and c.label_data_through:
+        out += f" ⏳thru {c.label_data_through}"
     return out
 
 
@@ -318,8 +341,19 @@ def render_markdown(cards: list[SignalHealthCard], *, now_ts: Optional[float] = 
                 extra = (f" — tape-confirmed {_pct(c.label_confirm_frac)}, "
                          f"inverted {_pct(c.label_invert_frac)} "
                          f"(n={c.label_n_with_data})")
+            if c.label_n_low_resolution:
+                extra += (f" · {c.label_n_low_resolution} low-resolution "
+                          f"(liquid-name dilution, excluded)")
             if c.label_artifact:
-                extra += " · ⚠️ edge is a LABELING ARTIFACT (confirmed-only subset contradicts)"
+                extra += (" · ⚠️ edge is a LABELING ARTIFACT "
+                          "(confirmed-only subset sign-flips)")
+            elif c.label_artifact_suspected:
+                extra += (" · ⚠️ SUSPECTED artifact (confirmed-only edge ≤ 0; "
+                          "needs a larger confirmed subset)")
+            if c.label_stale and c.label_data_through:
+                extra += (f" · ⏳ HISTORICAL BASELINE — graded on data through "
+                          f"{c.label_data_through}, which predates the current "
+                          f"side-detection code; not a statement about today's labels")
             lines.append(f"- **Side-label confidence:** {_label_cell(c)}{extra}")
         if c.reason:
             lines.append(f"- _note: {c.reason}_")

@@ -309,27 +309,40 @@ class ValidationGate:
             "band": lc.band, "confirm_frac": lc.confirm_frac,
             "confirm_lcb": lc.confirm_lcb, "invert_frac": lc.invert_frac,
             "n_with_data": lc.n_with_data, "n_checked": lc.n_checked,
+            "n_low_resolution": lc.n_low_resolution,
             "edge_all": lc.edge_all, "edge_confirmed": lc.edge_confirmed,
             "n_edge_confirmed": lc.n_edge_confirmed,
             "edge_is_artifact": lc.edge_is_artifact,
+            "artifact_suspected": lc.artifact_suspected,
+            "data_from": lc.data_from, "data_through": lc.data_through,
         }
+        # A grade is only as current as the data it was computed on — the 5/14
+        # FLOW backfill predates the side-detection patches, so a grade on it is
+        # a HISTORICAL BASELINE of the old labeling code, not "today".
+        span = f" [labels graded on data thru {lc.data_through}]" if lc.data_through else ""
         if lc.edge_is_artifact:
             return StageResult(
                 "LABEL_CONF", FAIL, tier=REJECT, role="gate", detail=detail,
                 message=f"edge is a LABELING ARTIFACT — full-cohort "
-                        f"{lc.edge_all:+.3f} vs confirmed-only "
-                        f"{lc.edge_confirmed:+.3f} (n={lc.n_edge_confirmed})")
+                        f"{lc.edge_all:+.3f} vs confirmed-only SIGN-FLIP "
+                        f"{lc.edge_confirmed:+.3f} (n={lc.n_edge_confirmed}){span}")
+        if lc.artifact_suspected:
+            return StageResult(
+                "LABEL_CONF", FAIL, tier=SHADOW, role="gate", detail=detail,
+                message=f"SUSPECTED labeling artifact — confirmed-only edge "
+                        f"{lc.edge_confirmed:+.3f} (n={lc.n_edge_confirmed}; reject "
+                        f"grade needs a sign-flip on a larger subset){span}")
         if lc.band == LABEL_LOW:
             return StageResult(
                 "LABEL_CONF", FAIL, tier=SHADOW, role="gate", detail=detail,
                 message=f"LOW label confidence — {lc.reason}; edge rests on "
-                        f"guessed/contradicted sides (quarantine, distinct from MinTRL)")
+                        f"guessed/contradicted sides (quarantine, distinct from MinTRL){span}")
         if lc.band in (LABEL_UNKNOWN, LABEL_MEDIUM):
             return StageResult(
                 "LABEL_CONF", WARN, tier=SHADOW, role="gate", detail=detail,
-                message=f"{lc.band} label confidence — {lc.reason}")
+                message=f"{lc.band} label confidence — {lc.reason}{span}")
         return StageResult("LABEL_CONF", PASS, tier=SHIP, role="gate", detail=detail,
-                           message=f"HIGH label confidence — {lc.reason}")
+                           message=f"HIGH label confidence — {lc.reason}{span}")
 
     def _stage_minlen(self, r, sr, skew, kurt, global_n) -> StageResult:
         T = int(r.size)

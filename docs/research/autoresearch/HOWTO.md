@@ -50,8 +50,11 @@ Open `health.md`. Useful flags: `--breakeven 0.227` (your R:R breakeven), `--min
   actually confirms. `🔒 HIGH` = labels tape-backed · `❓ LOW` = the cohort's
   direction labels are mostly guesses or tape-contradicted (MSTR 125C class) ·
   `❓ UNVERIFIED` = not yet tape-checked (run `--label-confidence`) · `—` = cohort
-  exempt (direction not derived from flow side tags). Live measurement 2026-06-09:
-  FLOW_MEDIUM = **12% tape-confirmed** → LOW. See SIDE_CONFIDENCE.md.
+  exempt (direction not derived from flow side tags). A `⏳ HISTORICAL BASELINE`
+  flag means the grade was computed on old data (e.g. the 5/14 FLOW backfill,
+  which predates the current side-detection code) — it is NOT a statement about
+  today's labels. Live measurement 2026-06-09: FLOW_MEDIUM = **12%
+  tape-confirmed** → LOW (data thru 5/13). See SIDE_CONFIDENCE.md.
 - **Trend / Action:** 60d-vs-prior-60d move + the suggested next step (none /
   investigate / prepare-retirement / accumulate-data).
 
@@ -89,11 +92,11 @@ Open `health.md`. Useful flags: `--breakeven 0.227` (your R:R breakeven), `--min
 ```
 python scripts\test_signal_health_card.py        # 21
 python scripts\test_dedup.py                      # 12
-python scripts\test_side_confirmation.py          # 58  (tape verification + label bands)
+python scripts\test_side_confirmation.py          # 77  (tape verification + label bands)
 python scripts\test_betting_cs.py                 # coverage sim (slow-ish)
 .venv-autoresearch\Scripts\python scripts\test_decay_monitor.py    # 24
 .venv-autoresearch\Scripts\python scripts\test_gate_acceptance.py  # 12
-.venv-autoresearch\Scripts\python scripts\test_label_conf_gate.py  # 18  (LABEL_CONF stage)
+.venv-autoresearch\Scripts\python scripts\test_label_conf_gate.py  # 22  (LABEL_CONF stage)
 ```
 
 ## Hard rules (do not break)

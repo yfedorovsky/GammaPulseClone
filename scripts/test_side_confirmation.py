@@ -23,9 +23,9 @@ except Exception:
     pass
 
 from autoresearch.side_confirmation import (  # noqa: E402
-    AMBIGUOUS, CONFIRMED, INVERTED, NO_DATA,
+    AMBIGUOUS, CONFIRMED, INVERTED, LOW_RESOLUTION, NO_DATA,
     TapePrint, ThetaTradeTapeSource, classify_tape, fire_window, implied_side,
-    verify_side,
+    narrow_window, verify_side,
 )
 from autoresearch.label_confidence import (  # noqa: E402
     LABEL_HIGH, LABEL_LOW, LABEL_MEDIUM, LABEL_UNKNOWN,
@@ -117,6 +117,11 @@ def test_fire_window_and_stride():
     check("window open..fire+5", s == "09:30:00.000" and e == "10:23:00.000", f"{s}..{e}")
     s, e = fire_window("15:58", buffer_min=5)
     check("window clamps at close", e == "16:00:00.000", e)
+    s, e = narrow_window("11:00", lookback_min=30, buffer_min=5)
+    check("narrow window fire-30..fire+5",
+          s == "10:30:00.000" and e == "11:05:00.000", f"{s}..{e}")
+    s, e = narrow_window("09:40", lookback_min=30, buffer_min=5)
+    check("narrow window clamps at open", s == "09:30:00.000", s)
 
     items = list(range(100))
     sub = stride_sample(items, 10)
@@ -207,6 +212,9 @@ def test_cohort_no_tape_coverage():
 
 def test_artifact_detection():
     # Confirmed clusters lose money; ambiguous (guessed) ones carry the "edge".
+    # 12 confirmed = above artifact_min_n (10) but below artifact_reject_min_n
+    # (30) -> SUSPECTED (shadow grade), NOT the hard reject (live-ops review:
+    # a hard REJECT off a tiny confirmed subset would be noise).
     mapping = {f"C{i}": _prints(ask=95, bid=5) for i in range(12)}
     mapping.update({f"A{i}": _prints(mid=100) for i in range(18)})
     tape = _StubTape(mapping)
@@ -218,11 +226,117 @@ def test_artifact_detection():
     check("confirmed-only edge negative",
           res.edge_confirmed is not None and res.edge_confirmed <= 0,
           str(res.edge_confirmed))
-    check("ARTIFACT flagged", res.edge_is_artifact, res.reason)
-    # And no artifact when the confirmed subset is too thin to say.
+    check("small confirmed subset -> SUSPECTED, not reject",
+          res.artifact_suspected and not res.edge_is_artifact, res.reason)
+    # And nothing flagged when the confirmed subset is too thin even to suspect.
     cfg = LabelConfidenceConfig(artifact_min_n=50)
     res2 = check_cohort_side_labels("WHALE", clusters, tape, config=cfg)
-    check("artifact needs min confirmed n", not res2.edge_is_artifact)
+    check("suspicion needs min confirmed n",
+          not res2.edge_is_artifact and not res2.artifact_suspected)
+
+
+def test_artifact_reject_grade_needs_sign_flip_at_scale():
+    # 35 confirmed clusters with a strictly NEGATIVE edge -> the hard REJECT grade.
+    mapping = {f"C{i}": _prints(ask=95, bid=5) for i in range(35)}
+    mapping.update({f"A{i}": _prints(mid=100) for i in range(20)})
+    tape = _StubTape(mapping)
+    clusters = ([_cluster(f"C{i}", i, ret=-0.1) for i in range(35)]
+                + [_cluster(f"A{i}", 100 + i, ret=1.0) for i in range(20)])
+    res = check_cohort_side_labels("WHALE", clusters, tape)
+    check("sign-flip at n>=30 -> REJECT grade",
+          res.edge_is_artifact and not res.artifact_suspected, res.reason)
+    # Strictly-zero confirmed edge at scale stays SUSPECTED (no sign flip).
+    clusters_flat = ([_cluster(f"C{i}", i, ret=0.0) for i in range(35)]
+                     + [_cluster(f"A{i}", 100 + i, ret=1.0) for i in range(20)])
+    res2 = check_cohort_side_labels("WHALE", clusters_flat, tape)
+    check("zero (no sign-flip) confirmed edge -> only SUSPECTED",
+          res2.artifact_suspected and not res2.edge_is_artifact, res2.reason)
+
+
+def test_data_span_fields():
+    tape = _StubTape({}, default=_prints(ask=100))
+    clusters = [_cluster(f"T{i}", i) for i in range(15)]
+    clusters[0]["day"] = "2026-05-13"
+    clusters[-1]["day"] = "2026-06-05"
+    res = check_cohort_side_labels("WHALE", clusters, tape)
+    check("data_from = earliest day", res.data_from == "2026-05-13", res.data_from)
+    check("data_through = latest day", res.data_through == "2026-06-05",
+          res.data_through)
+
+
+class _WindowStubTape:
+    """Window-sensitive stub: full-session window vs narrowed retry window."""
+
+    def __init__(self, full, narrow):
+        self.full = full
+        self.narrow = narrow
+
+    def prints(self, ticker, expiration, strike, right, date, start, end):
+        return self.full if start == "09:30:00.000" else self.narrow
+
+
+FIRE_11ET = 1_699_977_600.0  # 2023-11-14 16:00 UTC = 11:00 ET.
+
+
+def _liquid_cluster(ticker, i=0, alert_volume=None, ret=None):
+    c = _cluster(ticker, i, ret=ret)
+    c["fired_at"] = FIRE_11ET + i  # keep ordering, same fire minute.
+    c["alert_volume"] = alert_volume
+    return c
+
+
+def test_dilution_guard_narrow_window_resolves():
+    # Liquid name: session tape 10,000 mid contracts dilutes a 50-lot block,
+    # but the block-centered narrow window isolates it -> CONFIRMED via narrow.
+    tape = _WindowStubTape(full=_prints(mid=10_000),
+                           narrow=_prints(ask=45, bid=5))
+    clusters = [_liquid_cluster(f"T{i}", i, alert_volume=50) for i in range(15)]
+    res = check_cohort_side_labels("WHALE", clusters, tape)
+    check("narrow window resolves dilution", res.n_confirmed == 15,
+          f"conf={res.n_confirmed} lowres={res.n_low_resolution}")
+    check("checks marked window=narrow",
+          all(c.window == "narrow" for c in res.checks),
+          str({c.window for c in res.checks}))
+
+
+def test_dilution_guard_low_resolution():
+    # Both windows diluted -> LOW_RESOLUTION, excluded from the denominator —
+    # liquid-name dilution must NOT read as AMBIGUOUS/low label quality.
+    tape = _WindowStubTape(full=_prints(mid=10_000), narrow=_prints(mid=5_000))
+    clusters = [_liquid_cluster(f"T{i}", i, alert_volume=50) for i in range(15)]
+    res = check_cohort_side_labels("WHALE", clusters, tape)
+    check("all LOW_RESOLUTION", res.n_low_resolution == 15,
+          f"lowres={res.n_low_resolution} amb={res.n_ambiguous}")
+    check("excluded from denominator -> UNKNOWN not LOW",
+          res.n_with_data == 0 and res.band == LABEL_UNKNOWN,
+          f"n_data={res.n_with_data} band={res.band}")
+    check("reason mentions low-resolution", "low-resolution" in res.reason,
+          res.reason)
+    statuses = {c.status for c in res.checks}
+    check("check status is LOW_RESOLUTION", statuses == {LOW_RESOLUTION},
+          str(statuses))
+
+
+def test_dilution_guard_skipped_without_alert_volume():
+    # No alert_volume -> guard can't run -> mid tape stays AMBIGUOUS (old behavior).
+    tape = _WindowStubTape(full=_prints(mid=10_000), narrow=_prints(ask=45, bid=5))
+    clusters = [_liquid_cluster(f"T{i}", i, alert_volume=None) for i in range(15)]
+    res = check_cohort_side_labels("WHALE", clusters, tape)
+    check("no alert_volume -> ambiguous, no guard",
+          res.n_ambiguous == 15 and res.n_low_resolution == 0,
+          f"amb={res.n_ambiguous} lowres={res.n_low_resolution}")
+
+
+def test_dilution_guard_not_triggered_when_block_dominates():
+    # Alert volume ~ the windowed tape (the illiquid/MSTR case) -> full-window
+    # verdict stands; no narrow retry.
+    tape = _WindowStubTape(full=_prints(ask=900, bid=100),
+                           narrow=_prints(bid=100))   # would invert if used.
+    clusters = [_liquid_cluster(f"T{i}", i, alert_volume=900) for i in range(15)]
+    res = check_cohort_side_labels("WHALE", clusters, tape)
+    check("dominant block -> full-window CONFIRMED", res.n_confirmed == 15,
+          f"conf={res.n_confirmed}")
+    check("window stays full", all(c.window == "full" for c in res.checks))
 
 
 def test_missing_contract_spec_is_no_data():
@@ -324,6 +438,38 @@ def test_card_label_column():
         os.unlink(db)
 
 
+def test_card_historical_baseline_flag():
+    """A grade computed on old data is flagged as a historical baseline —
+    a 5/14-backfill grade must never read as a statement about TODAY's labels."""
+    rows = _cohort_rows("FLOW_MEDIUM", 60, 0.5, 10)
+    db = _make_db(rows)
+    try:
+        tape = _StubTape({}, default=_prints(ask=95, bid=5))
+        old = [_cluster(f"T{i}", i, ret=0.1) for i in range(20)]
+        for c in old:
+            c["day"] = "2023-01-05"   # far older than NOW - 7d.
+        lc = check_cohort_side_labels("FLOW_MEDIUM", old, tape)
+        cards, _ = build_cards(db, now_ts=NOW, label_confidence={"FLOW_MEDIUM": lc})
+        c = {x.cohort: x for x in cards}["FLOW_MEDIUM"]
+        check("stale flag set", c.label_stale and c.label_data_through == "2023-01-05",
+              f"stale={c.label_stale} thru={c.label_data_through}")
+        md = render_markdown(cards, now_ts=NOW)
+        check("markdown flags HISTORICAL BASELINE", "HISTORICAL BASELINE" in md)
+        check("summary cell carries thru-date", "⏳thru 2023-01-05" in md)
+
+        # Fresh data (relative to NOW) is NOT flagged.
+        fresh = [_cluster(f"T{i}", i, ret=0.1) for i in range(20)]
+        for f in fresh:
+            f["day"] = "2023-11-14"   # NOW is 2023-11-14 UTC.
+        lc2 = check_cohort_side_labels("FLOW_MEDIUM", fresh, tape)
+        cards2, _ = build_cards(db, now_ts=NOW, label_confidence={"FLOW_MEDIUM": lc2})
+        c2 = {x.cohort: x for x in cards2}["FLOW_MEDIUM"]
+        check("fresh grade not stale", not c2.label_stale,
+              f"stale={c2.label_stale} thru={c2.label_data_through}")
+    finally:
+        os.unlink(db)
+
+
 def main() -> int:
     print("=== side confirmation / label confidence tests ===")
     for fn in (test_classify_tape, test_implied_side, test_verify_side,
@@ -331,8 +477,15 @@ def main() -> int:
                test_cohort_inverted_low, test_cohort_mid_ambiguous_low,
                test_cohort_medium_band, test_cohort_unknown_small_n,
                test_cohort_no_tape_coverage, test_artifact_detection,
+               test_artifact_reject_grade_needs_sign_flip_at_scale,
+               test_data_span_fields,
+               test_dilution_guard_narrow_window_resolves,
+               test_dilution_guard_low_resolution,
+               test_dilution_guard_skipped_without_alert_volume,
+               test_dilution_guard_not_triggered_when_block_dominates,
                test_missing_contract_spec_is_no_data, test_side_label_dependence,
-               test_tape_source_cache, test_card_label_column):
+               test_tape_source_cache, test_card_label_column,
+               test_card_historical_baseline_flag):
         print(f"\n{fn.__name__}:")
         fn()
     print(f"\n{'='*46}\n  {_passed} passed, {_failed} failed")

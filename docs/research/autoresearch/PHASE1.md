@@ -277,3 +277,29 @@ python scripts/test_side_confirmation.py                            # 58 (stdlib
 # all prior suites unchanged & green (decay 24, ledger 16, health card 21,
 # dedup 12, betting CS 13, stats 22, gate 12, adapter 10, option_pnl 7, pooling 6)
 ```
+
+## Phase 1.7b — live-ops review refinements (2026-06-09 PM, applied)
+
+The live-ops session (main) independently confirmed both findings (frozen FLOW
+backfill; dead `log_alert` while the dispatch path is alive per telegram_audit)
+and took ownership of all §6 live-side work. Three review refinements applied:
+
+1. **Liquidity-dilution guard** — `volume_share = alert_volume / windowed tape`;
+   < 0.25 → block-centered narrow-window retry (fire−30m→fire+5m); still diluted
+   → `LOW_RESOLUTION`, excluded from the denominator (never AMBIGUOUS). Adapter
+   now carries `alert_volume` (flagged_volume → raw_alert_json fallback). Live
+   check: 5/13 FLOW_MEDIUM shares 0.64–1.0 → guard correctly inert there; it
+   arms for whale blocks on liquid names.
+2. **Historical-baseline labeling** — results carry `data_from`/`data_through`;
+   gate messages append "[labels graded on data thru …]"; card flags >7d-old
+   grades `⏳ HISTORICAL BASELINE` (the 5/14 backfill predates side-detection
+   patches #43/#47/#59 — its grade is the OLD code's baseline, not "today").
+3. **Artifact severity split** — confirmed-edge ≤ 0 at n≥10 → ARTIFACT-SUSPECTED
+   (SHADOW); hard REJECT now requires a SIGN FLIP (< 0) at n≥30 confirmed.
+
+## Tests — 246 total, 0 failures
+```
+python scripts/test_side_confirmation.py                            # 77 (stdlib) +19
+.venv-autoresearch/Scripts/python scripts/test_label_conf_gate.py   # 22 (venv)   +4
+# all prior suites unchanged & green
+```

@@ -43,6 +43,13 @@ CONFIRMED = "CONFIRMED"    # tape aggressor matches the labeled side.
 INVERTED = "INVERTED"      # tape aggressor is the OPPOSITE side (the MSTR case).
 AMBIGUOUS = "AMBIGUOUS"    # tape is MID-dominated / no clear aggressor (MU/MRVL).
 NO_DATA = "NO_DATA"        # no tape coverage (or below min_contracts).
+# On LIQUID names the flagged block can be a small share of the session tape, so
+# a cumulative volume-weighted window washes it out and reads false-MID. When the
+# alert's flagged volume is a small share of the windowed tape volume and a
+# block-centered narrow window can't resolve it either, the verdict is
+# LOW_RESOLUTION — "the window can't see the block", NOT a label-quality verdict.
+# Excluded from the confirmation denominator (like NO_DATA).
+LOW_RESOLUTION = "LOW_RESOLUTION"
 
 
 @dataclass
@@ -197,6 +204,14 @@ def verify_side(labeled_side: Optional[str], tape: TapeSide) -> str:
     return AMBIGUOUS
 
 
+def _hhmm_plus(fire_hhmm: str, delta_min: int) -> tuple[int, int]:
+    h, m = int(fire_hhmm[:2]), int(fire_hhmm[3:5])
+    total = h * 60 + m + delta_min
+    total = max(total, 9 * 60 + 30)        # clamp to session open.
+    total = min(total, 16 * 60)            # clamp to session close.
+    return total // 60, total % 60
+
+
 def fire_window(fire_hhmm: str, buffer_min: int = 5) -> tuple[str, str]:
     """Tape window for an alert: session open -> fire time + buffer.
 
@@ -204,19 +219,26 @@ def fire_window(fire_hhmm: str, buffer_min: int = 5) -> tuple[str, str]:
     executed BEFORE the fire; a small buffer catches the triggering block when
     the snapshot lagged the print.
     """
-    h, m = int(fire_hhmm[:2]), int(fire_hhmm[3:5])
-    m += buffer_min
-    h += m // 60
-    m %= 60
-    # Clamp to the session close.
-    if (h, m) > (16, 0):
-        h, m = 16, 0
+    h, m = _hhmm_plus(fire_hhmm, buffer_min)
     return "09:30:00.000", f"{h:02d}:{m:02d}:00.000"
+
+
+def narrow_window(fire_hhmm: str, lookback_min: int = 30,
+                  buffer_min: int = 5) -> tuple[str, str]:
+    """Block-centered tape window: fire - lookback -> fire + buffer.
+
+    Used when the full-session window dilutes the flagged block on a liquid name
+    — the block that tripped the alert is the most recent flow, so a window
+    anchored just before the fire isolates it from the day's unrelated churn.
+    """
+    h0, m0 = _hhmm_plus(fire_hhmm, -lookback_min)
+    h1, m1 = _hhmm_plus(fire_hhmm, buffer_min)
+    return f"{h0:02d}:{m0:02d}:00.000", f"{h1:02d}:{m1:02d}:00.000"
 
 
 __all__ = [
     "TapePrint", "TradeTapeSource", "ThetaTradeTapeSource", "TapeSide",
-    "classify_tape", "implied_side", "verify_side", "fire_window",
-    "CONFIRMED", "INVERTED", "AMBIGUOUS", "NO_DATA",
+    "classify_tape", "implied_side", "verify_side", "fire_window", "narrow_window",
+    "CONFIRMED", "INVERTED", "AMBIGUOUS", "NO_DATA", "LOW_RESOLUTION",
     "ASK_DOMINANT", "BID_DOMINANT", "DEFAULT_MIN_CONTRACTS",
 ]

@@ -148,11 +148,13 @@ def test_low_confidence_quarantined_distinct_from_mintrl():
 
 
 def test_artifact_rejects():
-    mapping = {f"C{i}": _prints(ask=95, bid=5) for i in range(12)}
-    mapping.update({f"A{i}": _prints(mid=100) for i in range(18)})
+    # REJECT grade: confirmed-only edge SIGN-FLIPS on >= artifact_reject_min_n
+    # (30) confirmed clusters.
+    mapping = {f"C{i}": _prints(ask=95, bid=5) for i in range(35)}
+    mapping.update({f"A{i}": _prints(mid=100) for i in range(20)})
     tape = _StubTape(mapping)
-    clusters = ([{**c, "ret": -0.1} for c in _clusters(12, prefix="C")]
-                + [{**c, "ret": 1.0} for c in _clusters(18, prefix="A")])
+    clusters = ([{**c, "ret": -0.1} for c in _clusters(35, prefix="C")]
+                + [{**c, "ret": 1.0} for c in _clusters(20, prefix="A")])
     lc_res = check_cohort_side_labels("WHALE", clusters, tape)
     rep, lc = _eval(_base_candidate("WHALE-ARTIFACT", dependent=True,
                                     label_conf=lc_res))
@@ -161,6 +163,28 @@ def test_artifact_rejects():
     check("gate outcome REJECT", rep.outcome == REJECT, rep.outcome)
     check("LABEL_CONF among reject drivers", "LABEL_CONF" in rep.drivers,
           str(rep.drivers))
+    check("message notes the graded data span", "data thru" in lc.message,
+          lc.message)
+
+
+def test_suspected_artifact_shadows_not_rejects():
+    # Confirmed subset negative but SMALL (12 < 30) -> SHADOW, not REJECT
+    # (live-ops review: hard reject off a 10-row subset is noise).
+    mapping = {f"C{i}": _prints(ask=95, bid=5) for i in range(12)}
+    mapping.update({f"A{i}": _prints(mid=100) for i in range(18)})
+    tape = _StubTape(mapping)
+    clusters = ([{**c, "ret": -0.1} for c in _clusters(12, prefix="C")]
+                + [{**c, "ret": 1.0} for c in _clusters(18, prefix="A")])
+    lc_res = check_cohort_side_labels("WHALE", clusters, tape)
+    check("result is SUSPECTED grade",
+          lc_res.artifact_suspected and not lc_res.edge_is_artifact, lc_res.reason)
+    rep, lc = _eval(_base_candidate("WHALE-SUSPECT", dependent=True,
+                                    label_conf=lc_res))
+    check("suspected -> FAIL/SHADOW (not REJECT)",
+          lc.status == "FAIL" and lc.tier == SHADOW, f"{lc.status}/{lc.tier}")
+    check("LABEL_CONF does not REJECT the gate",
+          "LABEL_CONF" not in (rep.drivers if rep.outcome == REJECT else []),
+          f"{rep.outcome} {rep.drivers}")
 
 
 def test_high_confidence_does_not_cap():
@@ -239,7 +263,8 @@ def main() -> int:
     print("=== label-confidence gate tests ===")
     for fn in (test_exempt_cohort_passes, test_unverified_dependent_quarantined,
                test_low_confidence_quarantined_distinct_from_mintrl,
-               test_artifact_rejects, test_high_confidence_does_not_cap,
+               test_artifact_rejects, test_suspected_artifact_shadows_not_rejects,
+               test_high_confidence_does_not_cap,
                test_adapter_attaches_label_confidence):
         print(f"\n{fn.__name__}:")
         fn()

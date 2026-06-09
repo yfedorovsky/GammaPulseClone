@@ -1,7 +1,9 @@
 # Side-Label Confidence — a label-quality dimension for the validation gate
 
-**Status:** designed 2026-06-09 · offline parts built on `feature/autoresearch-loop` ·
-live-system parts are a PROPOSAL awaiting operator sign-off (§6).
+**Status:** designed + built 2026-06-09 on `feature/autoresearch-loop`; live-ops
+review (Opus, on main) confirmed the findings and added three refinements
+(§3.6) — all applied. **§6 is now OWNED BY THE LIVE-OPS SESSION on main**
+(the dead-pipeline fix + side_source persistence); this branch will not touch it.
 
 ---
 
@@ -175,21 +177,59 @@ A follow-up (separate task) can add a `flow_alerts`-backed cohort builder so
 WHALE/INFORMED candidates run the full gate with offline-computed option-PnL
 outcomes — the label-confidence layer designed here applies unchanged.
 
+## 3.6 Refinements from the live-ops review (2026-06-09, applied)
+
+1. **Liquidity-dilution guard.** The cumulative `09:30→fire+5m` window works when
+   the flagged block dominates session volume (MSTR/illiquid class) but washes
+   out a block that is a small share of a liquid name's tape — false-MID. Now:
+   each cluster computes `volume_share = alert_volume / windowed_tape_volume`
+   (`alert_volume` = `flagged_volume`, falling back to `raw_alert_json` vol).
+   When share < `dilution_min_share` (0.25), retry a **block-centered narrow
+   window** (`fire−30m → fire+5m`); if still diluted, the verdict is
+   **`LOW_RESOLUTION`** — excluded from the confirmation denominator like
+   NO_DATA, *never* counted as AMBIGUOUS. Dilution is a window limitation, not a
+   label-quality verdict. (Verified live: the 5/13 FLOW_MEDIUM clusters all carry
+   shares 0.64–1.0 — cumulative-volume alerts self-dominate — so the guard arms
+   for whale-block cohorts on SPY/QQQ-class names, where it matters.)
+2. **Historical-baseline labeling.** The only outcome-bearing FLOW data predates
+   the side-detection patches (#43 5/13, #47 6/4, #59 6/8), so a grade on it
+   measures the OLD code's labels. Results now carry `data_from`/`data_through`;
+   the gate message appends "[labels graded on data thru …]"; the health card
+   flags grades older than 7 days as `⏳ HISTORICAL BASELINE`. Current-label
+   relevance arrives automatically once §6.3 lands and fresh outcomes accrue.
+3. **Artifact severity split.** A hard REJECT off a 10-row confirmed subset is
+   noise. Now: confirmed-only edge ≤ 0 at `artifact_min_n` (10) →
+   **ARTIFACT-SUSPECTED, caps at SHADOW**; the hard **REJECT** grade requires a
+   genuine **sign flip** (confirmed edge strictly < 0) on ≥
+   `artifact_reject_min_n` (30) confirmed clusters.
+
 ## 5. Cost & limits (honest)
 
-- One `trade_quote` request per (contract, day) per sampled cluster, cached
-  forever after. Sample cap 60/cohort keeps a full health-card run bounded.
-- The tape window aggregates ALL prints in `09:30 → fire+5m`, not just the
-  triggering block. For V/OI-shock alerts the block dominates the session volume
-  by construction, so volume-weighting is a good proxy — but a multi-block
-  two-sided session can read MID. That is the *correct* signal for our purpose
-  (no clean aggressor = label not trustworthy), not a bug.
+- One `trade_quote` request per (contract, day) per sampled cluster (two when the
+  dilution guard retries narrow), cached forever after. Sample cap 60/cohort
+  keeps a full health-card run bounded.
+- For V/OI-shock alerts the block dominates the session volume by construction,
+  so volume-weighting is a good proxy; a multi-block two-sided session on an
+  *illiquid* name reading MID is correct signal (no clean aggressor = label not
+  trustworthy). On *liquid* names the dilution guard (§3.6.1) keeps washed-out
+  windows from masquerading as label problems.
 - `AMBIGUOUS` ≠ `INVERTED`: MID-dominated tape doesn't prove the label wrong,
-  only unsupported. Only inversions feed the artifact REJECT.
+  only unsupported. Only sign-flipping inversion evidence feeds the artifact
+  REJECT; smaller contradictions cap at SHADOW (§3.6.3).
 - Verification is at the **cluster representative** (earliest fire, same unit as
   C5/C6) — consistent with how the gate already scores cohorts.
+- A grade is only as current as its data (§3.6.2) — today's grades on the 5/13-14
+  backfill are a baseline of the old labeling code, not of today's.
 
-## 6. Live-system proposal (main) — NEEDS OPERATOR SIGN-OFF, not built
+## 6. Live-system changes (main) — OWNED BY THE LIVE-OPS SESSION (lane split 2026-06-09)
+
+> **Lane split:** live-ops (Opus, on main) owns everything in this section —
+> the §6.3 pipeline fix AND the §6.1/6.2 side_source persistence. The
+> AutoResearch branch must not touch main or re-propose these. Live-ops also
+> confirmed via `telegram_audit.jsonl` (7,179 events on 6/9, WHALE/CLUSTER/
+> INFORMED present) that the **dispatch path is alive** — the failure is
+> specifically the `log_alert → alert_outcomes` outcome-logging call, which
+> narrows §6.3. Kept below as the agreed spec of record.
 
 Three independent changes, smallest-first. AutoResearch never writes these; they
 are for the live session to apply after approval.

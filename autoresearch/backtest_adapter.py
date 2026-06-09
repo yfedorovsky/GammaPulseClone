@@ -169,13 +169,31 @@ def load_clusters_economic(db_path: str, alert_type: str, source: NBBOSource,
         where.append("fired_at < ?"); params.append(float(hi_ts))
     con = _open_ro(db_path)
     try:
-        rows = con.execute(
-            "SELECT fired_at, ticker, direction, strike, expiration, option_type, score "
-            "FROM alert_outcomes WHERE " + " AND ".join(where) + " ORDER BY fired_at ASC",
-            tuple(params),
-        ).fetchall()
+        # Optional columns (present on the live schema, maybe not on test DBs):
+        # flagged_volume feeds the label-confidence liquidity-dilution guard;
+        # raw_alert_json is its fallback (the 5/13-14 backfill stored vol there).
+        have = {r[1] for r in con.execute("PRAGMA table_info(alert_outcomes)")}
+        opt_cols = [c for c in ("flagged_volume", "raw_alert_json") if c in have]
+        sel = ("SELECT fired_at, ticker, direction, strike, expiration, option_type, score"
+               + "".join(f", {c}" for c in opt_cols)
+               + " FROM alert_outcomes WHERE " + " AND ".join(where)
+               + " ORDER BY fired_at ASC")
+        rows = con.execute(sel, tuple(params)).fetchall()
     finally:
         con.close()
+
+    def _alert_volume(r) -> Optional[float]:
+        if "flagged_volume" in opt_cols and r["flagged_volume"] is not None:
+            return float(r["flagged_volume"])
+        if "raw_alert_json" in opt_cols and r["raw_alert_json"]:
+            try:
+                import json
+                d = json.loads(r["raw_alert_json"])
+                v = d.get("vol", d.get("volume"))
+                return float(v) if v not in (None, "") else None
+            except Exception:
+                return None
+        return None
 
     # Group into clusters; keep earliest fire as representative.
     groups: dict[tuple, dict] = {}
@@ -220,7 +238,9 @@ def load_clusters_economic(db_path: str, alert_type: str, source: NBBOSource,
                          "strike": float(rep["strike"]),
                          "expiration": rep["expiration"],
                          "option_type": rep["option_type"],
-                         "fired_at": float(rep["fired_at"])})
+                         "fired_at": float(rep["fired_at"]),
+                         # Flagged volume at fire — the dilution guard's numerator.
+                         "alert_volume": _alert_volume(rep)})
     coverage = {"n_clusters_attempted": n_attempt, "n_clusters_no_data": n_nodata,
                 "n_clusters_with_data": len(clusters), "n_alerts_total": len(rows)}
     return clusters, coverage
@@ -309,7 +329,10 @@ def build_candidate(card: TestCard, alert_type: str,
             "confirm_lcb": label_conf.confirm_lcb,
             "invert_frac": label_conf.invert_frac,
             "n_with_data": label_conf.n_with_data,
+            "n_low_resolution": label_conf.n_low_resolution,
             "edge_is_artifact": label_conf.edge_is_artifact,
+            "artifact_suspected": label_conf.artifact_suspected,
+            "data_through": label_conf.data_through,
         },
     }
     return cand, diag
