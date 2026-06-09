@@ -171,11 +171,16 @@ gates *trust/promotion*, which is the gate's job. The card only surfaces it.
 |---|---|---|---|
 | `alert_outcomes` (SOE/ZERO_DTE/…) | exempt (not side-derived) | ✅ today | n/a |
 | `alert_outcomes` FLOW_* (stale backfill) | implied from direction | ✅ (to 5/14) | ✅ offline, retroactive |
-| `snapshots.db::flow_alerts` WHALE/INFORMED | `side` column directly | ❌ in alert_outcomes (pipeline dead, §6.3) — offline option-PnL re-sim can compute them | ✅ offline, retroactive |
+| `snapshots.db::flow_alerts` WHALE/INFORMED/FLOW_* | `side` column directly | ✅ offline option-PnL re-sim (`flow_cohorts.py`) | ✅ offline, retroactive |
 
-A follow-up (separate task) can add a `flow_alerts`-backed cohort builder so
-WHALE/INFORMED candidates run the full gate with offline-computed option-PnL
-outcomes — the label-confidence layer designed here applies unchanged.
+**Built (2026-06-09 PM, "Option B"):** `autoresearch/flow_cohorts.py` +
+`scripts/run_gate_on_flow_cohort.py` grade WHALE / INFORMED / FLOW_HIGH /
+FLOW_MEDIUM straight from `flow_alerts` — cohorts from the stored flags
+(disjoint: FLOW_* excludes flagged rows), direction from the row's stored
+sentiment (falls back to side × option_type), C5 clusters, offline ask-in/
+bid-out option-PnL outcomes, and LABEL_CONF on the rows' actual stored `side`.
+This is the only current grading path for these cohorts and it carries the full
+label-confidence quarantine in the same pass.
 
 ## 3.6 Refinements from the live-ops review (2026-06-09, applied)
 
@@ -221,15 +226,23 @@ outcomes — the label-confidence layer designed here applies unchanged.
 - A grade is only as current as its data (§3.6.2) — today's grades on the 5/13-14
   backfill are a baseline of the old labeling code, not of today's.
 
-## 6. Live-system changes (main) — OWNED BY THE LIVE-OPS SESSION (lane split 2026-06-09)
+## 6. Live-system changes (main) — DEFERRED, superseded by the flow_alerts-backed builder
 
-> **Lane split:** live-ops (Opus, on main) owns everything in this section —
-> the §6.3 pipeline fix AND the §6.1/6.2 side_source persistence. The
-> AutoResearch branch must not touch main or re-propose these. Live-ops also
-> confirmed via `telegram_audit.jsonl` (7,179 events on 6/9, WHALE/CLUSTER/
-> INFORMED present) that the **dispatch path is alive** — the failure is
-> specifically the `log_alert → alert_outcomes` outcome-logging call, which
-> narrows §6.3. Kept below as the agreed spec of record.
+> **Status (live-ops decision, 2026-06-09 PM): deferred — superseded by the
+> flow_alerts-backed cohort builder** (`autoresearch/flow_cohorts.py`, "Option
+> B"). Live-ops diagnosis: the missing flow→alert_outcomes logging is not a
+> swallowed exception but **structurally absent** — the only flow `log_alert`
+> calls live in the filter FIRE/FIRE_SUMMARY branch, which never fires under
+> FILTER_LEVEL=FULL, and the paths that actually dispatch (sweep_detector
+> realtime whale, informed_cluster, whale_cluster: 1,679 + 1,847 + 696 audit
+> events on 6/9) have no `log_alert` at all. Instrumenting all those sites the
+> night before a trading day, right after the #63/#64 stabilization, is not
+> worth the regression risk. Instead AutoResearch reads
+> `snapshots.db::flow_alerts` directly (alive, complete, indexed) and computes
+> outcomes offline via the option-PnL re-sim. `side_source` persistence remains
+> an optional, nullable bonus column the live session may add going forward —
+> historical rows won't have it, so the TAPE verification (§3) stays the
+> ground-truth label check for all history. Spec kept below for the record.
 
 Three independent changes, smallest-first. AutoResearch never writes these; they
 are for the live session to apply after approval.

@@ -75,8 +75,14 @@ Open `health.md`. Useful flags: `--breakeven 0.227` (your R:R breakeven), `--min
 - **Side-label confidence** (`autoresearch\side_confirmation.py` +
   `label_confidence.py`) — replays the OPRA tape (ThetaData trade+NBBO) to check
   whether a flow-derived cohort's SIDE tags are real; quarantines cohorts whose
-  "edge" rests on snapshot guesses, REJECTs labeling artifacts. Design + the
-  live-system persistence proposal: SIDE_CONFIDENCE.md.
+  "edge" rests on snapshot guesses, REJECTs labeling artifacts. Design:
+  SIDE_CONFIDENCE.md.
+- **Flow-cohort gate runs ("Option B")** — grade WHALE / INFORMED / FLOW_HIGH /
+  FLOW_MEDIUM straight from the LIVE `snapshots.db::flow_alerts` table (the
+  alert_outcomes flow pipeline is dead — frozen 5/14 backfill), with offline
+  option-PnL outcomes + tape-verified labels in one pass:
+  `.venv-autoresearch\Scripts\python scripts\run_gate_on_flow_cohort.py --cohort WHALE --days 14`
+  (`--baseline INFORMED` to compare flow cohorts head-to-head; ThetaData up.)
 - Building blocks: decay monitor, option-PnL re-sim, hierarchical pooling, the
   trials ledger, structural+lexical dedup, the betting confidence sequence.
 
@@ -97,6 +103,7 @@ python scripts\test_betting_cs.py                 # coverage sim (slow-ish)
 .venv-autoresearch\Scripts\python scripts\test_decay_monitor.py    # 24
 .venv-autoresearch\Scripts\python scripts\test_gate_acceptance.py  # 12
 .venv-autoresearch\Scripts\python scripts\test_label_conf_gate.py  # 22  (LABEL_CONF stage)
+.venv-autoresearch\Scripts\python scripts\test_flow_cohorts.py     # 32  (flow cohort source)
 ```
 
 ## Hard rules (do not break)

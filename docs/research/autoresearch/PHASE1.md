@@ -303,3 +303,56 @@ python scripts/test_side_confirmation.py                            # 77 (stdlib
 .venv-autoresearch/Scripts/python scripts/test_label_conf_gate.py   # 22 (venv)   +4
 # all prior suites unchanged & green
 ```
+
+---
+
+# Phase 1.8 — Flow-cohort source ("Option B": grade WHALE/INFORMED from flow_alerts)
+
+**2026-06-09 PM, live-ops decision.** The flow→alert_outcomes logging is
+structurally absent on the real dispatch paths (sweep_detector / informed_cluster
+/ whale_cluster have no log_alert; the filter FIRE branch never fires under
+FULL) and instrumenting live dispatch isn't worth the regression risk. Instead:
+read `snapshots.db::flow_alerts` (alive, 3.99M rows, indexed) directly.
+SIDE_CONFIDENCE.md §6 is now **deferred — superseded by this builder**.
+
+- **`autoresearch/flow_cohorts.py`** — cohorts from stored flags (WHALE =
+  is_whale, INFORMED = is_insider, FLOW_HIGH/FLOW_MEDIUM = conviction tier
+  excluding flagged rows → disjoint); direction = stored sentiment (incl. the
+  live 0DTE-put override), fallback side×option_type; C5 clusters (ticker ×
+  ET-day × direction, earliest-fire rep, score = max cluster notional for PBO
+  thresholds); outcomes = OFFLINE option-PnL re-sim (C6 ask-in/bid-out) — these
+  cohorts' first-ever tradable outcome series; LABEL_CONF verifies the rows'
+  ACTUAL stored `side`. `limit` keeps the MOST RECENT clusters (current grading,
+  not the cohort's oldest days). Candidate is always side_label_dependent.
+- **`scripts/run_gate_on_flow_cohort.py`** — end-to-end CLI (`--cohort WHALE
+  --days 14`, `--baseline` = flow cohort or alert_outcomes type).
+- **`scripts/test_flow_cohorts.py`** — 32 tests (predicate disjointness,
+  direction mapping, clustering, windows/limits, candidate assembly, stored-side
+  verification, NBBO requirement).
+
+## First-ever WHALE / INFORMED gate verdicts (live data thru 2026-06-09)
+
+```
+WHALE    vs SOE_A : REJECT (MIN_LENGTH, CPCV, DSR, ECONOMIC) + LABEL_CONF LOW
+   244 recent clusters. Mean -0.113 R, WR 22.1%, CPCV 7% paths positive.
+   Labels: 10% tape-confirmed, 10% INVERTED, 48/60 ambiguous.
+INFORMED vs SOE_A : REJECT (MIN_LENGTH, CPCV, DSR, ECONOMIC) + LABEL_CONF LOW
+   235 recent clusters (5,814 MID/NEUTRAL alerts excluded as undirected).
+   Mean -0.272 R, WR 17.0%, CPCV 0% paths positive.
+   Labels: 14% tape-confirmed, 8% inverted, 46/59 ambiguous.
+```
+
+Honest read: on the C6 same-session ask-in/bid-out model, neither cohort shows
+positive tradable expectancy in the recent window, and BOTH carry the label
+quarantine — ~10% of sampled whale/informed side tags are tape-INVERTED and
+~80% have no clear aggressor. (SOE_A itself was -0.30 R here; SPA "passing" =
+losing less, which the economic null correctly overrides.) Known scope limits:
+244-250-cluster caps cover the most recent 2-3 trading days at current alert
+volume (raise --limit/--days for longer windows), and C6 truncates multi-day
+holds to the fire session — a LEAP whale add is judged on day-1 premium move.
+
+## Tests — 278 total, 0 failures
+```
+.venv-autoresearch/Scripts/python scripts/test_flow_cohorts.py   # 32 (venv) NEW
+# all prior suites unchanged & green (246)
+```
