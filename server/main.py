@@ -1184,6 +1184,19 @@ async def breadth_omen_read():
         return {"posture": "UNKNOWN", "severity": None, "reasons": [str(e)]}
 
 
+@app.get("/api/regime/sectors")
+async def sector_rotation_read():
+    """Sector rotation ranking (#65c): the 11 SPDR sectors ranked by composite
+    (EMA-trend + 5d/20d momentum) with a per-sector risk regime — the 'which
+    sectors to be in' map the flow engine lacks (it scores per-ticker, never ranks
+    sectors). The deeper version of a 1D sector-return chart. Cached 30 min."""
+    from .sector_rotation import get_sector_rotation
+    try:
+        return await get_sector_rotation()
+    except Exception as e:
+        return {"sectors": [], "error": str(e)}
+
+
 @app.get("/api/market-read")
 async def market_read(symbol: str = "SPX"):
     """Unified market read (bear-day capstone): synthesizes dealer-structure
