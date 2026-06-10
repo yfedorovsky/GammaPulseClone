@@ -58,6 +58,8 @@ class TapePrint:
     price: float
     bid: float
     ask: float
+    ts: str = ""    # "HH:MM:SS" exchange-local; "" on cache entries fetched
+                    # before 2026-06-09 (replay re-fetches full-day windows).
 
 
 class TradeTapeSource(Protocol):
@@ -124,7 +126,9 @@ class ThetaTradeTapeSource:
                 continue
             if size <= 0:
                 continue
-            out.append(TapePrint(size=size, price=price, bid=bid, ask=ask))
+            tts = (row.get("trade_timestamp") or "")
+            out.append(TapePrint(size=size, price=price, bid=bid, ask=ask,
+                                 ts=tts[11:19] if len(tts) >= 19 else ""))
         return out
 
 
