@@ -102,6 +102,12 @@ _SWEEP_MIGRATIONS = [
     "ALTER TABLE flow_alerts ADD COLUMN is_whale INTEGER DEFAULT 0",
     "ALTER TABLE flow_alerts ADD COLUMN whale_reasons TEXT",
     "CREATE INDEX IF NOT EXISTS idx_flow_whale ON flow_alerts(is_whale, ts) WHERE is_whale = 1",
+    # 2026-06-09: which classifier produced `side` — "tick" (OPRA tick tracker,
+    # authoritative) or "snapshot" (last-vs-bid/ask GUESS). The 6/9 flow-cohort
+    # gate verdict showed snapshot-sided whale/informed labels are ~10% tape-
+    # inverted / ~80% no-clear-aggressor; persisting it makes the tick-confirmed-
+    # vs-guessed split a cheap column instead of a per-alert tape query.
+    "ALTER TABLE flow_alerts ADD COLUMN side_source TEXT",
 ]
 
 
@@ -801,6 +807,23 @@ def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) 
         conviction = "HIGH"
         alert["conviction"] = "HIGH"
 
+    # Side-confirmation SHADOW gate (2026-06-09). The flow-cohort gate verdict
+    # (AutoResearch, 6/9) REJECTed WHALE+INFORMED partly on LABEL contamination:
+    # ~10% of side tags tape-INVERTED, ~80% no clear aggressor — because the side
+    # falls back to a snapshot GUESS when the OPRA tick tracker lacks coverage.
+    # Shadow-measure how often a whale/informed actually fires on a GUESSED side
+    # so the active gate can be sized from real fire-time data. ZERO behaviour
+    # change: this only logs. Activation (SIDE_CONFIRM_GATE_ACTIVE) is deferred
+    # until the offline confirmed-subset grade says suppression would help.
+    if (alert.get("is_whale") or alert.get("is_insider")) and \
+            alert.get("side_source") == "snapshot":
+        _tags = ("WHALE" if alert.get("is_whale") else "") + \
+                ("+INFORMED" if alert.get("is_insider") else "")
+        print(f"[SIDE_GATE shadow] {_tags} {alert.get('ticker')} "
+              f"{alert.get('strike')}{(alert.get('option_type') or '')[:1].upper()} "
+              f"side={alert.get('side')} on UNCONFIRMED(snapshot) — would-gate",
+              flush=True)
+
     # ── Dealer-structure (bear-day) guardrail — task #54 Layer 3 ──────────
     # Read the SPY/QQQ short-gamma tape. On a risk-off (short-gamma) index
     # tape, LONG/bullish flow tends to get run over, so down-weight it one
@@ -864,8 +887,8 @@ def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) 
              last_price, bid, ask, side, sentiment, iv, delta, notional, spot,
              conviction, status, king, floor_level, ceiling_level, signal, regime,
              macro_regime_tag, insider_score, is_insider, insider_reasons,
-             is_whale, whale_reasons)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             is_whale, whale_reasons, side_source)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 int(time.time()),
                 alert["ticker"],
@@ -897,6 +920,7 @@ def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) 
                 ",".join(insider_reasons) if insider_reasons else None,
                 alert.get("is_whale", 0),
                 alert.get("whale_reasons"),
+                alert.get("side_source"),
             ),
         )
 
@@ -1488,6 +1512,7 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
                 "bid": bid,
                 "ask": ask,
                 "side": side,
+                "side_source": side_source,
                 "sentiment": sentiment,
                 "iv": round(iv * 100, 1),
                 "delta": round(delta, 3),
