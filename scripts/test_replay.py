@@ -186,6 +186,41 @@ def test_week_chunks():
           cf.week_chunks("2026-01-02", "2026-01-02") == [("2026-01-02", "2026-01-02")])
 
 
+def test_listing_boundary_stop():
+    """Chunks walk newest->oldest and STOP at the first empty greeks week
+    (the listing boundary) — pre-listing weeks are never probed."""
+    con, path = _store()
+    calls = []
+
+    def fake_fetch(root, exp, endpoint, a, b, cfg):
+        calls.append((endpoint, a, b))
+        if endpoint == "oi":
+            return []
+        # Listed from 2026-05-25: rows for chunks at/after it, empty before.
+        return ([{"timestamp": f"{a}T00:00:00", "strike": "100", "right": "C",
+                  "volume": "10", "count": "1", "close": "1.0", "bid": "0.9",
+                  "ask": "1.1", "delta": "0.3", "implied_vol": "0.5",
+                  "underlying_price": "100"}]
+                if a >= "2026-05-25" else [])
+
+    orig = cf._fetch_url
+    cf._fetch_url = fake_fetch
+    try:
+        st = cf.fetch_root(con, "XXX", "2026-01-02", "2026-06-09",
+                           expirations=["2026-06-12"])
+        greeks_calls = [c for c in calls if c[0] == "greeks"]
+        check("newest chunk first", greeks_calls[0][1] > greeks_calls[-1][1],
+              str(greeks_calls[:3]))
+        # 23 weekly chunks in the window; only ~3 live + 1 boundary probe.
+        check("stops at listing boundary (no pre-listing probes)",
+              len(greeks_calls) <= 5, f"{len(greeks_calls)} greeks calls")
+        check("no fails on empty weeks", st.n_failures == 0, str(st.n_failures))
+    finally:
+        cf._fetch_url = orig
+        con.close()
+        Path(path).unlink()
+
+
 def test_oi_merge_and_prune():
     con, path = _store()
     _ins(con, root="MMM", volume=100, close=1.0, oi=0)
@@ -307,7 +342,8 @@ def main() -> int:
     print("=== historical replay tests ===")
     for fn in (test_store_and_scan_known_whales, test_whale_gates,
                test_parity_arb_port, test_informed_gates_and_score,
-               test_scope_expirations, test_week_chunks, test_oi_merge_and_prune,
+               test_scope_expirations, test_week_chunks,
+               test_listing_boundary_stop, test_oi_merge_and_prune,
                test_find_fire_whale, test_find_fire_informed_score_rules,
                test_build_replay_clusters):
         print(f"\n{fn.__name__}:")

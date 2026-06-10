@@ -124,12 +124,19 @@ def open_store(db_path: Path | str = DEFAULT_DB) -> sqlite3.Connection:
 
 
 def _http_csv(url: str, timeout: float) -> Optional[list[dict]]:
-    """GET -> CSV rows as dicts; None on failure; [] on no-data."""
+    """GET -> CSV rows as dicts; None on failure; [] on no-data.
+
+    ThetaData signals "no data" inconsistently: some shapes return HTTP 200
+    with a text body, others HTTP 472 — both are CLEAN EMPTIES, not failures
+    (treating 472 as FAIL caused 370 phantom fails + endless retries on
+    pre-listing LEAP weeks, diagnosed 2026-06-10)."""
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             if resp.status != 200:
                 return None
             text = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return [] if e.code == 472 else None
     except Exception:
         return None
     if text.startswith("No data"):
@@ -307,11 +314,17 @@ def fetch_root(con: sqlite3.Connection, root: str, start: str, end: str,
             span_end = min(d_end, _date.fromisoformat(exp)).isoformat()
         except ValueError:
             span_end = end
-        for ca, cb in week_chunks(start, span_end, cfg.chunk_days):
+        # NEWEST -> OLDEST, stopping at the first empty greeks chunk: a listed
+        # expiration has quotes continuously from its listing date, so the
+        # first empty week walking backward IS the listing boundary — probing
+        # the dead pre-listing region (dozens of 472s per late-listed LEAP)
+        # is pure waste. Real FAILs (None) do NOT stop the walk.
+        for ca, cb in reversed(week_chunks(start, span_end, cfg.chunk_days)):
             n_greeks = _do(exp, "greeks", ca, cb, _apply_greeks_rows)
-            # Pre-listing weeks return no rows — skip the matching OI chunk.
             if n_greeks is not None and n_greeks > 0:
                 _do(exp, "oi", ca, cb, _apply_oi_rows)
+            elif n_greeks == 0:
+                break   # listing boundary reached.
     return stats
 
 
