@@ -1170,6 +1170,20 @@ async def intermarket_regime_read():
         return {"regime": "UNKNOWN", "composite": None, "error": str(e)}
 
 
+@app.get("/api/regime/breadth-omen")
+async def breadth_omen_read():
+    """Breadth crash posture CLEAR/WATCH/DANGER (#65b, AION-inspired). McClellan
+    (NYMO/NAMO) + the price/breadth FRACTURE detector — index above trend while
+    breadth is negative (the narrow-leadership rollover that flagged 6/9). v1 from
+    existing breadth infra; the full Hindenburg NH/NL (v2) needs the 252d pipeline.
+    Cached 15 min."""
+    from .breadth_omen import get_breadth_omen
+    try:
+        return await get_breadth_omen()
+    except Exception as e:
+        return {"posture": "UNKNOWN", "severity": None, "reasons": [str(e)]}
+
+
 @app.get("/api/market-read")
 async def market_read(symbol: str = "SPX"):
     """Unified market read (bear-day capstone): synthesizes dealer-structure
