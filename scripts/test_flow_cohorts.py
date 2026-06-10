@@ -241,6 +241,40 @@ def test_build_flow_candidate():
         os.unlink(db)
 
 
+def test_side_source_optional_split():
+    # Without the column (this file's default schema) -> None everywhere.
+    db = _make_db([_row("AAA", 0, whale=1)])
+    try:
+        clusters, cov = load_flow_clusters(db, "WHALE", _FakeNBBO())
+        check("no column -> side_source None", clusters[0]["side_source"] is None)
+        check("no column -> zero split counts",
+              cov["n_side_source_tick"] == 0 and cov["n_side_source_snapshot"] == 0)
+    finally:
+        os.unlink(db)
+    # With the column (live schema from 2026-06-09 PM) -> carried + counted.
+    fd, db2 = tempfile.mkstemp(suffix=".db", prefix="flowco_src_")
+    os.close(fd)
+    con = sqlite3.connect(db2)
+    con.execute(f"CREATE TABLE flow_alerts ({', '.join(_COLS)}, side_source)")
+    con.executemany(
+        f"INSERT INTO flow_alerts ({', '.join(_COLS)}, side_source) "
+        f"VALUES ({', '.join('?' * (len(_COLS) + 1))})",
+        [_row("TICK", 0, whale=1) + ("tick",),
+         _row("GUESS", 1, whale=1) + ("snapshot",),
+         _row("OLD", 2, whale=1) + (None,)])
+    con.commit()
+    con.close()
+    try:
+        clusters, cov = load_flow_clusters(db2, "WHALE", _FakeNBBO())
+        by = {c["ticker"]: c["side_source"] for c in clusters}
+        check("side_source carried per cluster",
+              by == {"TICK": "tick", "GUESS": "snapshot", "OLD": None}, str(by))
+        check("split counts", cov["n_side_source_tick"] == 1
+              and cov["n_side_source_snapshot"] == 1, str(cov))
+    finally:
+        os.unlink(db2)
+
+
 def test_hold_days_unresolved_excluded():
     # The fake NBBO only ever has fire-day bars (it ignores `date`, but the
     # multiday scan asks for LATER calendar dates which we make empty here), so
@@ -283,6 +317,7 @@ def main() -> int:
     for fn in (test_direction_from, test_cohort_selection_disjoint,
                test_unknown_cohort_raises, test_clustering_and_outcomes,
                test_window_and_limit, test_build_flow_candidate,
+               test_side_source_optional_split,
                test_hold_days_unresolved_excluded, test_requires_nbbo_source):
         print(f"\n{fn.__name__}:")
         fn()

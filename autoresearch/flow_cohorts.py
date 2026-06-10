@@ -122,10 +122,16 @@ def load_flow_clusters(db_path: str, cohort: str, source: NBBOSource,
         where.append("ts < ?"); params.append(float(hi_ts))
     con = _open_ro(db_path)
     try:
+        # side_source ("tick" = OPRA tick tracker / authoritative, "snapshot" =
+        # last-vs-bid/ask GUESS) is persisted on live rows from 2026-06-09 PM
+        # onward; historical rows are NULL and test DBs may lack the column.
+        # Nullable bonus split only — tape verification stays the ground truth.
+        have = {r[1] for r in con.execute("PRAGMA table_info(flow_alerts)")}
+        has_src = "side_source" in have
         rows = con.execute(
             "SELECT ts, ticker, strike, expiration, option_type, side, sentiment, "
-            "       notional, volume "
-            "FROM flow_alerts WHERE " + " AND ".join(where) + " ORDER BY ts ASC",
+            "       notional, volume" + (", side_source" if has_src else "") +
+            " FROM flow_alerts WHERE " + " AND ".join(where) + " ORDER BY ts ASC",
             tuple(params),
         ).fetchall()
     finally:
@@ -185,12 +191,18 @@ def load_flow_clusters(db_path: str, cohort: str, source: NBBOSource,
             # The row's ACTUAL stored side — LABEL_CONF verifies this directly.
             "side": (rep["side"] or "").upper() or None,
             "alert_volume": (float(rep["volume"]) if rep["volume"] else None),
+            # tick / snapshot / None (pre-2026-06-09 rows have no side_source).
+            "side_source": (rep["side_source"] if has_src else None),
         })
     coverage = {"n_clusters_attempted": n_attempt, "n_clusters_no_data": n_nodata,
                 "n_clusters_unresolved": n_unresolved,
                 "n_clusters_with_data": len(clusters),
                 "n_alerts_total": len(rows), "n_alerts_undirected": n_undirected,
-                "hold_days": int(hold_days)}
+                "hold_days": int(hold_days),
+                "n_side_source_tick": sum(1 for c in clusters
+                                          if c["side_source"] == "tick"),
+                "n_side_source_snapshot": sum(1 for c in clusters
+                                              if c["side_source"] == "snapshot")}
     return clusters, coverage
 
 

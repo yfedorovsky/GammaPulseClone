@@ -412,3 +412,42 @@ python scripts/test_option_pnl_multiday.py                          # 15 (stdlib
 .venv-autoresearch/Scripts/python scripts/test_flow_cohorts.py      # 35 (venv)  +3
 # all prior suites unchanged & green
 ```
+
+---
+
+# Phase 1.9b — Confirmed-subset experiment (salvageable vs dead): DEAD
+
+**2026-06-09 PM, the decision-grade run** (`scripts/grade_confirmed_subset.py`,
+JSON artifact `_artifacts/confirmed_subset_2026-06-09.json`). Question: is the
+negative WHALE/INFORMED expectancy an artifact of contaminated side labels —
+i.e., would the live suppress-snapshot-sided gate rescue a real underlying
+edge? Method: tape-verify EVERY resolved cluster (no stride sampling), grade
+each label subset separately (bootstrap 95% CI on mean R, Wilson 95% on WR).
+
+| Cohort·hold | FULL | CONFIRMED | INVERTED | AMBIGUOUS |
+|---|---|---|---|---|
+| WHALE·0d | n=571 −0.087 [−.14,−.03] | n=87 **−0.085** [−.19,+.03] | n=54 −0.137 | n=429 −0.080 |
+| WHALE·3d | n=249 −0.078 | n=27 **−0.072** [−.46,+.36] | n=18 −0.196 | n=204 −0.069 |
+| INFORMED·0d | n=561 −0.284 [−.35,−.22] | n=53 **−0.164** [−.33,+.02] | n=48 −0.212 | n=457 −0.312 |
+| INFORMED·3d | n=475 −0.282 | n=36 **−0.334** [−.70,+.07] | n=41 −0.294 | n=396 −0.280 |
+
+**Verdict: the tape-CONFIRMED subset is non-positive in all four cells —
+the cohorts are genuinely dead as bracketed long-premium trades, independent
+of label quality.** CONFIRMED ≈ AMBIGUOUS ≈ FULL almost everywhere: labels are
+NOT the driver of the negative expectancy. Two honest nuances: (1) INVERTED is
+the worst subset at hold 0 (WHALE −0.137, and INFORMED confirmed −0.164 vs
+ambiguous −0.312) — labels carry *some* signal, but fixing them moves the mean
+by hundredths of an R, nowhere near sign-flip; (2) the resolved window is short
+(WHALE 6/5–6/9, INFORMED 6/2–6/9 — one choppy week), so per the discipline
+rule this is "do not flip the gate NOW," not "dead forever" — re-run as data
+accrues.
+
+**Recommendation to live-ops: do NOT flip the active suppression gate on
+economics grounds — the experiment says it cannot rescue these cohorts.**
+(Flipping it purely as a Telegram-noise reducer is a separate, weaker
+rationale.) The shadow gate's fire-time snapshot-rate remains a useful
+cross-check against the tape-confirmed fraction, and the new `side_source`
+column (wired into flow_cohorts as an optional split + coverage counts) will
+let this report split tick-vs-guessed automatically once populated rows accrue.
+
+Tests: 300 total, 0 failures (test_flow_cohorts 39: +4 side_source split).
