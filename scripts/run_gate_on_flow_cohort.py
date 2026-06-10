@@ -45,6 +45,10 @@ def main(argv=None) -> int:
     ap.add_argument("--days", type=float, default=14.0,
                     help="lookback window in days (default 14)")
     ap.add_argument("--limit", type=int, default=250, help="cap clusters per cohort")
+    ap.add_argument("--hold-days", type=int, default=0,
+                    help="hold horizon in TRADING sessions beyond the fire day "
+                         "(0 = legacy fire-session model). Horizon-uncovered "
+                         "clusters are excluded as UNRESOLVED (censoring rule).")
     ap.add_argument("--no-tape", action="store_true",
                     help="skip side-label tape verification (cohort then reads "
                          "UNVERIFIED and quarantines at LABEL_CONF)")
@@ -72,12 +76,12 @@ def main(argv=None) -> int:
         outcomes_db_path=args.outcomes_db, baseline=args.baseline,
         source=ThetaNBBOSource(),
         tape_source=None if args.no_tape else ThetaTradeTapeSource(),
-        limit=args.limit, lo_ts=lo_ts,
+        limit=args.limit, lo_ts=lo_ts, hold_days=args.hold_days,
     )
 
     print("=" * 72)
     print(f"FLOW GATE RUN — cohort={args.cohort}  baseline={args.baseline}  "
-          f"window={args.days:g}d")
+          f"window={args.days:g}d  hold={args.hold_days}d")
     print("=" * 72)
     print("Diagnostics:")
     for k, v in diag.items():

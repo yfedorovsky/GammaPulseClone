@@ -36,7 +36,7 @@ from .label_confidence import (
     LabelConfidenceConfig, check_cohort_side_labels, is_side_label_dependent,
 )
 from .option_pnl import (
-    NBBOSource, simulate_option_pnl, fire_hhmm_from_ts, et_day_from_ts,
+    NBBOSource, simulate_option_pnl_multiday, fire_hhmm_from_ts, et_day_from_ts,
 )
 from .side_confirmation import TradeTapeSource
 
@@ -149,7 +149,8 @@ def load_clusters_economic(db_path: str, alert_type: str, source: NBBOSource,
                            tp_pct: float = 100.0, stop_pct: float = -50.0,
                            limit: Optional[int] = None,
                            lo_ts: Optional[float] = None,
-                           hi_ts: Optional[float] = None) -> tuple[list[dict], dict]:
+                           hi_ts: Optional[float] = None,
+                           hold_days: int = 0) -> tuple[list[dict], dict]:
     """C5+C6: economic decision clusters with realized option-PnL R-multiples.
 
     One cluster = (ticker, ET day, direction). Representative = earliest fire; its
@@ -158,6 +159,11 @@ def load_clusters_economic(db_path: str, alert_type: str, source: NBBOSource,
 
     ``lo_ts``/``hi_ts`` optionally restrict to fired_at in [lo_ts, hi_ts) — used by
     the Signal Health Card to compute windowed (recent vs prior) cohort expectancy.
+
+    ``hold_days`` > 0 switches to the multi-day-hold model (fire session + N more
+    trading sessions, expiry-clamped). Clusters whose horizon is not yet covered
+    by available data come back UNRESOLVED and are EXCLUDED (censoring rule —
+    counted in coverage as n_clusters_unresolved, never scored).
     """
     where = ["alert_type = ?", "outcome_status != 'pending'",
              "verdict_eod IN ('WIN','LOSS')", "strike IS NOT NULL",
@@ -217,14 +223,18 @@ def load_clusters_economic(db_path: str, alert_type: str, source: NBBOSource,
         ordered = ordered[:limit]
 
     clusters: list[dict] = []
-    n_attempt = n_nodata = 0
+    n_attempt = n_nodata = n_unresolved = 0
     for (ticker, day, direction), g in ordered:
         rep = g["rep"]
         n_attempt += 1
-        res = simulate_option_pnl(
+        res = simulate_option_pnl_multiday(
             ticker=ticker, expiration=rep["expiration"], strike=float(rep["strike"]),
             option_type=rep["option_type"], fire_hhmm=fire_hhmm_from_ts(rep["fired_at"]),
-            date=day, source=source, tp_pct=tp_pct, stop_pct=stop_pct)
+            date=day, source=source, tp_pct=tp_pct, stop_pct=stop_pct,
+            hold_days=hold_days)
+        if res.status == "UNRESOLVED":
+            n_unresolved += 1
+            continue
         if res.status != "OK":
             n_nodata += 1
             continue
@@ -242,7 +252,9 @@ def load_clusters_economic(db_path: str, alert_type: str, source: NBBOSource,
                          # Flagged volume at fire — the dilution guard's numerator.
                          "alert_volume": _alert_volume(rep)})
     coverage = {"n_clusters_attempted": n_attempt, "n_clusters_no_data": n_nodata,
-                "n_clusters_with_data": len(clusters), "n_alerts_total": len(rows)}
+                "n_clusters_unresolved": n_unresolved,
+                "n_clusters_with_data": len(clusters), "n_alerts_total": len(rows),
+                "hold_days": int(hold_days)}
     return clusters, coverage
 
 
@@ -257,7 +269,8 @@ def build_candidate(card: TestCard, alert_type: str,
                     vix_atleast: Optional[float] = None,
                     n_configs: int = 8,
                     tape_source: Optional[TradeTapeSource] = None,
-                    label_config: Optional[LabelConfidenceConfig] = None) -> tuple[Candidate, dict]:
+                    label_config: Optional[LabelConfidenceConfig] = None,
+                    hold_days: int = 0) -> tuple[Candidate, dict]:
     """Assemble a gate ``Candidate`` plus diagnostics.
 
     With an NBBO ``source`` and ``return_mode='option_pnl'`` (default), builds
@@ -274,9 +287,11 @@ def build_candidate(card: TestCard, alert_type: str,
 
     if use_economic:
         cand_items, cov = load_clusters_economic(db_path, alert_type, source,
-                                                  tp_pct, stop_pct, limit)
+                                                  tp_pct, stop_pct, limit,
+                                                  hold_days=hold_days)
         base_items, base_cov = load_clusters_economic(db_path, baseline_alert_type,
-                                                       source, tp_pct, stop_pct, limit)
+                                                       source, tp_pct, stop_pct, limit,
+                                                       hold_days=hold_days)
         proxy = "option_pnl_r_multiple"
         unit = "cluster"
     else:

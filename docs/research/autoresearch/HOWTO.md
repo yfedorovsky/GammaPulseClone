@@ -81,8 +81,15 @@ Open `health.md`. Useful flags: `--breakeven 0.227` (your R:R breakeven), `--min
   FLOW_MEDIUM straight from the LIVE `snapshots.db::flow_alerts` table (the
   alert_outcomes flow pipeline is dead — frozen 5/14 backfill), with offline
   option-PnL outcomes + tape-verified labels in one pass:
-  `.venv-autoresearch\Scripts\python scripts\run_gate_on_flow_cohort.py --cohort WHALE --days 14`
+  `.venv-autoresearch\Scripts\python scripts\run_gate_on_flow_cohort.py --cohort WHALE --days 14 --hold-days 3`
   (`--baseline INFORMED` to compare flow cohorts head-to-head; ThetaData up.)
+  `--hold-days N` = multi-day-hold model: fire session + N more trading
+  sessions, expiry-clamped, TP/stop checked across the whole path — what lets a
+  LEAP-tenor whale add be judged on more than its day-1 premium move. Clusters
+  whose horizon isn't covered by available data yet are excluded as UNRESOLVED
+  (censoring rule: eligibility decided by fire date, even if TP/stop already
+  hit — keeping early barrier-hits while their open cohort-mates can't be
+  valued would bias toward early deciders).
 - Building blocks: decay monitor, option-PnL re-sim, hierarchical pooling, the
   trials ledger, structural+lexical dedup, the betting confidence sequence.
 
@@ -99,11 +106,12 @@ Open `health.md`. Useful flags: `--breakeven 0.227` (your R:R breakeven), `--min
 python scripts\test_signal_health_card.py        # 21
 python scripts\test_dedup.py                      # 12
 python scripts\test_side_confirmation.py          # 77  (tape verification + label bands)
+python scripts\test_option_pnl_multiday.py        # 15  (multi-day holds + censoring rule)
 python scripts\test_betting_cs.py                 # coverage sim (slow-ish)
 .venv-autoresearch\Scripts\python scripts\test_decay_monitor.py    # 24
 .venv-autoresearch\Scripts\python scripts\test_gate_acceptance.py  # 12
 .venv-autoresearch\Scripts\python scripts\test_label_conf_gate.py  # 22  (LABEL_CONF stage)
-.venv-autoresearch\Scripts\python scripts\test_flow_cohorts.py     # 32  (flow cohort source)
+.venv-autoresearch\Scripts\python scripts\test_flow_cohorts.py     # 35  (flow cohort source)
 ```
 
 ## Hard rules (do not break)

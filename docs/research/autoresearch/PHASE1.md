@@ -356,3 +356,59 @@ holds to the fire session — a LEAP whale add is judged on day-1 premium move.
 .venv-autoresearch/Scripts/python scripts/test_flow_cohorts.py   # 32 (venv) NEW
 # all prior suites unchanged & green (246)
 ```
+
+---
+
+# Phase 1.9 — Multi-day-hold outcome model (the verdict layer)
+
+**2026-06-09 PM.** The C6 fire-session model truncated every hold to the alert
+day — a LEAP-tenor whale add was judged on its day-1 premium move, which left
+the Phase-1.8 REJECTs "suggestive." `option_pnl.simulate_option_pnl_multiday`
+removes that caveat:
+
+- Fire session + up to `hold_days` further **trading** sessions (sessions
+  detected empirically — a calendar day with no NBBO bars is a weekend/holiday/
+  no-quote day), TP/stop checked bar-by-bar across the whole path (worst-case
+  stop-before-TP tiebreak preserved), exit at the bid on the final session,
+  **clamped at expiration** (EXPIRY exit). `hold_days=0` reproduces the legacy
+  model exactly.
+- **Censoring rule:** a trade is gradeable only if its FULL horizon is covered
+  by available data — decided by fire date, EVEN IF TP/stop already hit inside
+  the partial window. Keeping early barrier-hits while their still-open
+  cohort-mates can't be valued would bias the sample toward early deciders.
+  Too-recent clusters return UNRESOLVED and are counted
+  (`n_clusters_unresolved`), never scored.
+- Wired through both cluster loaders + `build_candidate` /
+  `build_flow_candidate` (+ `--hold-days` on the flow CLI); the SAME horizon
+  applies to candidate and baseline so SPA stays apples-to-apples.
+
+## The verdict matrix (live flow_alerts data thru 2026-06-09, ask-in/bid-out)
+
+| Cohort | Hold | n resolved | censored | Mean R | WR | CPCV paths + | Outcome |
+|---|---|---|---|---|---|---|---|
+| WHALE | fire session | 244 | — | −0.113 | 22.1% | 7% | REJECT |
+| WHALE | +3 sessions | 249 | 322 | −0.078 | 31.7% | 33% | REJECT |
+| WHALE | +5 sessions | 253 | 318 | −0.085 | 32.0% | 33% | REJECT |
+| INFORMED | fire session | 235 | — | −0.272 | 17.0% | 0% | REJECT |
+| INFORMED | +3 sessions | 383 | 86 | −0.285 | 27.7% | 7% | REJECT |
+
+**Read:** the day-1-truncation caveat is now closed — WHALE/INFORMED are
+negative at EVERY horizon tested, so the Phase-1.8 REJECTs are verdicts, not
+artifacts of the outcome model. Longer holds lift the win rate (more TP hits:
+WHALE 22%→32%) but the mean R stays negative — at TP +100% / stop −50% the
+asymmetry needs ≈33%+ TP-grade wins and the cohorts sit just under it while
+stop-outs and slippage eat the rest. Hold sensitivity is small for WHALE
+(−0.11 → −0.08 R) and absent for INFORMED (−0.27 → −0.29 R). LABEL_CONF stays
+LOW at every horizon (10–18% tape-confirmed, ~10% inverted) — the label
+quarantine and the economic rejection are independent and agree. Honest notes:
+hold-N samples are different fire populations than hold-0 (censoring removes
+the newest fires), so cross-horizon comparisons are suggestive rather than
+paired; the SOE_A baseline degrades with horizon too (−0.30 → −0.51 → −0.54 R),
+so SPA keeps "passing" by losing-less — the economic null is what does the work.
+
+## Tests — 296 total, 0 failures
+```
+python scripts/test_option_pnl_multiday.py                          # 15 (stdlib) NEW
+.venv-autoresearch/Scripts/python scripts/test_flow_cohorts.py      # 35 (venv)  +3
+# all prior suites unchanged & green
+```

@@ -47,7 +47,7 @@ from .label_confidence import (
     LabelConfidenceConfig, check_cohort_side_labels,
 )
 from .option_pnl import (
-    NBBOSource, simulate_option_pnl, fire_hhmm_from_ts, et_day_from_ts,
+    NBBOSource, simulate_option_pnl_multiday, fire_hhmm_from_ts, et_day_from_ts,
 )
 from .side_confirmation import TradeTapeSource
 
@@ -97,13 +97,18 @@ def load_flow_clusters(db_path: str, cohort: str, source: NBBOSource,
                        tp_pct: float = 100.0, stop_pct: float = -50.0,
                        limit: Optional[int] = None,
                        lo_ts: Optional[float] = None,
-                       hi_ts: Optional[float] = None) -> tuple[list[dict], dict]:
+                       hi_ts: Optional[float] = None,
+                       hold_days: int = 0) -> tuple[list[dict], dict]:
     """Economic decision clusters (C5) + offline option-PnL outcomes (C6) for a
     flow_alerts cohort. Same cluster-dict shape as
     ``backtest_adapter.load_clusters_economic`` plus the row's actual ``side``.
 
     score = max cluster notional (the config-threshold dimension for PBO);
     alert_volume = representative's session volume (dilution-guard numerator).
+
+    ``hold_days`` > 0 = multi-day-hold model (fire session + N more trading
+    sessions, expiry-clamped). Horizon-uncovered clusters come back UNRESOLVED
+    and are EXCLUDED (censoring rule) — counted as n_clusters_unresolved.
     """
     if cohort not in FLOW_COHORT_WHERE:
         raise ValueError(f"unknown flow cohort {cohort!r}; one of {FLOW_COHORTS}")
@@ -154,14 +159,18 @@ def load_flow_clusters(db_path: str, cohort: str, source: NBBOSource,
         ordered = ordered[-limit:]
 
     clusters: list[dict] = []
-    n_attempt = n_nodata = 0
+    n_attempt = n_nodata = n_unresolved = 0
     for (ticker, day, direction), g in ordered:
         rep = g["rep"]
         n_attempt += 1
-        res = simulate_option_pnl(
+        res = simulate_option_pnl_multiday(
             ticker=ticker, expiration=rep["expiration"], strike=float(rep["strike"]),
             option_type=rep["option_type"], fire_hhmm=fire_hhmm_from_ts(g["fired_at"]),
-            date=day, source=source, tp_pct=tp_pct, stop_pct=stop_pct)
+            date=day, source=source, tp_pct=tp_pct, stop_pct=stop_pct,
+            hold_days=hold_days)
+        if res.status == "UNRESOLVED":
+            n_unresolved += 1
+            continue
         if res.status != "OK":
             n_nodata += 1
             continue
@@ -178,8 +187,10 @@ def load_flow_clusters(db_path: str, cohort: str, source: NBBOSource,
             "alert_volume": (float(rep["volume"]) if rep["volume"] else None),
         })
     coverage = {"n_clusters_attempted": n_attempt, "n_clusters_no_data": n_nodata,
+                "n_clusters_unresolved": n_unresolved,
                 "n_clusters_with_data": len(clusters),
-                "n_alerts_total": len(rows), "n_alerts_undirected": n_undirected}
+                "n_alerts_total": len(rows), "n_alerts_undirected": n_undirected,
+                "hold_days": int(hold_days)}
     return clusters, coverage
 
 
@@ -194,25 +205,31 @@ def build_flow_candidate(card: TestCard, cohort: str,
                          limit: Optional[int] = None,
                          lo_ts: Optional[float] = None,
                          hi_ts: Optional[float] = None,
-                         n_configs: int = 8) -> tuple[Candidate, dict]:
+                         n_configs: int = 8,
+                         hold_days: int = 0) -> tuple[Candidate, dict]:
     """Assemble a gate ``Candidate`` for a flow_alerts cohort (Option B).
 
     Baseline: another flow cohort (loaded from flow_alerts over the SAME window)
     or an alert_outcomes alert_type (default SOE_A). All flow candidates are
     side_label_dependent; with a ``tape_source`` their stored sides get
     tape-verified (LABEL_CONF), else they honestly read UNVERIFIED.
+
+    ``hold_days`` applies to candidate AND baseline (SPA stays apples-to-apples).
     """
     if source is None:
         raise ValueError("an NBBO source is required — flow cohorts have no "
                          "stored outcomes; option-PnL re-sim IS the outcome")
     cand_items, cov = load_flow_clusters(
-        flow_db_path, cohort, source, tp_pct, stop_pct, limit, lo_ts, hi_ts)
+        flow_db_path, cohort, source, tp_pct, stop_pct, limit, lo_ts, hi_ts,
+        hold_days=hold_days)
     if baseline in FLOW_COHORT_WHERE:
         base_items, base_cov = load_flow_clusters(
-            flow_db_path, baseline, source, tp_pct, stop_pct, limit, lo_ts, hi_ts)
+            flow_db_path, baseline, source, tp_pct, stop_pct, limit, lo_ts, hi_ts,
+            hold_days=hold_days)
     else:
         base_items, base_cov = load_clusters_economic(
-            outcomes_db_path, baseline, source, tp_pct, stop_pct, limit, lo_ts, hi_ts)
+            outcomes_db_path, baseline, source, tp_pct, stop_pct, limit, lo_ts, hi_ts,
+            hold_days=hold_days)
 
     rets = np.array([t["ret"] for t in cand_items], dtype=float)
     days = [t["day"] for t in cand_items]
@@ -242,6 +259,7 @@ def build_flow_candidate(card: TestCard, cohort: str,
         "baseline_source": ("flow_alerts" if baseline in FLOW_COHORT_WHERE
                             else "alert_outcomes"),
         "unit": "cluster", "return_proxy": "option_pnl_r_multiple",
+        "hold_days": int(hold_days),
         "n_units": int(rets.size),
         "n_baseline_units": len(base_items),
         "n_trading_days": len(set(days)),

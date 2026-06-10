@@ -241,6 +241,35 @@ def test_build_flow_candidate():
         os.unlink(db)
 
 
+def test_hold_days_unresolved_excluded():
+    # The fake NBBO only ever has fire-day bars (it ignores `date`, but the
+    # multiday scan asks for LATER calendar dates which we make empty here), so
+    # a 2-day hold can't be covered -> every cluster UNRESOLVED and excluded.
+    class _FireDayOnlyNBBO:
+        def bars(self, ticker, expiration, strike, right, date):
+            from autoresearch.option_pnl import et_day_from_ts
+            if date != et_day_from_ts(NOW):
+                return []
+            return _FakeNBBO().bars(ticker, expiration, strike, right, date)
+
+    rows = [_row(f"T{i}", i, whale=1) for i in range(5)]
+    db = _make_db(rows)
+    try:
+        clusters, cov = load_flow_clusters(db, "WHALE", _FireDayOnlyNBBO(),
+                                           hold_days=2)
+        check("uncovered horizon -> all clusters excluded",
+              len(clusters) == 0 and cov["n_clusters_unresolved"] == 5,
+              str(cov))
+        check("coverage records hold_days", cov["hold_days"] == 2, str(cov))
+        clusters0, cov0 = load_flow_clusters(db, "WHALE", _FireDayOnlyNBBO(),
+                                             hold_days=0)
+        check("same data resolves at hold 0",
+              len(clusters0) == 5 and cov0["n_clusters_unresolved"] == 0,
+              str(cov0))
+    finally:
+        os.unlink(db)
+
+
 def test_requires_nbbo_source():
     try:
         build_flow_candidate(_card(), "WHALE", source=None)
@@ -254,7 +283,7 @@ def main() -> int:
     for fn in (test_direction_from, test_cohort_selection_disjoint,
                test_unknown_cohort_raises, test_clustering_and_outcomes,
                test_window_and_limit, test_build_flow_candidate,
-               test_requires_nbbo_source):
+               test_hold_days_unresolved_excluded, test_requires_nbbo_source):
         print(f"\n{fn.__name__}:")
         fn()
     print(f"\n{'='*46}\n  {_passed} passed, {_failed} failed")
