@@ -53,6 +53,44 @@ SNAPSHOTS_DB = r"C:\Dev\GammaPulse\snapshots.db"
 _ART = Path(__file__).resolve().parent.parent / "autoresearch" / "_artifacts"
 
 
+def _keep_awake() -> None:
+    """Inhibit system sleep while fetching (the 6/10 overnight run died to
+    machine sleep). Reverts automatically when the process exits."""
+    try:
+        import ctypes
+        ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+        ctypes.windll.kernel32.SetThreadExecutionState(
+            ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+        print("[fetch] keep-awake set (system sleep inhibited)", flush=True)
+    except Exception as e:
+        print(f"[fetch] keep-awake unavailable: {e!r}", flush=True)
+
+
+def _rth_pause(enabled: bool) -> None:
+    """Block while US RTH is in session (09:20-16:05 ET, weekdays).
+
+    The LIVE trading system shares this ThetaData terminal — a daytime bulk
+    fetch would compete with its sub-30s latency edge. Charter says overnight."""
+    if not enabled:
+        return
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    announced = False
+    while True:
+        now = datetime.now(ZoneInfo("America/New_York"))
+        mins = now.hour * 60 + now.minute
+        in_rth = now.weekday() < 5 and (9 * 60 + 20) <= mins < (16 * 60 + 5)
+        if not in_rth:
+            if announced:
+                print(f"[fetch] RTH over — resuming ({now:%H:%M} ET)", flush=True)
+            return
+        if not announced:
+            print(f"[fetch] RTH PAUSE — live terminal has priority until "
+                  f"16:05 ET (now {now:%H:%M} ET)", flush=True)
+            announced = True
+        time.sleep(300)
+
+
 def resolve_universe(spec: str) -> list[str]:
     if spec.startswith("@"):
         return [l.strip().upper() for l in Path(spec[1:]).read_text().splitlines()
@@ -82,6 +120,9 @@ def main(argv=None) -> int:
     ap.add_argument("--baseline", default="SOE_A")
     ap.add_argument("--fetch-only", action="store_true")
     ap.add_argument("--no-fetch", action="store_true")
+    ap.add_argument("--no-rth-pause", action="store_true",
+                    help="fetch through market hours too (default: pause "
+                         "09:20-16:05 ET — the live system owns the terminal)")
     ap.add_argument("--cap-tape", type=int, default=None,
                     help="safety cap on tape-verified candidates (most-recent "
                          "first dropped LAST; logged when it truncates)")
@@ -102,7 +143,9 @@ def main(argv=None) -> int:
         cfg = FetchConfig()
         stats = FetchStats()
         t0 = time.time()
+        _keep_awake()
         for i, root in enumerate(roots, 1):
+            _rth_pause(not args.no_rth_pause)
             fetch_root(con, root, args.start, args.end, cfg, stats)
             print(f"[fetch {i}/{len(roots)}] {root}: cum reqs={stats.n_requests} "
                   f"cached={stats.n_cached_skips} rows={stats.n_rows} "
