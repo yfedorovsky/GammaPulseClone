@@ -512,6 +512,11 @@ def format_flow_alert(alert: dict[str, Any]) -> str:
     except Exception:
         regime_line = ""
 
+    # #65 v1: macro-backdrop footer (annotate-only context — is this flow firing
+    # into a healthy RISK-ON tape or a hostile rotation?). No gating.
+    _rb = alert.get("regime_banner")
+    regime_ctx_line = f"{_rb}\n" if _rb else ""
+
     return (
         f"{insider_banner}"
         f"{whale_banner}"
@@ -526,6 +531,7 @@ def format_flow_alert(alert: dict[str, Any]) -> str:
         f"{tag_line}"
         f"{er_line}"
         f"{regime_line}"
+        f"{regime_ctx_line}"
     )
 
 

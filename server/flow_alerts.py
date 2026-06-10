@@ -108,6 +108,9 @@ _SWEEP_MIGRATIONS = [
     # inverted / ~80% no-clear-aggressor; persisting it makes the tick-confirmed-
     # vs-guessed split a cheap column instead of a per-alert tape query.
     "ALTER TABLE flow_alerts ADD COLUMN side_source TEXT",
+    # 2026-06-10 (#65 v1): compact macro-regime stamp at fire time
+    # (im|breadth|ETF:sector|alignment) for later regime-conditioned outcome analysis.
+    "ALTER TABLE flow_alerts ADD COLUMN regime_ctx TEXT",
 ]
 
 
@@ -887,8 +890,8 @@ def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) 
              last_price, bid, ask, side, sentiment, iv, delta, notional, spot,
              conviction, status, king, floor_level, ceiling_level, signal, regime,
              macro_regime_tag, insider_score, is_insider, insider_reasons,
-             is_whale, whale_reasons, side_source)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             is_whale, whale_reasons, side_source, regime_ctx)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 int(time.time()),
                 alert["ticker"],
@@ -921,6 +924,7 @@ def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) 
                 alert.get("is_whale", 0),
                 alert.get("whale_reasons"),
                 alert.get("side_source"),
+                alert.get("regime_ctx"),
             ),
         )
 
@@ -1311,6 +1315,15 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
     if not is_rth_or_extended():
         return []
 
+    # #65 v1: refresh the unified regime context once per scan cycle (cached 20m,
+    # off the hot path). Each alert below is annotated + stamped with the macro
+    # backdrop it fires into — annotate + MEASURE only; NO gating/suppression yet.
+    try:
+        from .regime_context import get_regime_context
+        await get_regime_context()
+    except Exception:
+        pass
+
     now = datetime.datetime.now()
     today_str = now.strftime("%Y-%m-%d")
 
@@ -1520,6 +1533,16 @@ async def _scan_flow_from_cache(vol_oi_threshold: float = 3.0) -> list[dict[str,
                 "spot": spot,
                 "_odte_side_override": _odte_flip,
             }
+            # #65 v1: stamp the macro backdrop this alert fires into (annotate +
+            # persist for later regime-conditioned outcome measurement; no gating).
+            try:
+                from .regime_context import (annotate as _regime_annotate,
+                                             cached_regime_ctx)
+                _ann = _regime_annotate(cached_regime_ctx(), ticker, sentiment)
+                alert["regime_ctx"] = _ann["compact"]
+                alert["regime_banner"] = _ann["banner"]
+            except Exception:
+                pass
             gex_info = {
                 "king": state.get("king") if state else None,
                 "floor": state.get("floor") if state else None,
