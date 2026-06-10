@@ -1155,6 +1155,21 @@ async def rs_acceleration_rankings(limit: int = 20):
             "note": "needs >= 2 EOD RTS snapshots; burns in after first day"}
 
 
+@app.get("/api/regime/intermarket")
+async def intermarket_regime_read():
+    """Cross-asset RISK-ON/OFF gate (AION-inspired inter-market layer): the
+    QQQ/GLD, QQQ/DBC, SPY/UUP ratios vs their trend SMAs -> a composite risk
+    posture. The 'is the broad tape healthy enough to be long this flow?' context
+    the flow engine lacks (6/9 rotation + dead-whale verdict both pointed here).
+    Cached 30 min. Distinct from /api/market-read (dealer structure) and the
+    macro_regime calendar/vol tagger."""
+    from .intermarket_regime import get_intermarket_regime
+    try:
+        return await get_intermarket_regime()
+    except Exception as e:
+        return {"regime": "UNKNOWN", "composite": None, "error": str(e)}
+
+
 @app.get("/api/market-read")
 async def market_read(symbol: str = "SPX"):
     """Unified market read (bear-day capstone): synthesizes dealer-structure
