@@ -126,6 +126,18 @@ def main(argv=None) -> int:
     ap.add_argument("--cap-tape", type=int, default=None,
                     help="safety cap on tape-verified candidates (most-recent "
                          "first dropped LAST; logged when it truncates)")
+    ap.add_argument("--min-notional", type=float, default=None,
+                    help="candidate notional floor before the tape stage. "
+                         "Default: 3e6 for WHALE (the live TELEGRAM tier — the "
+                         "alerts the operator actually receives; the $1M tier "
+                         "is DB-audit only), no floor for INFORMED.")
+    ap.add_argument("--top-k-day", type=int, default=2,
+                    help="tape at most K candidates per (root, day, right), "
+                         "largest notional first (WHALE) / score then notional "
+                         "(INFORMED). The C5 cluster representative is "
+                         "essentially always among the day's largest prints; "
+                         "0 = no cap. Approximation documented in "
+                         "REPLAY_FINDINGS.md.")
     ap.add_argument("--seed-n", type=int, default=300)
     ap.add_argument("--spa-reps", type=int, default=1000)
     ap.add_argument("--ledger", default=str(_ART / "demo_ledger.json"))
@@ -168,6 +180,31 @@ def main(argv=None) -> int:
         candidates += scan_day(con, d, args.cohort, roots=roots)
     print(f"[scan] {len(candidates)} {args.cohort} candidates "
           f"(side-pending, pre-tape)", flush=True)
+
+    # ── Tape triage (2026-06-10): MU alone produced 6,058 side-pending whale
+    # candidates YTD — taping every $1M candidate across 150 roots is ~100K
+    # full-day tape calls. Grade the actionable tier instead.
+    min_notional = args.min_notional
+    if min_notional is None and args.cohort == "WHALE":
+        min_notional = 3_000_000.0      # live WHALE_TELEGRAM_NOTIONAL.
+    if min_notional:
+        before = len(candidates)
+        candidates = [c for c in candidates if c.notional >= min_notional]
+        print(f"[scan] notional >= ${min_notional/1e6:g}M (Telegram tier): "
+              f"{before} -> {len(candidates)}", flush=True)
+    if args.top_k_day and args.top_k_day > 0:
+        by_key: dict = {}
+        for c in candidates:
+            by_key.setdefault((c.root, c.date, c.right), []).append(c)
+        before = len(candidates)
+        kept = []
+        for key, group in by_key.items():
+            group.sort(key=lambda c: (c.score_if_ask, c.notional), reverse=True)
+            kept += group[:args.top_k_day]
+        candidates = sorted(kept, key=lambda c: c.date)
+        print(f"[scan] top-{args.top_k_day} per (root,day,right): "
+              f"{before} -> {len(candidates)}", flush=True)
+
     if args.cap_tape is not None and len(candidates) > args.cap_tape:
         # Keep the most recent (the relevant regime) — log the truncation.
         candidates = sorted(candidates, key=lambda c: c.date)[-args.cap_tape:]
