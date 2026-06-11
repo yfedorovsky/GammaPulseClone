@@ -184,6 +184,24 @@ def _f(row: dict, key: str) -> Optional[float]:
         return None
 
 
+def _span_has_candidate_volume(con, root: str, exp: str, a: str, b: str,
+                               min_vol: int = 500,
+                               min_notional: float = 10_000.0) -> bool:
+    """True when a fetched greeks chunk contains at least one row that could
+    matter to the signature scan. BOTH live signatures require vol >= 500
+    (whale gate 3; informed's hard gates imply it: oi>=100 needs vol>=1000 for
+    V/OI>=10, else vol>=500 directly), so a chunk with no such row cannot
+    yield a candidate — fetching its OI is pure cost. OI was ~half of all
+    fetched rows at ~5-8ms/row server-side, so this is the big lever.
+    Rows without OI fail the scan gates safely (COALESCE(oi,0)).
+    Reads the store (not the response) so cached-chunk resumes decide
+    identically."""
+    return con.execute(
+        "SELECT 1 FROM option_eod WHERE root=? AND expiration=? AND date>=? "
+        "AND date<=? AND volume>=? AND volume*close*100>=? LIMIT 1",
+        (root, exp, a, b, min_vol, min_notional)).fetchone() is not None
+
+
 def _apply_greeks_rows(con, root: str, exp: str, rows: list[dict]) -> int:
     n = 0
     for r in rows:
@@ -322,7 +340,9 @@ def fetch_root(con: sqlite3.Connection, root: str, start: str, end: str,
         for ca, cb in reversed(week_chunks(start, span_end, cfg.chunk_days)):
             n_greeks = _do(exp, "greeks", ca, cb, _apply_greeks_rows)
             if n_greeks is not None and n_greeks > 0:
-                _do(exp, "oi", ca, cb, _apply_oi_rows)
+                # OI only where a candidate-grade row exists in the chunk.
+                if _span_has_candidate_volume(con, root, exp, ca, cb):
+                    _do(exp, "oi", ca, cb, _apply_oi_rows)
             elif n_greeks == 0:
                 break   # listing boundary reached.
     return stats

@@ -215,6 +215,29 @@ def test_listing_boundary_stop():
         check("stops at listing boundary (no pre-listing probes)",
               len(greeks_calls) <= 5, f"{len(greeks_calls)} greeks calls")
         check("no fails on empty weeks", st.n_failures == 0, str(st.n_failures))
+        # Fake rows have volume=10 < 500: no candidate-grade volume anywhere,
+        # so EVERY OI chunk must be skipped (the ~50%-row-cost lever).
+        check("OI skipped when no candidate-grade volume",
+              not any(c[0] == "oi" for c in calls), str(calls))
+        # And a candidate-grade week triggers its OI fetch.
+        calls.clear()
+
+        def fake_fetch2(root, exp, endpoint, a, b, cfg):
+            calls.append((endpoint, a, b))
+            if endpoint == "oi":
+                return []
+            return ([{"timestamp": f"{a}T00:00:00", "strike": "100",
+                      "right": "C", "volume": "600", "count": "1",
+                      "close": "5.0", "bid": "4.9", "ask": "5.1",
+                      "delta": "0.3", "implied_vol": "0.5",
+                      "underlying_price": "100"}]
+                    if a >= "2026-05-25" else [])
+
+        cf._fetch_url = fake_fetch2
+        cf.fetch_root(con, "YYY", "2026-01-02", "2026-06-09",
+                      expirations=["2026-06-12"])
+        check("OI fetched for candidate-grade weeks",
+              any(c[0] == "oi" for c in calls), str(calls))
     finally:
         cf._fetch_url = orig
         con.close()
