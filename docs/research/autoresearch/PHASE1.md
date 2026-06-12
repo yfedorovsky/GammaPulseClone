@@ -451,3 +451,37 @@ column (wired into flow_cohorts as an optional split + coverage counts) will
 let this report split tick-vs-guessed automatically once populated rows accrue.
 
 Tests: 300 total, 0 failures (test_flow_cohorts 39: +4 side_source split).
+
+---
+
+# Phase 2R — Historical replay verdicts (the YTD answer)
+
+**2026-06-11 AM.** Full detail + caveats + ops log: `REPLAY_FINDINGS.md`.
+Top-17 mega-cap universe (the whale-dense slice), 2026-01-02 → 06-09, 109
+trading days, $3M Telegram tier, tape-clean labels, no look-ahead.
+
+| Cohort·hold | n | Mean R | WR | CPCV+ | SPA | LABEL_CONF | MinTRL | Outcome |
+|---|---|---|---|---|---|---|---|---|
+| WHALE·0d | 670 | **+0.043** | 33.9% | 93% | p=.038 ✓ | HIGH | **PASS** | REJECT (PBO .60, DSR 0) |
+| WHALE·3d | 666 | **+0.108** | 42.8% | 93% | p=.020 ✓ | HIGH | **PASS** | REJECT (PBO .62, DSR 0) |
+| INFORMED·0d | 841 | −0.358 | 20.7% | 0% | ✗ | HIGH | FAIL | REJECT (all gates) |
+| INFORMED·3d | 840 | −0.484 | 19.4% | 0% | ✗ | HIGH | FAIL | REJECT (all gates) |
+
+**WHALE is the first cohort in this project's history to pass every HARD gate**
+(first MIN_LENGTH pass ever; CPCV 93% positive paths; beats baseline at α=.05;
+positive after slippage; labels clean) — held back only by the PBO/DSR
+diagnostics (threshold-tuning warning + the global-N deflation bar, which wants
+several-thousand clusters). **INFORMED is dead at scale with clean labels** —
+the cheap-short-dated-OTM signature buys decaying lottery premium, and holding
+makes it worse. Same labels, same machinery, opposite verdicts: the
+discrimination this engine exists to produce.
+
+Live-relevant deltas: replay labels are tape-clean at fire time, which the live
+snapshot path is NOT (the side_source/suppression discussion now has 670
+clusters of evidence); WHALE edge TRIPLES at hold-3 (echoes the king-migration
+multi-day finding); INFORMED's May "directional hit rate" was real but
+directional accuracy ≠ option PnL after slippage.
+
+Next: 133-root tail finishes fetching → full-universe robustness matrix +
+regime split; then the operator decision on what (if anything) moves toward
+live — the gate PROPOSES, the operator decides.

@@ -1,7 +1,7 @@
 # Historical Replay — Findings
 
-**Status:** infrastructure complete + validated (2026-06-09 PM); YTD fetch in
-progress; verdict matrices land here as runs complete. Charter:
+**Status:** top-17 YTD verdicts COMPLETE (2026-06-11 AM); 133-root tail still
+fetching (robustness pass to follow). Charter:
 `HISTORICAL_REPLAY.md`. Code: `autoresearch/replay/` + `scripts/run_historical_replay.py`.
 
 ## The durable asset (goal #2 — done)
@@ -55,10 +55,68 @@ Empirical facts the schema is built on (validated 2026-06-09):
   censoring rule (eligibility by fire date). Same machinery as the live cohort
   grader — matrices directly comparable.
 
-## Verdict matrix
+## Verdict matrix — top-17 mega-cap universe, YTD (2026-01-02 → 06-09)
 
-_(pending — YTD WHALE first, then INFORMED; same format as PHASE1.md 1.9)_
+Universe = the 17 fully-cached roots (AAPL AMD AMZN AVGO DELL GOOGL INTC META
+MRVL MSFT MU NBIS NVDA ORCL PLTR SNDK TSLA) — the whale-densest slice by flow
+notional; the 133-root tail is still fetching and adds robustness, not whales.
+Triage: $3M Telegram tier (WHALE), top-2 per (root, day, right). Brackets
+TP +100% / stop −50%, ask-in / bid-out. 109 trading days.
 
-| Cohort | Window | Hold | n resolved | Mean R | WR | CPCV+ | LABEL_CONF | Outcome |
+| Cohort · hold | n | Mean R | WR | CPCV med / %+ | SPA vs SOE_A | LABEL_CONF | MinTRL | Outcome |
 |---|---|---|---|---|---|---|---|---|
-| (runs in progress) | | | | | | | | |
+| WHALE · 0d | 670 | **+0.043** | 33.9% | +0.072 / 93% | **p=0.038 ✓** | HIGH (87%/2% inv) | **PASS** | REJECT (PBO 0.595, DSR 0) |
+| WHALE · 3d | 666 | **+0.108** | 42.8% | +0.075 / 93% | **p=0.020 ✓** | HIGH (85%/0%) | **PASS** | REJECT (PBO 0.624, DSR 0) |
+| INFORMED · 0d | 841 | **−0.358** | 20.7% | −0.436 / 0% | p=0.526 ✗ | HIGH (84%/4%) | FAIL (SR<0) | REJECT (all hard gates) |
+| INFORMED · 3d | 840 | **−0.484** | 19.4% | −0.307 / 0% | p=0.478 ✗ | HIGH (80%/4%) | FAIL | REJECT (all hard gates) |
+
+(MU-only preview, for the record: +0.048 R / 67 clusters — the 17-root run
+shows that was the signature, not just MU's famous year.)
+
+### The finding
+
+**Same tape-clean labels, same window, same machinery — opposite verdicts.**
+The WHALE signature (big-dollar institutional accumulation: $3M+, vol≥500,
+≥30% of OI, ASK-confirmed at fire time) carries positive net expectancy that
+TRIPLES with a 3-day hold and passes every HARD gate: first-ever MIN_LENGTH
+pass (670 ≥ MinTRL 365 and the 450 ship floor), CPCV 93% positive paths, SPA
+beats the SOE_A baseline at α=0.05, positive economics after slippage. The
+INFORMED signature (cheap short-dated OTM V/OI shocks) is catastrophically
+negative — and holding longer makes it worse, because its candidates are
+decaying lottery premium. Follow the dollars, not the excitement. (This also
+resolves the May live observation that INFORMED "hits direction" on single
+names: directional accuracy ≠ bracketed option PnL after slippage.)
+
+### Why WHALE still reads REJECT (the two diagnostics)
+
+- **PBO 0.59-0.62 (DANGER band):** the CSCV matrix varies the notional
+  threshold; PBO says the in-sample-best cutoff is random out-of-sample —
+  i.e. DO NOT tune the $-threshold. Interpretive caveat: the $3M tier is a
+  long-standing live constant, not a parameter this backtest searched, so the
+  synthetic threshold matrix arguably overstates research degrees of freedom.
+  Operator judgment required (C1 made PBO a diagnostic for exactly this).
+- **DSR 0.000:** per-cluster Sharpe 0.078-0.090 cannot clear
+  E[max | N=313 global trials] = 0.48 at n=670. The deflation bar wants
+  several-thousand clusters — the full universe + more months, not a different
+  analysis.
+
+### Standing caveats
+
+Replay ≥ live fire-count (chop gate + earnings demote not reconstructable);
+labels are tape-clean which live snapshot labels are NOT (closing that gap is
+the side_source/suppression work-stream — now backed by 670 clusters instead
+of 60); single-regime year (2026 YTD); top-2/day triage may miss earlier
+cluster fires; brackets are one exit model. The 150-root matrix and a
+regime-split follow once the tail finishes fetching.
+
+### Ops log (for the record)
+
+The fetch took three nights instead of one: ThetaData range-latency is
+superlinear per ROW (~5-8ms server-side) on BOTH endpoints; the terminal
+serializes heavy requests (parallel workers starve each other); HTTP 472 =
+benign no-data (was counted FAIL); machine Modern-Standby killed night one;
+an OS restart killed night two. Fixes that now live in the fetcher: serial
+weekly chunks both endpoints, expiry-clamped spans, listing-boundary stop,
+OI-chunk skip without candidate-grade volume (~40-60% row cut), per-request
+durable ledger (resume loses at most one request), keep-awake, RTH pause
+(the live system owns the terminal 09:20-16:05 ET).
