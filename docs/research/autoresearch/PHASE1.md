@@ -485,3 +485,13 @@ directional accuracy ≠ option PnL after slippage.
 Next: 133-root tail finishes fetching → full-universe robustness matrix +
 regime split; then the operator decision on what (if anything) moves toward
 live — the gate PROPOSES, the operator decides.
+
+**ROBUSTNESS UPDATE (same day):** the WHALE numbers above are the **whale-dense
+17 mega-caps only**. Expanding to 38 banked roots collapses the pooled edge
+(+0.108→+0.065 R h3, +0.043→+0.008 h0; CPCV 93%→60-73%) and TRIPS the LABEL_CONF
+artifact test. Per-root shows the edge is **thematic** — 2026 semis/AI-infra
+names (MRVL/INTC/QCOM/ARM/NBIS/AMD/NVDA/NOW/IREN/DELL) carry it; ETF/index
+hedging (GLD/SMH/RUT) and non-theme names are flat-to-negative. So WHALE
+"passing every hard gate" is **universe-conditional and likely single-regime**,
+not a general edge. Full analysis + the deliberate decision NOT to slice for a
+positive sub-universe: REPLAY_FINDINGS.md "Robustness" section.
