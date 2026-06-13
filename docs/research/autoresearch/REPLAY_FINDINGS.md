@@ -1,7 +1,8 @@
 # Historical Replay — Findings
 
-**Status:** top-17 YTD verdicts COMPLETE (2026-06-11 AM); 133-root tail still
-fetching (robustness pass to follow). Charter:
+**Status:** top-17 verdicts + 38-root robustness COMPLETE (2026-06-11); the
+edge does NOT generalize past the whale-dense mega-caps (see Robustness
+section — likely thematic/single-regime). 133-root tail still fetching. Charter:
 `HISTORICAL_REPLAY.md`. Code: `autoresearch/replay/` + `scripts/run_historical_replay.py`.
 
 ## The durable asset (goal #2 — done)
@@ -108,6 +109,50 @@ the side_source/suppression work-stream — now backed by 670 clusters instead
 of 60); single-regime year (2026 YTD); top-2/day triage may miss earlier
 cluster fires; brackets are one exit model. The 150-root matrix and a
 regime-split follow once the tail finishes fetching.
+
+### Robustness — universe expansion 17 → 38 roots (the edge does NOT generalize)
+
+Re-ran WHALE on the 38 roots banked by 2026-06-11 (the 17 mega-caps + 21 more:
+ARM ASTS COIN CRWD CRWV EWY GLD GOOG HOOD IBM IREN LLY MSTR NOW QCOM RKLB RUT
+SMH SNOW TSM XOM). The pooled edge collapsed and the artifact test FIRED:
+
+| Cohort·hold | n | Mean R | CPCV %+ | LABEL_CONF artifact | Outcome |
+|---|---|---|---|---|---|
+| WHALE·0d (38) | 1164 | **+0.008** | 60% | **YES** (full +0.008 vs confirmed −0.009) | REJECT |
+| WHALE·3d (38) | 1153 | **+0.065** | 73% | **YES** (full +0.065 vs confirmed −0.134) | REJECT |
+
+vs the 17-root +0.043 / +0.108 at 93% CPCV. Splitting the 38: the original-17
+subset is unchanged (+0.107 R, n=667 at h3); the **new-21 subset averages
++0.008 R** — pure dilution.
+
+**Per-root (h3) shows the edge is THEMATIC, not universal.** Consistently
+positive: MRVL +0.52, INTC +0.47, DELL +0.45, QCOM +0.43, ARM +0.36, NBIS +0.34,
+AMD +0.33, NVDA +0.22, NOW +0.22, IREN +0.20 — the 2026 semis / AI-infrastructure
+capex names. Consistently negative: broad-market ETF/index hedging flow
+(GLD −0.30, SMH −0.23, RUT −0.21 — where "institutional accumulation" is just
+market-maker noise), and several non-theme names (COIN −0.36, AVGO −0.14,
+AAPL −0.08, MU −0.07 at h3, TSLA −0.06). Even the 17-root +0.108 is carried by
+roughly half its names.
+
+**Revised conclusion.** The morning's "WHALE passes every hard gate" was the
+whale-densest slice, and the apparent edge is **concentrated and almost
+certainly thematic** — AI/semis names with whale flow rose in a single 2026
+capex regime. This is exactly the single-regime fragility the DSR deflation
+gate was already flagging (Sharpe 0.08-0.09 vs E[max|N]=0.48). It does NOT
+survive a broad universe, and the broad-cohort residual is flagged a labeling
+artifact. **Whale-following is not a demonstrated general edge; "whale flow in
+2026 AI/semis names" is a sector-momentum coincidence until proven otherwise.**
+
+What this does NOT justify (and why no more slicing was done): hunting for the
+sub-universe that still looks positive (exclude-ETFs, semis-only, etc.) is the
+overfitting PBO exists to catch — every such slice is a free parameter. The
+honest next step is a PRE-REGISTERED test, not a post-hoc winner: (a) a
+sector/theme-neutral spec (does whale flow predict returns WITHIN the AI/semis
+basket, vs a same-sector non-whale baseline?), and (b) out-of-sample months /
+a non-AI-capex regime. Also: ETF/index roots (GLD/SMH/RUT and class) should be
+added to the WHALE exclusion list on the live side regardless — MM hedging is
+not directional conviction (proposal, operator decides). Per-root table:
+`autoresearch/_artifacts/per_root_h3.log`.
 
 ### Ops log (for the record)
 
