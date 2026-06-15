@@ -24,6 +24,20 @@ MAX_MESSAGES_PER_WINDOW = 3      # max NORMAL messages in the window
 WINDOW_SECONDS = 600              # 10 minute window
 TICKER_COOLDOWN_SECONDS = 3600    # 1 hour per ticker
 
+# Significance-aware cooldown preemption (#71, 2026-06-15). A high-significance
+# alert (large $ notional / multi-leg) may PREEMPT the 1h per-ticker cooldown,
+# so a big longer-dated whale isn't silenced by an earlier small 0DTE on the
+# same name. Motivating case — AAPL 6/15: 25 alerts qualified, only 4 sent; the
+# $7.7M 9/18 and $5.6M 2028-LEAP whales were both dropped by ticker_cd while the
+# 6/day priority cap sat unused. Same discipline as the window preemption
+# (#52-fix-4): a big signal is never starved by smaller ones that fired first.
+# Still bounded by (a) a short anti-spam floor since the last send and (b) the
+# per-ticker DAILY cap. This is a DISPATCH-PRIORITIZATION fix (don't bury flow we
+# caught) — NOT an edge claim; the whale signature is thematic/unvalidated.
+# Set _SIG = 0 to disable.
+TICKER_COOLDOWN_PREEMPT_SIG = 3.0       # significance (~$3M / multi-leg) to preempt
+TICKER_COOLDOWN_PREEMPT_MIN_SEC = 300   # but still >=5 min since last send (anti-spam)
+
 # #52-fix-2 (2026-06-08): priority alerts used to bypass the global window
 # ENTIRELY, so on a broad tape ~20 different tickers each fired one CLUSTER FLOW
 # and flooded Telegram every 15-30s. Give priority its OWN bounded global window.
@@ -165,11 +179,27 @@ def _can_send(
         if len(_message_times) >= MAX_MESSAGES_PER_WINDOW:
             return False, "rate_window"
 
-    # Per-ticker cooldown (applies to priority + normal; force already returned)
+    # Per-ticker cooldown (applies to priority + normal; force already returned).
+    # #71: a high-significance alert PREEMPTS the 1h cooldown after a short anti-
+    # spam floor — so a big longer-dated whale isn't starved by an earlier small
+    # 0DTE on the same name. The per-ticker DAILY cap (checked above) is the hard
+    # ceiling, so preemption can never exceed N alerts/ticker/day.
     if ticker:
         last = _ticker_last_sent.get(ticker, 0)
-        if now - last < TICKER_COOLDOWN_SECONDS:
-            return False, "ticker_cd"
+        elapsed = now - last
+        if elapsed < TICKER_COOLDOWN_SECONDS:
+            preempts = (
+                TICKER_COOLDOWN_PREEMPT_SIG > 0
+                and significance >= TICKER_COOLDOWN_PREEMPT_SIG
+                and elapsed >= TICKER_COOLDOWN_PREEMPT_MIN_SEC
+            )
+            if not preempts:
+                return False, "ticker_cd"
+            print(
+                f"[TG_PREEMPT] {ticker} sig={significance:.1f} preempted ticker_cd "
+                f"(elapsed={elapsed/60:.0f}m, cap-bounded)",
+                flush=True,
+            )
 
     return True, ""
 

@@ -779,11 +779,38 @@ def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) 
         _in_chop = is_ticker_in_chop(_ticker)
     except Exception:
         pass
+
+    # 2026-06-10 (task #65b): index-INFORMED whipsaw gate. On an up/down/up/
+    # down index tape, INFORMED on the broad-index noise-floor names (SPY/QQQ/
+    # IWM/NDX) re-fires in alternating directions each leg. Chop above won't
+    # catch it (each leg is strongly directional, cumulative nets >10%). When
+    # this index already dispatched INFORMED in the OPPOSITE direction within
+    # the whipsaw window, demote this counter-direction fire to dashboard-only.
+    _whipsaw, _whipsaw_reason = False, None
+    try:
+        from .flow_noise_filter import index_informed_whipsaw_suppressed
+        _whipsaw, _whipsaw_reason = index_informed_whipsaw_suppressed(
+            _ticker, alert.get("sentiment", ""))
+    except Exception:
+        pass
+
     if insider_score >= 5 and _in_chop:
         alert["is_insider"] = 0
         alert["_informed_flow_chop_suppressed"] = 1
+    elif insider_score >= 5 and _whipsaw:
+        alert["is_insider"] = 0
+        alert["_informed_flow_whipsaw_suppressed"] = 1
+        print(f"[WHIPSAW] index-INFORMED demoted dashboard-only: {_ticker} "
+              f"{alert.get('sentiment')} — {_whipsaw_reason}", flush=True)
     elif insider_score >= 5 and not _is_informed_flow_duplicate(alert):
         alert["is_insider"] = 1
+        # Record the allowed index-INFORMED dispatch so a subsequent opposite-
+        # direction fire is detected as a whipsaw reversal (no-op for non-index).
+        try:
+            from .flow_noise_filter import record_index_informed_dispatch
+            record_index_informed_dispatch(_ticker, alert.get("sentiment", ""))
+        except Exception:
+            pass
         # INFORMED FLOW trades override conviction to HIGH so trade_tracker
         # auto-tracks for exit signals (currently filtered to HIGH/SWEEP
         # only — see line ~850 auto-track gate). Without this, INFORMED

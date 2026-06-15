@@ -210,6 +210,79 @@ def test_chop_min_notional_threshold():
 
 # === Test runner ===
 
+# === Index-INFORMED whipsaw gate (task #65b) ===
+
+def _reset_whipsaw() -> None:
+    nf._index_informed_dispatch.clear()
+    from datetime import date
+    nf._last_state_date = date.today()
+
+
+def test_whipsaw_first_index_fire_kept():
+    _reset_whipsaw()
+    sup, _ = nf.index_informed_whipsaw_suppressed("QQQ", "BULLISH")
+    assert sup is False, "first index INFORMED fire must pass"
+
+
+def test_whipsaw_same_direction_kept():
+    _reset_whipsaw()
+    nf.record_index_informed_dispatch("QQQ", "BULLISH")
+    sup, _ = nf.index_informed_whipsaw_suppressed("QQQ", "BULLISH")
+    assert sup is False, "same-direction repeat is not whipsaw (rate gate handles it)"
+
+
+def test_whipsaw_opposite_within_window_suppressed():
+    _reset_whipsaw()
+    nf.record_index_informed_dispatch("IWM", "BULLISH")
+    sup, reason = nf.index_informed_whipsaw_suppressed("IWM", "BEARISH")
+    assert sup is True and "whipsaw" in (reason or ""), \
+        "opposite direction within window must suppress"
+
+
+def test_whipsaw_opposite_outside_window_kept():
+    _reset_whipsaw()
+    from datetime import date
+    key = ("SPY", date.today().isoformat())
+    stale = time.time() - (nf.INDEX_WHIPSAW_WINDOW_SEC + 120)
+    nf._index_informed_dispatch[key] = [(stale, "BULLISH")]
+    sup, _ = nf.index_informed_whipsaw_suppressed("SPY", "BEARISH")
+    assert sup is False, "stale opposite (outside window) must not suppress"
+
+
+def test_whipsaw_non_index_passthrough():
+    _reset_whipsaw()
+    nf.record_index_informed_dispatch("NVDA", "BULLISH")  # no-op
+    sup, _ = nf.index_informed_whipsaw_suppressed("NVDA", "BEARISH")
+    assert sup is False, "single-name catalysts must never be whipsaw-gated"
+    assert not nf._index_informed_dispatch, "non-index dispatch must not record"
+
+
+def test_whipsaw_neutral_passthrough():
+    _reset_whipsaw()
+    nf.record_index_informed_dispatch("QQQ", "BULLISH")
+    sup, _ = nf.index_informed_whipsaw_suppressed("QQQ", "NEUTRAL")
+    assert sup is False, "non-directional sentiment is out of scope"
+
+
+def test_whipsaw_gate_off_passthrough():
+    _reset_whipsaw()
+    nf.INDEX_INFORMED_WHIPSAW_GATE = False
+    try:
+        nf.record_index_informed_dispatch("QQQ", "BULLISH")
+        sup, _ = nf.index_informed_whipsaw_suppressed("QQQ", "BEARISH")
+        assert sup is False, "gate off must pass everything"
+    finally:
+        nf.INDEX_INFORMED_WHIPSAW_GATE = True
+
+
+def test_whipsaw_sustained_suppression():
+    _reset_whipsaw()
+    nf.record_index_informed_dispatch("QQQ", "BULLISH")
+    s1, _ = nf.index_informed_whipsaw_suppressed("QQQ", "BEARISH")
+    s2, _ = nf.index_informed_whipsaw_suppressed("QQQ", "BEARISH")
+    assert s1 and s2, "bear stays suppressed while a bull is active in-window"
+
+
 TESTS = [
     test_first_fire_kept,
     test_dup_band_dropped,
@@ -227,6 +300,14 @@ TESTS = [
     test_chop_flagged_when_balanced,
     test_chop_NOT_flagged_when_imbalanced,
     test_chop_min_notional_threshold,
+    test_whipsaw_first_index_fire_kept,
+    test_whipsaw_same_direction_kept,
+    test_whipsaw_opposite_within_window_suppressed,
+    test_whipsaw_opposite_outside_window_kept,
+    test_whipsaw_non_index_passthrough,
+    test_whipsaw_neutral_passthrough,
+    test_whipsaw_gate_off_passthrough,
+    test_whipsaw_sustained_suppression,
 ]
 
 

@@ -42,3 +42,17 @@ paper_executions.db
 
 # OAuth token caches (sensitive)
 .etrade_tokens.json
+
+# Jun 15 — runtime artifacts that slipped through (same policy as snapshots.db)
+logs/
+alert_outcomes.db
+alert_outcomes_backup_*.BAK
+*.BAK
+ema_8_9_21_backtest.db
+_screenshots/
+/1
+qqq.json
+qqq_meta.json
+qqq_now.json
+thetav3.json
+thetav3-greeks.txt

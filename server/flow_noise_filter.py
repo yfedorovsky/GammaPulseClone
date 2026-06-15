@@ -128,6 +128,93 @@ def is_ticker_in_chop(ticker: str) -> bool:
     return bias_pct < CHOP_BALANCE_PCT
 
 
+# === Index-INFORMED whipsaw gate (task #65b, 2026-06-10) ===
+#
+# Distinct from the chop gate above. Chop fires when today's CUMULATIVE
+# bull-buy/bear-buy on a name is balanced (±10%). A WHIPSAW tape is the
+# opposite shape: each leg is STRONGLY directional, so the cumulative nets
+# out >10% and chop never trips — yet the flow flip-flops on every reversal.
+# On an up/down/up/down day (6/10), INFORMED on the broad-index underlyings
+# (SPY/QQQ/IWM/NDX — the documented 53-59% noise floor from the 5/27 cohort
+# study) re-fires in alternating directions each leg. That's mechanical
+# whipsaw, not informed accumulation.
+#
+# Rule: for index underlyings only, when this name already DISPATCHED an
+# INFORMED alert in the OPPOSITE direction within the whipsaw window, demote
+# the counter-direction fire to dashboard-only (is_insider=0). The dominant
+# direction still fires (and is already throttled by rate_window/ticker_cd);
+# we only kill the alternating reversals. Single-name catalysts (where
+# INFORMED actually works) are untouched — the gate is index-only.
+INDEX_INFORMED_WHIPSAW_GATE: bool = os.getenv(
+    "INDEX_INFORMED_WHIPSAW_GATE", "1") in ("1", "true", "True")
+# Broad-index / 0DTE noise-floor underlyings. INFORMED on these is the
+# coin-flip cohort; single names are excluded on purpose.
+INDEX_UNDERLYINGS: frozenset[str] = frozenset({
+    "SPY", "QQQ", "IWM", "DIA", "SPX", "SPXW", "NDX", "RUT", "XSP", "QQQM",
+})
+# How long an opposite-direction dispatch keeps suppressing reversals.
+INDEX_WHIPSAW_WINDOW_SEC: int = int(
+    os.getenv("INDEX_INFORMED_WHIPSAW_WINDOW_MIN", "45")) * 60
+
+# Keyed by (ticker, date_iso) → list of (ts, sentiment) for ALLOWED index
+# INFORMED dispatches today. Read by the suppressor, written on dispatch.
+_index_informed_dispatch: dict[tuple[str, str], list[tuple[float, str]]] = {}
+
+
+def _prune_index_dispatch(now: float) -> None:
+    """Drop non-today keys and within-key entries older than the window."""
+    today = date.today().isoformat()
+    for key in list(_index_informed_dispatch.keys()):
+        if key[1] != today:
+            del _index_informed_dispatch[key]
+            continue
+        _index_informed_dispatch[key] = [
+            (t, s) for (t, s) in _index_informed_dispatch[key]
+            if now - t < INDEX_WHIPSAW_WINDOW_SEC
+        ]
+
+
+def index_informed_whipsaw_suppressed(
+    ticker: str, sentiment: str
+) -> tuple[bool, str | None]:
+    """Should this index-INFORMED alert be demoted to dashboard-only as a
+    whipsaw reversal? Read-only — does NOT record. Returns (suppressed, reason).
+
+    Suppresses when an OPPOSITE-direction index INFORMED dispatched within the
+    whipsaw window. Non-index names and non-directional sentiment always pass.
+    """
+    if not INDEX_INFORMED_WHIPSAW_GATE:
+        return False, None
+    tk = (ticker or "").upper()
+    s = (sentiment or "").upper()
+    if tk not in INDEX_UNDERLYINGS or s not in ("BULLISH", "BEARISH"):
+        return False, None
+    now = time.time()
+    _prune_index_dispatch(now)
+    recent = _index_informed_dispatch.get((tk, date.today().isoformat()), [])
+    opposite = "BEARISH" if s == "BULLISH" else "BULLISH"
+    for ts, prev in recent:
+        if prev == opposite:
+            age_min = (now - ts) / 60
+            return True, (f"{tk} {opposite}→{s} flip "
+                          f"{age_min:.0f}m apart (whipsaw)")
+    return False, None
+
+
+def record_index_informed_dispatch(ticker: str, sentiment: str) -> None:
+    """Record an ALLOWED index-INFORMED dispatch so subsequent opposite-
+    direction fires can be detected as whipsaw reversals. No-op for non-index
+    or non-directional alerts."""
+    tk = (ticker or "").upper()
+    s = (sentiment or "").upper()
+    if tk not in INDEX_UNDERLYINGS or s not in ("BULLISH", "BEARISH"):
+        return
+    now = time.time()
+    _prune_index_dispatch(now)
+    _index_informed_dispatch.setdefault(
+        (tk, date.today().isoformat()), []).append((now, s))
+
+
 def _accumulate_bias(alert: dict[str, Any]) -> None:
     """Add this alert's notional to today's bull/bear bias for the ticker."""
     ticker = alert.get("ticker", "").upper()
