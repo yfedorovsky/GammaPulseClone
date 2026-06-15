@@ -1,0 +1,560 @@
+# Watched ticker list - GammaPulse scanner + active portfolio merge
+# Generated: 2026-05-12T22:17:22
+#
+# Sources:
+#   - server/tickers.py (Tier 1/2/3 scanner universe)
+#   - Recent Fidelity portfolio snapshots (5/11 + 5/12)
+#   - E-Trade share holdings (PANW, ARM)
+#   - Substack thesis names (MU, TSM)
+#
+# Totals:
+#   Scanner universe ............. 420
+#   Portfolio tickers ............ 43
+#   Overlap (in both) ............ 39
+#   In portfolio but NOT scanner . 4 -> consider adding
+#   Union (full watch list) ...... 424
+#
+
+# === GAPS - Portfolio tickers NOT currently in scanner universe ===
+# MISSING: CAR
+# MISSING: IGV
+# MISSING: SNDQ
+# MISSING: XLK
+
+# === SCANNER BY TIER ===
+
+# --- Tier 1 (57 tickers) ---
+  AAPL    ADBE    AEHR    ALAB    AMD     AMZN    ANET    AVGO  
+  BAC     COIN    COST    CRDO    CRM     CSCO    DIA     DIS   
+  GLD     GOOG    GOOGL   HD      IBIT    INTC    IWM     JNJ   
+  JPM     KO      LLY     MA      META    MSFT    MU      NDX   
+  NFLX    NVDA    ORCL    PEP     PG      PLTR    QQQ     RUT   
+  SLV     SMCI    SNDK    SPX     SPY     STX     T       TSLA  
+  UNH     USO     UVXY    V       VIX     VZ      WDC     WMT   
+  XOM   
+
+# --- Tier 2 (154 tickers) ---
+  AA      AAL     ABBV    ABNB    ABT     AEP     AMAT    AMGN  
+  AMKR    AMT     APD     APH     ARM     ASML    AXP     BA    
+  BBY     BKNG    BLK     BMY     BRK.B   BURL    C       CAT   
+  CCI     CI      CLF     CME     CMG     CNC     COF     COP   
+  CRWD    CSX     CVS     CVX     D       DAL     DDOG    DE    
+  DELL    DG      DHR     DLR     DLTR    DUK     ECL     ELV   
+  EOG     EQIX    EXC     F       FCX     FDX     GD      GE    
+  GEV     GFS     GILD    GM      GS      HAL     HON     HOOD  
+  HPE     HUM     IBM     ICE     IP      ISRG    JWN     KEYS  
+  KLAC    KR      KSS     LCID    LIN     LMT     LOW     LRCX  
+  LUV     LYFT    M       MAR     MCD     MDB     MDT     MPC   
+  MPWR    MRK     MRVL    MS      NEE     NET     NKE     NOC   
+  NOW     NSC     NUE     O       OXY     PANW    PEG     PFE   
+  PKG     PLD     PNC     PSA     PSX     PYPL    QCOM    QQQE  
+  RBLX    REGN    RIVN    RMBS    ROST    RSP     RTX     SBUX  
+  SCHW    SHOP    SHW     SLB     SMH     SNOW    SO      SOXX  
+  SPG     SPGI    SRE     TFC     TGT     TJX     TMO     TSM   
+  TXN     U       UAL     UBER    UNP     UPS     USB     VLO   
+  VRTX    WBA     WELL    WFC     WRK     X       XEL     XMAG  
+  XYZ     ZS    
+
+# --- Tier 3 (209 tickers) ---
+  A       AAOI    ADI     AEIS    AEO     AESI    AGI     AMBA  
+  AMC     AME     AMPX    ANF     APLD    ASTS    ATI     AVAV  
+  AXTI    BABA    BAX     BB      BDX     BE      BIDU    BIIB  
+  BILI    BITF    BKSY    BLDP    BLNK    BNTX    BSX     BYND  
+  CAG     CAMT    CARR    CDNS    CHPT    CHTR    CHWY    CIEN  
+  CIFR    CL      CLOV    CLS     CLSK    CLX     CMCSA   CMI   
+  COHR    CPB     CPRI    CRCL    CROX    CRUS    CRWV    DECK  
+  DKS     DOCU    DOV     DRAM    DXCM    EBAY    EMR     ENPH  
+  ENTG    ETN     ETSY    EW      EWY     FCEL    FIX     FLR   
+  FLY     FORM    FOX     FOXA    FSLR    FTNT    FTV     FUBO  
+  FUTU    GFI     GIS     GLW     GME     GSAT    HIMS    HSY   
+  HUT     ICHR    IDXX    ILMN    INTU    IONQ    IR      IREN  
+  ITW     JD      K       KGC     KLIC    KMB     KTOS    LAR   
+  LASR    LBRDK   LI      LITE    LULU    LWLG    MARA    MBLY  
+  MCHP    MKC     MKSI    MOD     MP      MRNA    MRX     MSTR  
+  MTCH    MYRG    NBIS    NIO     NNE     NVAX    NVMI    NWS   
+  NWSA    NXPI    OKLO    OKTA    ON      ONTO    OTIS    PAAS  
+  PCAR    PDD     PH      PINS    PL      PLAB    PLUG    POWL  
+  PSKY    PTON    PVH     PWR     QBTS    QRVO    RBRK    RCAT  
+  RDDT    RGTI    RH      RIOT    RKLB    RL      RMD     ROAD  
+  ROK     ROKU    ROP     RUN     SATS    SEDG    SJM     SMR   
+  SMTC    SNAP    SNPS    SOFI    SPOT    STM     SWKS    SYK   
+  SYM     TCEHY   TEAM    TER     TFPM    TME     TMUS    TPR   
+  TRIP    TROX    TSEM    TTMI    TWLO    UCTT    ULTA    URBN  
+  USAR    UUUU    VIAV    VICR    VRT     VSAT    W       WBD   
+  WDAY    WISH    WOLF    WPM     XBI     XPEV    YELP    ZM    
+  ZTS   
+
+# === PORTFOLIO TICKERS (deduped, alphabetical) ===
+  AAPL
+  AMD
+  ARM
+  ASTS
+  AVGO
+  BE
+  CAR  [NOT IN SCANNER]
+  CVS
+  DELL
+  DRAM
+  GLD
+  GLW
+  GOOGL
+  HAL
+  IGV  [NOT IN SCANNER]
+  INTC
+  IREN
+  IWM
+  LLY
+  MDB
+  MP
+  MSFT
+  MSTR
+  MU
+  NVDA
+  NXPI
+  PANW
+  PLTR
+  QCOM
+  QQQ
+  RDDT
+  RKLB
+  SLV
+  SMCI
+  SNDK
+  SNDQ  [NOT IN SCANNER]
+  SPY
+  TSLA
+  TSM
+  TTMI
+  VRT
+  WDC
+  XLK  [NOT IN SCANNER]
+
+# === FULL UNION (one per line, for grep/diff/scripting) ===
+# Format: TICKER  [P]  T<tier>
+#   P  = in portfolio
+#   T<n> = scanner tier (1=mega, 2=large, 3=mid/small)
+
+A        T3
+AA       T2
+AAL      T2
+AAOI     T3
+AAPL   P T1
+ABBV     T2
+ABNB     T2
+ABT      T2
+ADBE     T1
+ADI      T3
+AEHR     T1
+AEIS     T3
+AEO      T3
+AEP      T2
+AESI     T3
+AGI      T3
+ALAB     T1
+AMAT     T2
+AMBA     T3
+AMC      T3
+AMD    P T1
+AME      T3
+AMGN     T2
+AMKR     T2
+AMPX     T3
+AMT      T2
+AMZN     T1
+ANET     T1
+ANF      T3
+APD      T2
+APH      T2
+APLD     T3
+ARM    P T2
+ASML     T2
+ASTS   P T3
+ATI      T3
+AVAV     T3
+AVGO   P T1
+AXP      T2
+AXTI     T3
+BA       T2
+BABA     T3
+BAC      T1
+BAX      T3
+BB       T3
+BBY      T2
+BDX      T3
+BE     P T3
+BIDU     T3
+BIIB     T3
+BILI     T3
+BITF     T3
+BKNG     T2
+BKSY     T3
+BLDP     T3
+BLK      T2
+BLNK     T3
+BMY      T2
+BNTX     T3
+BRK.B    T2
+BSX      T3
+BURL     T2
+BYND     T3
+C        T2
+CAG      T3
+CAMT     T3
+CAR    P -- 
+CARR     T3
+CAT      T2
+CCI      T2
+CDNS     T3
+CHPT     T3
+CHTR     T3
+CHWY     T3
+CI       T2
+CIEN     T3
+CIFR     T3
+CL       T3
+CLF      T2
+CLOV     T3
+CLS      T3
+CLSK     T3
+CLX      T3
+CMCSA    T3
+CME      T2
+CMG      T2
+CMI      T3
+CNC      T2
+COF      T2
+COHR     T3
+COIN     T1
+COP      T2
+COST     T1
+CPB      T3
+CPRI     T3
+CRCL     T3
+CRDO     T1
+CRM      T1
+CROX     T3
+CRUS     T3
+CRWD     T2
+CRWV     T3
+CSCO     T1
+CSX      T2
+CVS    P T2
+CVX      T2
+D        T2
+DAL      T2
+DDOG     T2
+DE       T2
+DECK     T3
+DELL   P T2
+DG       T2
+DHR      T2
+DIA      T1
+DIS      T1
+DKS      T3
+DLR      T2
+DLTR     T2
+DOCU     T3
+DOV      T3
+DRAM   P T3
+DUK      T2
+DXCM     T3
+EBAY     T3
+ECL      T2
+ELV      T2
+EMR      T3
+ENPH     T3
+ENTG     T3
+EOG      T2
+EQIX     T2
+ETN      T3
+ETSY     T3
+EW       T3
+EWY      T3
+EXC      T2
+F        T2
+FCEL     T3
+FCX      T2
+FDX      T2
+FIX      T3
+FLR      T3
+FLY      T3
+FORM     T3
+FOX      T3
+FOXA     T3
+FSLR     T3
+FTNT     T3
+FTV      T3
+FUBO     T3
+FUTU     T3
+GD       T2
+GE       T2
+GEV      T2
+GFI      T3
+GFS      T2
+GILD     T2
+GIS      T3
+GLD    P T1
+GLW    P T3
+GM       T2
+GME      T3
+GOOG     T1
+GOOGL  P T1
+GS       T2
+GSAT     T3
+HAL    P T2
+HD       T1
+HIMS     T3
+HON      T2
+HOOD     T2
+HPE      T2
+HSY      T3
+HUM      T2
+HUT      T3
+IBIT     T1
+IBM      T2
+ICE      T2
+ICHR     T3
+IDXX     T3
+IGV    P -- 
+ILMN     T3
+INTC   P T1
+INTU     T3
+IONQ     T3
+IP       T2
+IR       T3
+IREN   P T3
+ISRG     T2
+ITW      T3
+IWM    P T1
+JD       T3
+JNJ      T1
+JPM      T1
+JWN      T2
+K        T3
+KEYS     T2
+KGC      T3
+KLAC     T2
+KLIC     T3
+KMB      T3
+KO       T1
+KR       T2
+KSS      T2
+KTOS     T3
+LAR      T3
+LASR     T3
+LBRDK    T3
+LCID     T2
+LI       T3
+LIN      T2
+LITE     T3
+LLY    P T1
+LMT      T2
+LOW      T2
+LRCX     T2
+LULU     T3
+LUV      T2
+LWLG     T3
+LYFT     T2
+M        T2
+MA       T1
+MAR      T2
+MARA     T3
+MBLY     T3
+MCD      T2
+MCHP     T3
+MDB    P T2
+MDT      T2
+META     T1
+MKC      T3
+MKSI     T3
+MOD      T3
+MP     P T3
+MPC      T2
+MPWR     T2
+MRK      T2
+MRNA     T3
+MRVL     T2
+MRX      T3
+MS       T2
+MSFT   P T1
+MSTR   P T3
+MTCH     T3
+MU     P T1
+MYRG     T3
+NBIS     T3
+NDX      T1
+NEE      T2
+NET      T2
+NFLX     T1
+NIO      T3
+NKE      T2
+NNE      T3
+NOC      T2
+NOW      T2
+NSC      T2
+NUE      T2
+NVAX     T3
+NVDA   P T1
+NVMI     T3
+NWS      T3
+NWSA     T3
+NXPI   P T3
+O        T2
+OKLO     T3
+OKTA     T3
+ON       T3
+ONTO     T3
+ORCL     T1
+OTIS     T3
+OXY      T2
+PAAS     T3
+PANW   P T2
+PCAR     T3
+PDD      T3
+PEG      T2
+PEP      T1
+PFE      T2
+PG       T1
+PH       T3
+PINS     T3
+PKG      T2
+PL       T3
+PLAB     T3
+PLD      T2
+PLTR   P T1
+PLUG     T3
+PNC      T2
+POWL     T3
+PSA      T2
+PSKY     T3
+PSX      T2
+PTON     T3
+PVH      T3
+PWR      T3
+PYPL     T2
+QBTS     T3
+QCOM   P T2
+QQQ    P T1
+QQQE     T2
+QRVO     T3
+RBLX     T2
+RBRK     T3
+RCAT     T3
+RDDT   P T3
+REGN     T2
+RGTI     T3
+RH       T3
+RIOT     T3
+RIVN     T2
+RKLB   P T3
+RL       T3
+RMBS     T2
+RMD      T3
+ROAD     T3
+ROK      T3
+ROKU     T3
+ROP      T3
+ROST     T2
+RSP      T2
+RTX      T2
+RUN      T3
+RUT      T1
+SATS     T3
+SBUX     T2
+SCHW     T2
+SEDG     T3
+SHOP     T2
+SHW      T2
+SJM      T3
+SLB      T2
+SLV    P T1
+SMCI   P T1
+SMH      T2
+SMR      T3
+SMTC     T3
+SNAP     T3
+SNDK   P T1
+SNDQ   P -- 
+SNOW     T2
+SNPS     T3
+SO       T2
+SOFI     T3
+SOXX     T2
+SPG      T2
+SPGI     T2
+SPOT     T3
+SPX      T1
+SPY    P T1
+SRE      T2
+STM      T3
+STX      T1
+SWKS     T3
+SYK      T3
+SYM      T3
+T        T1
+TCEHY    T3
+TEAM     T3
+TER      T3
+TFC      T2
+TFPM     T3
+TGT      T2
+TJX      T2
+TME      T3
+TMO      T2
+TMUS     T3
+TPR      T3
+TRIP     T3
+TROX     T3
+TSEM     T3
+TSLA   P T1
+TSM    P T2
+TTMI   P T3
+TWLO     T3
+TXN      T2
+U        T2
+UAL      T2
+UBER     T2
+UCTT     T3
+ULTA     T3
+UNH      T1
+UNP      T2
+UPS      T2
+URBN     T3
+USAR     T3
+USB      T2
+USO      T1
+UUUU     T3
+UVXY     T1
+V        T1
+VIAV     T3
+VICR     T3
+VIX      T1
+VLO      T2
+VRT    P T3
+VRTX     T2
+VSAT     T3
+VZ       T1
+W        T3
+WBA      T2
+WBD      T3
+WDAY     T3
+WDC    P T1
+WELL     T2
+WFC      T2
+WISH     T3
+WMT      T1
+WOLF     T3
+WPM      T3
+WRK      T2
+X        T2
+XBI      T3
+XEL      T2
+XLK    P -- 
+XMAG     T2
+XOM      T1
+XPEV     T3
+XYZ      T2
+YELP     T3
+ZM       T3
+ZS       T2
+ZTS      T3

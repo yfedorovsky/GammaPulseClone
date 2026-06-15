@@ -1,0 +1,138 @@
+{
+  "guild": {
+    "id": "764771990611427338",
+    "name": "Trader Mir",
+    "iconUrl": "https://cdn.discordapp.com/icons/764771990611427338/8abcd3c9cdbc080e98fd4958d4b9345a.png?size=512"
+  },
+  "channel": {
+    "id": "929783372857884742",
+    "type": "GuildTextChat",
+    "categoryId": "952624736188395550",
+    "category": "⭐ Mir's Alerts",
+    "name": "🚨-general-alerts-weekly-swing-and-day-trades  [cross-channel filtered]",
+    "topic": "For day traders looking to follow how I typically trade during market hours.\nI typically size up on swing trades and not day trades but I will say something to the effect of, \"GO BIG\" if I'm sizing up on weekly options as opportunities do arise on all timeframes"
+  },
+  "dateRange": {
+    "after": null,
+    "before": null
+  },
+  "exportedAt": "2026-05-25T16:38:00.2253173-04:00",
+  "messages": [
+    {
+      "id": "1359169000646508807",
+      "type": "Default",
+      "timestamp": "2025-04-08T10:12:21.893-04:00",
+      "content": "@Day Trades \nFACE TAT TRADE:\nyou guys know how much I like #GOLD \n$GLD 20JUN 295c just came in @ 3.2 average",
+      "attachments": [],
+      "embeds": []
+    },
+    {
+      "id": "1359526141878341863",
+      "type": "Default",
+      "timestamp": "2025-04-09T09:51:30.998-04:00",
+      "content": "@Day Trades \nand wouldn't you know it another face tat trade comes in.\n$JPM Jan 2027 220c \nkinda spendy there though",
+      "attachments": [],
+      "embeds": []
+    },
+    {
+      "id": "1360299325594407203",
+      "type": "Default",
+      "timestamp": "2025-04-11T13:03:52.361-04:00",
+      "content": "@Day Trades \nOh you'll love this one\nFace Tat Trade:\n$SCMI 20JUNE 36c @ 4.4",
+      "attachments": [],
+      "embeds": []
+    },
+    {
+      "id": "1361343476964397168",
+      "type": "Default",
+      "timestamp": "2025-04-14T10:12:57.447-04:00",
+      "content": "@Day Trades \nOk this is a Face Tat Trade that could be a hedge but oh boy\n$SMH 25APR 175P @ 1.28 average",
+      "attachments": [],
+      "embeds": []
+    },
+    {
+      "id": "1362104051252334836",
+      "type": "Reply",
+      "timestamp": "2025-04-16T12:35:12.488-04:00",
+      "content": "@Day Trades \nOk guys $GLD face tat trade is right near my second target.\nScale out the second batch of the \n$GLD 20JUNE 295c @ 19.50 from 3.2",
+      "attachments": [],
+      "embeds": [],
+      "reference": {
+        "type": "Default",
+        "messageId": "1359169000646508807",
+        "channelId": "929783372857884742",
+        "guildId": "764771990611427338"
+      }
+    },
+    {
+      "id": "1364641927651266570",
+      "type": "Default",
+      "timestamp": "2025-04-23T12:39:49.373-04:00",
+      "content": "@Day Trades \nThis is a modified Face Tat Trade. \n$PANW Jun2026 180 LEAPS just came in @ $20.68",
+      "attachments": [],
+      "embeds": []
+    },
+    {
+      "id": "1366422578045915248",
+      "type": "Default",
+      "timestamp": "2025-04-28T10:35:29.51-04:00",
+      "content": "@Day Trades \nWe got another face tat trade fam \n$IBIT 16MAY 55c @ 1.67",
+      "attachments": [],
+      "embeds": []
+    },
+    {
+      "id": "1367214515178963047",
+      "type": "Default",
+      "timestamp": "2025-04-30T15:02:22.036-04:00",
+      "content": "@Day Trades \nafter the bell earnings from \n$MSFT\n$META \n$HOOD\n$QCOM \n\nthere was a large face tat trade that came in today for $MSFT Jan 2027 450c LEAPS\n\nall earnings trades are lottos but found it interesting all the same. \nthere's only a 15pt expected move for $MSFT so assuming this trader hopes to be paid on the day of  a catalyst or some point in the future. \n\nCould also be they've sold stock and risking calls. \n\nEither way it sets up a good lotto such as the 415c for next week. \n\n*remember all lottos are risking full debit paid",
+      "attachments": [
+        {
+          "id": "1367214515137282058",
+          "url": "https://cdn.discordapp.com/attachments/929783372857884742/1367214515137282058/IMG_6274.jpeg?ex=6a15ee3e&is=6a149cbe&hm=62a26f7f4a9635859e28f6d221bc420c0b41a56d10e54acb5eae760239b38e49&",
+          "fileName": "IMG_6274.jpeg",
+          "fileSizeBytes": 307642
+        }
+      ],
+      "embeds": []
+    },
+    {
+      "id": "1367231350167310338",
+      "type": "Default",
+      "timestamp": "2025-04-30T16:09:15.81-04:00",
+      "content": "@Day Trades \no m G. \nto recap yesterday's face tat trade:\n$SPY 520p for June and the market did in fact pull back from 555 to 540 from yesterday, then,  today's face tat trade order was the $MSFT calls and the market ripped showing these specific trades can not only make money on specific names but give direction market clues",
+      "attachments": [],
+      "embeds": []
+    },
+    {
+      "id": "1367941739926651010",
+      "type": "Default",
+      "timestamp": "2025-05-02T15:12:05.927-04:00",
+      "content": "@Day Trades \nhave a feeling i'll regret that decision but oh well. \nsaw some orders for $TSLA 330c for next week. \nEither sells or there's some news coming. \nIt's not face tat trade sized but odd nonetheless",
+      "attachments": [],
+      "embeds": []
+    },
+    {
+      "id": "1488536983646109917",
+      "type": "Reply",
+      "timestamp": "2026-03-31T09:54:32.581-04:00",
+      "content": "@Day Trades \n$AXTI 21AUG 70c (the wifey trade) went in the money and are now being rolled in the 90calls for same expo",
+      "attachments": [],
+      "embeds": [],
+      "reference": {
+        "type": "Default",
+        "messageId": "1485724756845002963",
+        "channelId": "929783372857884742",
+        "guildId": "764771990611427338"
+      }
+    },
+    {
+      "id": "1492228842889416845",
+      "type": "Default",
+      "timestamp": "2026-04-10T14:24:40.416-04:00",
+      "content": "@Day Trades \nwifey premium alert;\n$SATS 18JUN 150c @ $8",
+      "attachments": [],
+      "embeds": []
+    }
+  ],
+  "messageCount": 32462
+}

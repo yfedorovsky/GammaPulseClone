@@ -1,0 +1,51 @@
+{
+  "audit_run": "2026-05-13T19:30:00Z",
+  "source_account": "https://x.com/FL0WG0D",
+  "scrape_method": "Claude in Chrome MCP (mcp__Claude_in_Chrome) — manual mouse-wheel scrolling, JS DOM harvesting via window.__fl0w_posts accumulator keyed by /status/{id} href",
+  "coverage_window_utc": {
+    "oldest_post": "2026-05-11T14:55:57Z",
+    "newest_post": "2026-05-13T19:05:49Z",
+    "elapsed_hours": 52.2
+  },
+  "post_counts": {
+    "total_status_hrefs_harvested": 67,
+    "contract_level_alerts_audited": 41,
+    "subscribe_locked_or_text_only": 18,
+    "reposts": 1,
+    "pinned": 1
+  },
+  "audit_verdict_counts": {
+    "CAUGHT": 11,
+    "WRONG-SIDE": 4,
+    "WRONG-SIDE-LOW": 3,
+    "OUT-OF-CHAIN": 6,
+    "MISSED-NO-TICKER": 4,
+    "OUT-OF-UNIVERSE": 13
+  },
+  "headline_hit_rate": {
+    "caught": 11,
+    "in_universe": 28,
+    "percent": 39.3,
+    "of_total_percent": 26.8
+  },
+  "files": {
+    "audit_findings_doc": "../FL0WG0D_AUDIT_2026-05-13.md",
+    "raw_posts_json": "raw_posts.json",
+    "audit_results_csv": "audit_results.csv",
+    "audit_results_json": "audit_results.json",
+    "audit_script": "../../scripts/audit_fl0wg0d.py"
+  },
+  "limitations": [
+    "Did not cover full 7-day window — only ~52 hours (5/11 14:55 to 5/13 19:05 UTC)",
+    "Bullflow.io chart screenshots not individually downloaded — strike/exp/premium extracted by eye from live scroll screenshots, not OCR'd systematically",
+    "Subscribe-locked 'heatmap' commentary posts (~1/3 of his feed) not auditable — content-gated",
+    "Time window for DB query was -30min / +3hrs from post timestamp; some 'OUT-OF-CHAIN' verdicts may collapse to MISSED-NO-TICKER with wider window"
+  ],
+  "next_steps": [
+    "P0: Fix MID-of-spread side detection (5 wrong-side cases)",
+    "P1: Investigate why only 165/421 universe tickers had rows today",
+    "P2: Auto-expand chain on $1M+ notional strikes",
+    "P3: Add 10 universe tickers: TTD, TOST, NXE, KEEL, SSRM, NPWR, LUMN, SONY, VNET, QURE",
+    "P4: Build daily X-scrape → vision-OCR → flow_alerts cross-check Telegram digest cron"
+  ]
+}

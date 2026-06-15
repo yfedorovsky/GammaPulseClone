@@ -1,0 +1,87 @@
+{
+  "guild": {
+    "id": "764771990611427338",
+    "name": "Trader Mir",
+    "iconUrl": "https://cdn.discordapp.com/icons/764771990611427338/8abcd3c9cdbc080e98fd4958d4b9345a.png?size=512"
+  },
+  "channel": {
+    "id": "929783372857884742",
+    "type": "GuildTextChat",
+    "categoryId": "952624736188395550",
+    "category": "⭐ Mir's Alerts",
+    "name": "🚨-general-alerts-weekly-swing-and-day-trades  [cross-channel filtered]",
+    "topic": "For day traders looking to follow how I typically trade during market hours.\nI typically size up on swing trades and not day trades but I will say something to the effect of, \"GO BIG\" if I'm sizing up on weekly options as opportunities do arise on all timeframes"
+  },
+  "dateRange": {
+    "after": null,
+    "before": null
+  },
+  "exportedAt": "2026-05-25T16:38:00.2253173-04:00",
+  "messages": [
+    {
+      "id": "1324774343749800119",
+      "type": "Default",
+      "timestamp": "2025-01-03T11:20:16.667-05:00",
+      "content": "@Day Trades \nMessy start to the year but so far delivering on my attempt to have a 100% trade daily \n#AI16Z on the first, $RGTI yesterday, and we may just pull it off on $CRNC commons today but if not the $NVDA 142c for next week hit our double today and room to run",
+      "attachments": [],
+      "embeds": []
+    },
+    {
+      "id": "1332405079180841041",
+      "type": "Default",
+      "timestamp": "2025-01-24T12:42:05.766-05:00",
+      "content": "@Day Trades \nYou guys want another uranium trade few are looking at?\nThey're all trading our old news. Here's a new one;\n$UEC trading @ 8.20 per share. \nGood commons to add for small account growth",
+      "attachments": [],
+      "embeds": []
+    },
+    {
+      "id": "1337479698988535818",
+      "type": "Default",
+      "timestamp": "2025-02-07T12:46:49.41-05:00",
+      "content": "@Day Trades \nfor $BBAI if you prefer options to commons \n$BBAI 21MAR 10c @ 1-1.5 are good to add",
+      "attachments": [],
+      "embeds": []
+    },
+    {
+      "id": "1374067076502651073",
+      "type": "Default",
+      "timestamp": "2025-05-19T12:51:59.97-04:00",
+      "content": "@Day Trades \ndecently sized trade on \n$NKE jan 75c @ $3 \n\ni'm going to do this with commons myself but i like the trade. \nit's the old Ackman sold, time to buy move like $NFLX. \nAlso has a good technical low",
+      "attachments": [],
+      "embeds": []
+    },
+    {
+      "id": "1448677262248382527",
+      "type": "Default",
+      "timestamp": "2025-12-11T09:06:14.442-05:00",
+      "content": "@Day Trades \nOn the spacex news $GOOGL has a stake. \nIf 320 holds look for a move into 325 for next week. \n\n$SATS 16JAN 135C is the other mover in this \"space\" along with the other known names such as $ASTS $RKLB etc. \nOn $SATS target is 118 for first scale out and second scale out is 135 for runners. \n\n$GSAT is another one that we use to own in the commons port before selling for near a double. \nI like this name for a push into 84 with 68 being support/ risk level.",
+      "attachments": [],
+      "embeds": []
+    },
+    {
+      "id": "1468635870084202782",
+      "type": "Default",
+      "timestamp": "2026-02-04T10:54:37.363-05:00",
+      "content": "@Day Trades \nOther names being accumulated with size \n$BABA 20mar 185c @ $3.08 and $SNPS commons",
+      "attachments": [],
+      "embeds": []
+    },
+    {
+      "id": "1470785103771865271",
+      "type": "Default",
+      "timestamp": "2026-02-10T09:14:54.605-05:00",
+      "content": "@Day Trades \nOh one more and you may want to do these as commons. \nKeep an eye on this $Q 20mar 115c\nThis name has been on a rampage lately and could be completing a base breakout over the 105 level.\nEarnings is on the 27th",
+      "attachments": [],
+      "embeds": []
+    },
+    {
+      "id": "1495835395676569671",
+      "type": "Default",
+      "timestamp": "2026-04-20T13:15:49.607-04:00",
+      "content": "@Day Trades \nI'm rotating some of the $AXTI gains into $INFQ 15may 15MAY 20c @ $1.4\n(this is a good one for commons as well. Above 12 I like it long)",
+      "attachments": [],
+      "embeds": []
+    }
+  ],
+  "messageCount": 32462
+}

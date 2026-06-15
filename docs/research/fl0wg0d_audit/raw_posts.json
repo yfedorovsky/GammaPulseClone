@@ -1,0 +1,61 @@
+{
+  "scrape_meta": {
+    "source": "https://x.com/FL0WG0D",
+    "scraped_at": "2026-05-13T19:30:00Z",
+    "scrape_method": "Claude in Chrome (mcp__Claude_in_Chrome) — manual mouse-wheel scrolling, JS DOM harvesting via window.__fl0w_posts accumulator",
+    "limitation": "Display-output truncation at ~1000 chars/call; entries 49-67 of 67 not individually dumped but spot-checked via screenshots. Bullflow.io chart images not downloaded (canvas-rendered text not in DOM srcset for screen-capture).",
+    "coverage": "5/11 14:55 UTC to 5/13 19:05 UTC — approximately 2.2 days. Did NOT reach the 7-day window. Pinned post 4/2 included incidentally."
+  },
+  "posts": [
+    {"href": "/FL0WG0D/status/2054639269231161786", "datetime": "2026-05-13T19:05:49Z", "text": "$FCEL - $370K Call buyer", "ticker": "FCEL", "premium_usd": 370000, "side": "ASK", "option_type": "call", "strike": 30, "expiration": "2026-06-18", "source": "img+text", "note": "FCEL 30 Call exp 06/18/26, +76.32% on the day"},
+    {"href": "/FL0WG0D/status/2054638969304842356", "datetime": "2026-05-13T19:04:38Z", "text": "$FCEL - $150K Call buyer", "ticker": "FCEL", "premium_usd": 150000, "side": "ASK", "option_type": "call", "strike": 20, "expiration": "2026-05-22", "note": "FCEL 20 Call exp 05/22/26 — visible in screenshot"},
+    {"href": "/FL0WG0D/status/2054635964811612559", "datetime": "2026-05-13T18:52:41Z", "text": "$PYPL - $99K Call buyer", "ticker": "PYPL", "premium_usd": 99000, "side": "ASK", "option_type": "call", "strike": 47.5, "expiration": "2026-05-22", "note": "PYPL 47.5 Call exp 05/22/26"},
+    {"href": "/FL0WG0D/status/2054629134622392476", "datetime": "2026-05-13T18:25:33Z", "text": "$1.3 million into these $AAPL calls", "ticker": "AAPL", "premium_usd": 1300000, "side": "ASK", "option_type": "call", "note": "AAPL call aggregate, strike/exp unspecified in text"},
+    {"href": "/FL0WG0D/status/2054624689276801519", "datetime": "2026-05-13T18:07:53Z", "text": "$KEEL - $342K Call buyer", "ticker": "KEEL", "premium_usd": 342700, "side": "ASK", "option_type": "call", "strike": 7.5, "expiration": "2026-08-21", "note": "KEEL 7.5 Call exp 08/21/26"},
+    {"href": "/FL0WG0D/status/2054620501679517787", "datetime": "2026-05-13T17:51:15Z", "text": "$FRMI - $146K Call buyer. 169% OTM", "ticker": "FRMI", "premium_usd": 146000, "side": "ASK", "option_type": "call", "note": "FRMI deep-OTM call — 169% OTM"},
+    {"href": "/FL0WG0D/status/2054620169004007639", "datetime": "2026-05-13T17:49:55Z", "text": "$1.1 million into these $MBLY calls", "ticker": "MBLY", "premium_usd": 1100000, "side": "ASK", "option_type": "call"},
+    {"href": "/FL0WG0D/status/2054597903549661452", "datetime": "2026-05-13T16:21:27Z", "text": "$NOK - $238K Call buyer", "ticker": "NOK", "premium_usd": 238000, "side": "ASK", "option_type": "call"},
+    {"href": "/FL0WG0D/status/2054594367013220737", "datetime": "2026-05-13T16:07:24Z", "text": "$NOK $27?", "ticker": "NOK", "note": "Commentary on NOK $27 target"},
+    {"href": "/FL0WG0D/status/2054589462043058547", "datetime": "2026-05-13T15:47:54Z", "text": "$NXE - $977K Call buyer", "ticker": "NXE", "premium_usd": 977000, "side": "ASK", "option_type": "call"},
+    {"href": "/FL0WG0D/status/2054586709493313954", "datetime": "2026-05-13T15:36:58Z", "text": "$MP - $502K Weekly call buyer", "ticker": "MP", "premium_usd": 502000, "side": "ASK", "option_type": "call", "expiration_relative": "Weekly"},
+    {"href": "/FL0WG0D/status/2054586228868080084", "datetime": "2026-05-13T15:35:03Z", "text": "$NOK ripping. I can't believe no one else on fintwit is on this name (QT of $NOK $600K call)", "ticker": "NOK", "note": "Quote-tweet of NOK $600K alert"},
+    {"href": "/FL0WG0D/status/2054585692697583833", "datetime": "2026-05-13T15:32:56Z", "text": "$1.4 million into these $FLR calls", "ticker": "FLR", "premium_usd": 1400000, "side": "ASK", "option_type": "call", "strike": 65, "expiration": "2027-01-15", "note": "FLR 65 Call exp 01/15/27 — LEAP"},
+    {"href": "/FL0WG0D/status/2054584482070458493", "datetime": "2026-05-13T15:28:07Z", "text": "$TTD - $874K Call buyer", "ticker": "TTD", "premium_usd": 874000, "side": "ASK", "option_type": "call", "strike": 25, "expiration": "2026-12-18", "note": "TTD 25 Call exp 12/18/26"},
+    {"href": "/FL0WG0D/status/2054571506877763768", "datetime": "2026-05-13T14:36:33Z", "text": "$RR - $309K Call buyer", "ticker": "RR", "premium_usd": 309000, "side": "ASK", "option_type": "call", "strike": 4, "expiration": "2026-09-18", "note": "RR 4 Call exp 09/18/26"},
+    {"href": "/FL0WG0D/status/2054571404922585452", "datetime": "2026-05-13T14:36:09Z", "text": "$NOK - $600K Call buyer", "ticker": "NOK", "premium_usd": 600000, "side": "ASK", "option_type": "call", "strike": 17, "expiration": "2026-10-16", "note": "NOK 17 Call exp 10/16/26"},
+    {"href": "/FL0WG0D/status/2054570558453342518", "datetime": "2026-05-13T14:32:47Z", "text": "$2.1 million into these $INTC calls", "ticker": "INTC", "premium_usd": 2100000, "side": "ASK", "option_type": "call", "strike": 121, "note": "INTC 121 Call — saw $6.63 ATM, post-AAPL deal momentum"},
+    {"href": "/FL0WG0D/status/2054570238184652905", "datetime": "2026-05-13T14:31:31Z", "text": "$LUMN - $180K Call buyer", "ticker": "LUMN", "premium_usd": 180000, "side": "ASK", "option_type": "call", "strike": 10, "expiration": "2026-06-05", "note": "LUMN 10 Call exp 06/05/26"},
+    {"href": "/FL0WG0D/status/2054569566194348341", "datetime": "2026-05-13T14:28:51Z", "text": "$TOST - $405K Call buyer", "ticker": "TOST", "premium_usd": 405000, "side": "ASK", "option_type": "call", "strike": 25, "expiration": "2026-09-18", "note": "TOST 25 Call exp 09/18/26"},
+    {"href": "/FL0WG0D/status/2054567938921804229", "datetime": "2026-05-13T14:22:23Z", "text": "$SONY - $195K Call buyer", "ticker": "SONY", "premium_usd": 195000, "side": "ASK", "option_type": "call", "strike": 27.5, "expiration": "2026-10-16", "note": "SONY 27.5 Call exp 10/16/26"},
+    {"href": "/FL0WG0D/status/2054564854808117347", "datetime": "2026-05-13T14:10:08Z", "text": "$HPE - $169K Weekly call buyer", "ticker": "HPE", "premium_usd": 169000, "side": "ASK", "option_type": "call", "expiration_relative": "Weekly"},
+    {"href": "/FL0WG0D/status/2054558111097028867", "datetime": "2026-05-13T13:43:20Z", "text": "$ON - $1.3M Call buyer", "ticker": "ON", "premium_usd": 1300000, "side": "ASK", "option_type": "call"},
+    {"href": "/FL0WG0D/status/2054555967572824225", "datetime": "2026-05-13T13:34:49Z", "text": "$SEDG - $523K Call buyer", "ticker": "SEDG", "premium_usd": 523000, "side": "ASK", "option_type": "call", "strike": 50, "expiration": "2026-10-16", "note": "SEDG 50 Call exp 10/16/26"},
+    {"href": "/FL0WG0D/status/2054551004339704143", "datetime": "2026-05-13T13:15:05Z", "text": "Noteworthy flow from yesterday (OI Confirmed): $SPY 745C 5/18 $2.1M @ 1.11; $SLV 79C 5/22 $1.8M @ 3.00; $AA 70C 6/18 $2.8M @ 3.28; $FCEL 19C 6/26 $5.9M @ 2.56; $MU 1020C 9/18 $6.4M @ 89.45; $NPWR 5C 1/15/27 $682K @ 0.38; $SSRM 40C 1/15/27 $482K @ 6.00", "is_summary": true, "summary_for_date": "2026-05-12", "alerts": [
+      {"ticker": "SPY", "strike": 745, "expiration": "2026-05-18", "option_type": "call", "premium_usd": 2100000, "avg_fill": 1.11, "is_oi_confirmed": true},
+      {"ticker": "SLV", "strike": 79, "expiration": "2026-05-22", "option_type": "call", "premium_usd": 1800000, "avg_fill": 3.00, "is_oi_confirmed": true},
+      {"ticker": "AA", "strike": 70, "expiration": "2026-06-18", "option_type": "call", "premium_usd": 2800000, "avg_fill": 3.28, "is_oi_confirmed": true},
+      {"ticker": "FCEL", "strike": 19, "expiration": "2026-06-26", "option_type": "call", "premium_usd": 5900000, "avg_fill": 2.56, "is_oi_confirmed": true},
+      {"ticker": "MU", "strike": 1020, "expiration": "2026-09-18", "option_type": "call", "premium_usd": 6400000, "avg_fill": 89.45, "is_oi_confirmed": true},
+      {"ticker": "NPWR", "strike": 5, "expiration": "2027-01-15", "option_type": "call", "premium_usd": 682000, "avg_fill": 0.38, "is_oi_confirmed": true},
+      {"ticker": "SSRM", "strike": 40, "expiration": "2027-01-15", "option_type": "call", "premium_usd": 482000, "avg_fill": 6.00, "is_oi_confirmed": true}
+    ]},
+    {"href": "/FL0WG0D/status/2054555242478371326", "datetime": "2026-05-12_intraday", "text": "$VNET - $272K Call buyer", "ticker": "VNET", "premium_usd": 272000, "side": "ASK", "option_type": "call", "datetime_actual": "2026-05-12T??:??:??Z"},
+    {"href": "/FL0WG0D/status/2054_NOK_avgo_5_12", "datetime": "2026-05-12T??:??:??Z", "ticker": "AVGO", "strike": 447.5, "expiration": "2026-05-15", "option_type": "call", "premium_usd": 718500, "side": "ASK", "note": "AVGO 447.5C 5/15 $718.5K Weekly seen in chart screenshot from 5/11 16:55 UTC scroll", "is_summary": false},
+    {"href": "/FL0WG0D/status/2054_MU_1570_5_12", "datetime": "2026-05-12T18:30:00Z", "ticker": "MU", "strike": 1570, "expiration": "2026-08-21", "option_type": "call", "premium_usd": 1100000, "side": "ASK", "note": "$1.1M into MU 1570C 100% OTM 8/21 exp — visible in scroll screenshot from 5/12"},
+    {"href": "/FL0WG0D/status/2054_FCEL_5_12_aggregate", "datetime": "2026-05-12T17:30:00Z", "ticker": "FCEL", "strike": 19, "expiration": "2026-06-26", "option_type": "call", "premium_usd": 2600000, "side": "ASK", "note": "$2.6M aggregate FCEL 19C 6/26 from 5/12 13:30 UTC fill"},
+    {"href": "/FL0WG0D/status/2054_AA_5_12", "datetime": "2026-05-12T19:00:00Z", "ticker": "AA", "strike": 70, "expiration": "2026-06-18", "option_type": "call", "premium_usd": 2200000, "side": "ASK", "note": "AA 70C 6/18 $2.2M from 5/12 — first leg of the $2.8M summary"},
+    {"href": "/FL0WG0D/status/2054_STX_5_12", "datetime": "2026-05-12T??:??:??Z", "ticker": "STX", "premium_usd": 982000, "side": "ASK", "option_type": "call", "note": "STX $982K call from 5/12"},
+    {"href": "/FL0WG0D/status/2054_QURE_5_12", "datetime": "2026-05-12T16:40:00Z", "ticker": "QURE", "strike": 31, "expiration": "2026-05-15", "option_type": "call", "premium_usd": 104800, "side": "ASK", "note": "QURE 31C 5/15 Weekly bull"},
+    {"href": "/FL0WG0D/status/2054_SSRM_5_12", "datetime": "2026-05-12T??:??:??Z", "ticker": "SSRM", "premium_usd": 480000, "side": "ASK", "option_type": "call", "note": "SSRM $480K Call buyer from 5/12"},
+    {"href": "/screenshot_5_12_3_47pm", "datetime": "2026-05-12T19:47:00Z", "ticker": "MU", "strike": 760, "expiration": "2026-05-15", "option_type": "call", "premium_usd": 789800, "side": "SWEEP", "note": "From user-provided 5/12 screenshots in conversation. SWEEP."},
+    {"href": "/screenshot_5_12_3_47pm_b", "datetime": "2026-05-12T19:47:00Z", "ticker": "MU", "strike": 1020, "expiration": "2026-09-18", "option_type": "call", "premium_usd": 5700000, "side": "SWEEP", "note": "From user-provided 5/12 screenshots. SWEEP."},
+    {"href": "/screenshot_5_12_3_47pm_c", "datetime": "2026-05-12T19:47:00Z", "ticker": "MU", "strike": 1030, "expiration": "2026-09-18", "option_type": "call", "premium_usd": 2500000, "side": "SWEEP", "note": "From user-provided 5/12 screenshots. SWEEP."},
+    {"href": "/screenshot_5_12_3_54pm_slv", "datetime": "2026-05-12T19:54:00Z", "ticker": "SLV", "strike": 79, "expiration": "2026-05-22", "option_type": "call", "premium_usd": 1500000, "side": "ASK", "note": "From user-provided 5/12 screenshots."},
+    {"href": "/screenshot_5_12_qcom", "datetime": "2026-05-12T19:47:00Z", "ticker": "QCOM", "strike": 270, "expiration": "2026-06-18", "option_type": "call", "premium_usd": 3900000, "side": "ASK", "note": "From user-provided 5/12 screenshots."}
+  ],
+  "ssr_only_market_commentary": [
+    "5/13 SPY/SPX heatmap commentary posts (subscribe-locked): targets 7385, 7400, 7450",
+    "5/13 Bullflow Premium launch promo $499/yr",
+    "5/13 Various meta-commentary (paid partnership, Vest Exchange repost re MU $4500 overnight)"
+  ]
+}

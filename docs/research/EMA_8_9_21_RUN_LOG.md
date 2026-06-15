@@ -1,0 +1,95 @@
+# EMA 8/9/21 Backtest — Run Log
+
+Started: 2026-05-12T21:58:52.209119
+
+Chronological record of what was attempted, what worked, what failed.
+
+- [21:58:44] == EMA 8/9/21 Comprehensive Backtest start ==
+- [21:58:44] == Loading data ==
+- [21:58:44]   SPY daily: 1256 rows (2021-05-12 00:00:00 - 2026-05-12 00:00:00)
+- [21:58:44]   QQQ daily: 1256 rows
+- [21:58:44]   SPY 1hr: 5068 rows (2023-06-14 09:30:00 - 2026-05-12 15:30:00)
+- [21:58:44]   QQQ 1hr: 5069 rows
+- [21:58:44] == Loading 5-min (Databento) ==
+- [21:58:44] load_5min_databento(SPY): SKIPPED (fast-runner mode)
+- [21:58:44] load_5min_databento(QQQ): SKIPPED (fast-runner mode)
+- [21:58:44]   SPY 5min: 0 rows; QQQ 5min: 0 rows
+- [21:58:44] == Running strategies ==
+- [21:58:44]   9_21_long              SPY daily : n=  21  win=47.6%  avg=+1.988%  sharpe=+0.61  total=+45.1%  [0.1s]
+- [21:58:44]   9_21_long_short        SPY daily : n=  42  win=35.7%  avg=+0.590%  sharpe=+0.32  total=+21.0%  [0.1s]
+- [21:58:45]   8_21_long              SPY daily : n=  21  win=47.6%  avg=+2.143%  sharpe=+0.66  total=+50.0%  [0.1s]
+- [21:58:45]   stacked_long           SPY daily : n=  34  win=50.0%  avg=+1.368%  sharpe=+0.75  total=+53.6%  [0.1s]
+- [21:58:45]   pullback_to_9          SPY daily : n= 132  win=53.0%  avg=-0.037%  sharpe=-0.15  total=-5.8%  [0.1s]
+- [21:58:45]   9_21_long_trend        SPY daily : n=  19  win=47.4%  avg=+1.542%  sharpe=+0.61  total=+31.1%  [0.1s]
+- [21:58:45]   9_21_long              QQQ daily : n=  24  win=37.5%  avg=+2.147%  sharpe=+0.52  total=+52.5%  [0.1s]
+- [21:58:45]   9_21_long_short        QQQ daily : n=  48  win=27.1%  avg=+0.525%  sharpe=+0.22  total=+13.9%  [0.1s]
+- [21:58:45]   8_21_long              QQQ daily : n=  24  win=37.5%  avg=+2.282%  sharpe=+0.55  total=+57.4%  [0.1s]
+- [21:58:45]   stacked_long           QQQ daily : n=  40  win=40.0%  avg=+1.065%  sharpe=+0.50  total=+43.3%  [0.1s]
+- [21:58:45]   pullback_to_9          QQQ daily : n= 144  win=57.6%  avg=+0.092%  sharpe=+0.34  total=+12.4%  [0.1s]
+- [21:58:45]   9_21_long_trend        QQQ daily : n=  22  win=40.9%  avg=+2.785%  sharpe=+0.62  total=+68.5%  [0.1s]
+- [21:58:46]   9_21_long              SPY 1hr   : n= 108  win=33.3%  avg=+0.262%  sharpe=+0.84  total=+30.3%  [0.2s]
+- [21:58:46]   9_21_long_short        SPY 1hr   : n= 215  win=29.3%  avg=+0.006%  sharpe=+0.04  total=-1.2%  [0.2s]
+- [21:58:46]   8_21_long              SPY 1hr   : n= 113  win=36.3%  avg=+0.258%  sharpe=+0.85  total=+31.3%  [0.2s]
+- [21:58:46]   stacked_long           SPY 1hr   : n= 141  win=34.0%  avg=+0.163%  sharpe=+0.78  total=+24.1%  [0.2s]
+- [21:58:46]   pullback_to_9          SPY 1hr   : n= 537  win=46.7%  avg=-0.004%  sharpe=-0.16  total=-2.7%  [0.3s]
+- [21:58:47]   9_21_long_trend        SPY 1hr   : n=  90  win=34.4%  avg=+0.190%  sharpe=+0.72  total=+17.6%  [0.3s]
+- [21:58:47]   9_21_long              QQQ 1hr   : n= 104  win=36.5%  avg=+0.445%  sharpe=+0.95  total=+53.0%  [0.2s]
+- [21:58:47]   9_21_long_short        QQQ 1hr   : n= 208  win=32.2%  avg=+0.102%  sharpe=+0.37  total=+17.1%  [0.2s]
+- [21:58:47]   8_21_long              QQQ 1hr   : n= 108  win=37.0%  avg=+0.445%  sharpe=+0.98  total=+55.5%  [0.3s]
+- [21:58:48]   stacked_long           QQQ 1hr   : n= 142  win=35.2%  avg=+0.216%  sharpe=+0.80  total=+32.6%  [0.2s]
+- [21:58:48]   pullback_to_9          QQQ 1hr   : n= 502  win=49.0%  avg=+0.002%  sharpe=+0.06  total=+0.5%  [0.3s]
+- [21:58:48]   9_21_long_trend        QQQ 1hr   : n=  80  win=37.5%  avg=+0.322%  sharpe=+0.77  total=+27.0%  [0.2s]
+- [21:58:48]   skip SPY 5min: empty
+- [21:58:48]   skip QQQ 5min: empty
+- [21:58:48] == Sensitivity grid: 9/21-style on SPY daily ==
+- [21:58:48]   (7,19): n= 25  sharpe=+0.68  total=+55.1%
+- [21:58:48]   (7,20): n= 23  sharpe=+0.68  total=+54.7%
+- [21:58:48]   (7,21): n= 22  sharpe=+0.64  total=+49.6%
+- [21:58:48]   (7,22): n= 22  sharpe=+0.65  total=+49.1%
+- [21:58:48]   (7,23): n= 21  sharpe=+0.71  total=+53.9%
+- [21:58:48]   (8,19): n= 22  sharpe=+0.66  total=+52.3%
+- [21:58:48]   (8,20): n= 22  sharpe=+0.65  total=+51.3%
+- [21:58:49]   (8,21): n= 21  sharpe=+0.66  total=+50.0%
+- [21:58:49]   (8,22): n= 21  sharpe=+0.67  total=+51.3%
+- [21:58:49]   (8,23): n= 22  sharpe=+0.69  total=+51.8%
+- [21:58:49]   (9,19): n= 21  sharpe=+0.66  total=+49.9%
+- [21:58:49]   (9,20): n= 21  sharpe=+0.67  total=+51.0%
+- [21:58:49]   (9,21): n= 21  sharpe=+0.61  total=+45.1%
+- [21:58:49]   (9,22): n= 22  sharpe=+0.69  total=+48.2%
+- [21:58:49]   (9,23): n= 22  sharpe=+0.72  total=+50.3%
+- [21:58:49]   (10,19): n= 20  sharpe=+0.62  total=+46.0%
+- [21:58:49]   (10,20): n= 20  sharpe=+0.66  total=+48.8%
+- [21:58:49]   (10,21): n= 21  sharpe=+0.72  total=+50.9%
+- [21:58:49]   (10,22): n= 20  sharpe=+0.75  total=+53.6%
+- [21:58:49]   (10,23): n= 18  sharpe=+0.81  total=+60.2%
+- [21:58:49]   (11,19): n= 20  sharpe=+0.68  total=+47.6%
+- [21:58:49]   (11,20): n= 20  sharpe=+0.76  total=+55.0%
+- [21:58:50]   (11,21): n= 19  sharpe=+0.79  total=+58.6%
+- [21:58:50]   (11,22): n= 18  sharpe=+0.83  total=+61.1%
+- [21:58:50]   (11,23): n= 18  sharpe=+0.82  total=+59.9%
+- [21:58:50] == Walk-forward 80/20 ==
+- [21:58:50]   9_21_long              SPY daily : IS n=17 sharpe=+0.42 total=+16.7%  | OOS n=5 sharpe=+1.16 total=+28.1%
+- [21:58:50]   9_21_long              SPY 1hr   : IS n=85 sharpe=+1.00 total=+26.0%  | OOS n=24 sharpe=+0.40 total=+3.0%
+- [21:58:50]   9_21_long              QQQ daily : IS n=20 sharpe=+0.31 total=+15.6%  | OOS n=5 sharpe=+1.08 total=+36.8%
+- [21:58:50]   9_21_long              QQQ 1hr   : IS n=79 sharpe=+0.98 total=+37.2%  | OOS n=26 sharpe=+0.91 total=+11.5%
+- [21:58:50]   stacked_long           SPY daily : IS n=25 sharpe=+0.68 total=+30.5%  | OOS n=10 sharpe=+1.13 total=+21.3%
+- [21:58:51]   stacked_long           SPY 1hr   : IS n=112 sharpe=+0.94 total=+22.0%  | OOS n=31 sharpe=+0.18 total=+0.9%
+- [21:58:51]   stacked_long           QQQ daily : IS n=29 sharpe=+0.36 total=+17.3%  | OOS n=12 sharpe=+1.00 total=+26.8%
+- [21:58:51]   stacked_long           QQQ 1hr   : IS n=112 sharpe=+0.89 total=+28.6%  | OOS n=33 sharpe=+0.47 total=+3.5%
+- [21:58:51]   9_21_long_trend        SPY daily : IS n=15 sharpe=+0.61 total=+23.7%  | OOS n=4 sharpe=+1.04 total=+5.9%
+- [21:58:51]   9_21_long_trend        SPY 1hr   : IS n=0 sharpe=+0.00 total=+0.0%  | OOS n=19 sharpe=-0.66 total=-3.0%
+- [21:58:51]   9_21_long_trend        QQQ daily : IS n=18 sharpe=+0.48 total=+27.8%  | OOS n=5 sharpe=+1.08 total=+36.8%
+- [21:58:51]   9_21_long_trend        QQQ 1hr   : IS n=0 sharpe=+0.00 total=+0.0%  | OOS n=16 sharpe=+0.64 total=+4.3%
+- [21:58:51] == Regime split (VIX) on strategy 1 daily ==
+- [21:58:52]   SPY LOW (<15)         : n=  4  win=50.0%  avg=+4.471%  total=+18.0%
+- [21:58:52]   SPY NORMAL (15-20)    : n= 11  win=45.5%  avg=+1.237%  total=+13.6%
+- [21:58:52]   SPY HIGH (20-30)      : n=  6  win=50.0%  avg=+1.709%  total=+8.2%
+- [21:58:52]   SPY STRESS (>30)      : n=  0  win= 0.0%  avg=+0.000%  total=+0.0%
+- [21:58:52]   QQQ LOW (<15)         : n=  4  win=50.0%  avg=+3.987%  total=+15.6%
+- [21:58:52]   QQQ NORMAL (15-20)    : n= 13  win=30.8%  avg=+0.143%  total=-0.2%
+- [21:58:52]   QQQ HIGH (20-30)      : n=  7  win=42.9%  avg=+4.816%  total=+32.2%
+- [21:58:52]   QQQ STRESS (>30)      : n=  0  win= 0.0%  avg=+0.000%  total=+0.0%
+- [21:58:52] dte_overlay: SKIPPED (fast-runner mode — no 5-min data)
+- [21:58:52]   matplotlib unavailable: No module named 'matplotlib'
+- [21:58:52] == Writing findings doc ==
+- [21:58:52]   wrote C:\Dev\GammaPulse\docs\research\EMA_8_9_21_BACKTEST_SPY_QQQ.md

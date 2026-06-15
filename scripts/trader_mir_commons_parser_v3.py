@@ -18,7 +18,18 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-JSON_PATH = ROOT / "discord" / "commons-portfolio-and-price-targets-watchlist.json"
+# Commons trades come from two sources (Mir cross-posts):
+#   1. The dedicated commons channel (canonical for 2022-2024 and most of 2025+)
+#   2. #general-alerts when he flags "commons portfolio" / "for commons" /
+#      "good for commons" — pre-filtered by
+#      scripts/extract_cross_channel_alerts.py. As of 2026-05-25 the cross-
+#      channel commons signal is sparse (~8 actionable messages in 2025+,
+#      mostly option-alternatives, not new commons positions). Kept here
+#      for future-proofing.
+JSON_PATHS = [
+    ROOT / "discord" / "commons-portfolio-and-price-targets-watchlist.json",
+    ROOT / "discord" / "commons_from_general_alerts.json",
+]
 OUT_CSV = ROOT / "discord" / "commons_parsed_events_v3.csv"
 
 # ── Canonical commons tickers ───────────────────────────────────────────
@@ -36,8 +47,15 @@ COMMONS_TICKERS = {
 # ── Patterns ────────────────────────────────────────────────────────────
 
 TICKER_RX = re.compile(r"\$([A-Z]{1,5}(?:\.[A-Z]{1,2})?)\b")
-PRICE_AT_RX = re.compile(r"(?:@|at\s+|=)\s*\$?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
-PRICE_DASH_RX = re.compile(r"-\s*\$?\s*([0-9]+(?:\.[0-9]+)?)")
+# (?!\d) locks the digit run to its longest match — without it,
+# "set stop at 50%" would backtrack from "50" to "5" once the %-lookahead
+# fires, yielding a phantom $5 exit. (?!\s*%) blocks percentage refs
+# entirely. Bug found 2026-05-25 while debugging wifey parser.
+PRICE_AT_RX = re.compile(
+    r"(?:@|at\s+|=)\s*\$?\s*([0-9]+(?:\.[0-9]+)?)(?!\d)(?!\s*%)",
+    re.IGNORECASE,
+)
+PRICE_DASH_RX = re.compile(r"-\s*\$?\s*([0-9]+(?:\.[0-9]+)?)(?!\d)(?!\s*%)")
 
 # Hard-reject option specs (always, regardless of context)
 OPTION_SPECS = re.compile(
@@ -228,10 +246,19 @@ def parse_message(msg: dict) -> list[dict]:
 
 
 def main() -> None:
-    with JSON_PATH.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-    msgs = data["messages"]
-    print(f"Loaded {len(msgs)} messages", file=sys.stderr)
+    msgs: list[dict] = []
+    for jp in JSON_PATHS:
+        if not jp.exists():
+            print(f"  [skip] {jp.name} not found", file=sys.stderr)
+            continue
+        with jp.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        these = data.get("messages", data) if isinstance(data, dict) else data
+        for m in these:
+            m.setdefault("_source", jp.name)
+        msgs.extend(these)
+        print(f"  Loaded {len(these)} from {jp.name}", file=sys.stderr)
+    print(f"Total messages: {len(msgs)}", file=sys.stderr)
 
     events: list[dict] = []
     for m in msgs:

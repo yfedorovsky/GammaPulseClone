@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MU Thread Charts</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#050810;color:#e2e8f0;font-family:'JetBrains Mono',monospace;padding:20px}
+.bar{display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.bar button{background:transparent;color:#64748b;border:1px solid #1e293b;padding:6px 14px;font-size:12px;font-family:inherit;cursor:pointer;border-radius:5px}
+.bar button.on{background:#1e293b;color:#22d3ee;border-color:#22d3ee33}
+.bar button:hover{border-color:#334155}
+.dl{background:#22d3ee;color:#0a0e17;border:none;padding:8px 16px;font-size:12px;font-family:inherit;font-weight:700;cursor:pointer;border-radius:5px}
+.dl:hover{background:#06b6d4}
+.dla{background:transparent;color:#22d3ee;border:1px solid #22d3ee33;padding:8px 16px;font-size:12px;font-family:inherit;font-weight:600;cursor:pointer;border-radius:5px}
+.dla:hover{background:#1e293b}
+.sep{width:1px;height:22px;background:#1e293b}
+.st{font-size:11px;color:#22c55e;margin-left:8px;opacity:0;transition:opacity .3s}
+.st.v{opacity:1}
+.lbl{font-size:11px;color:#475569;margin:6px 0;letter-spacing:1px}
+.cw{border:1px solid #1e293b;border-radius:8px;overflow:hidden;display:inline-block}
+</style>
+</head>
+<body>
+<div class="bar">
+<button id="b0" class="on" onclick="sC(0)">Whale Math</button>
+<button id="b1" onclick="sC(1)">6 Receipts</button>
+<button id="b2" onclick="sC(2)">Price Path</button>
+<button id="b3" onclick="sC(3)">Position Ladder</button>
+<div class="sep"></div>
+<button class="dl" onclick="dlPNG(ac)">Download PNG</button>
+<button class="dla" onclick="dlAll()">Download all</button>
+<span class="st" id="st"></span>
+</div>
+<div id="main"></div>
+
+<script>
+const C={bg:'#0a0e17',cd:'#0f1729',gr:'#1a2035',tx:'#e2e8f0',mu:'#64748b',dm:'#334155',cy:'#22d3ee',rd:'#ef4444',gn:'#22c55e',or:'#f59e0b',pu:'#a78bfa',bl:'#3b82f6'};
+const F="JetBrains Mono,monospace",W=1200,H=675;
+function hd(t,s,d){return`<text x="36" y="42" fill="${C.tx}" font-size="24" font-weight="600" font-family="${F}">${t}</text>${s?`<text x="36" y="68" fill="${C.mu}" font-size="15" font-family="${F}">${s}</text>`:''}<text x="${W-36}" y="42" fill="${C.dm}" font-size="14" font-family="${F}" text-anchor="end">${d||'May 8, 2026'}</text>`}
+function sv(g){return`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"><rect width="${W}" height="${H}" fill="${C.bg}"/>${g}<text x="${W-36}" y="${H-14}" fill="${C.dm}" font-size="12" font-family="${F}" text-anchor="end">Not financial advice</text></svg>`}
+
+// ─── CHART 0: Whale Math (the viral one) ───────────────────────
+function c0(){
+let g='';
+const ox=120,oy=130,cw=W-280,rowH=140,gap=24;
+
+// Helper: log-scale bar widths so $58M is visible next to $1.21B
+const maxVal=1210; // $1.21B in millions
+const sw=v=>(Math.log10(v+1)/Math.log10(maxVal+1))*cw;
+
+const legs=[
+  {label:'MU 400C 6/18',sub:'30K→35K contracts · $58M VWAP basis',cost:58,value:1210,gain:'+1,990%',color:C.cy,rec:'Bullflow.io · @FL0WG0D 3/31'},
+  {label:'TSM 370C 6/18',sub:'38K contracts · $53M premium',cost:53,value:149,gain:'+181%',color:C.pu,rec:'Yahoo TSM 5/8 close $409.08'},
+];
+
+// Header strip — combined number
+g+=`<rect x="36" y="86" width="${W-72}" height="44" rx="6" fill="${C.gn}" opacity="0.08" stroke="${C.gn}" stroke-width="1"/>`;
+g+=`<text x="58" y="115" fill="${C.gn}" font-size="14" font-weight="600" font-family="${F}">COMBINED · 6 weeks</text>`;
+g+=`<text x="${W-58}" y="115" text-anchor="end" fill="${C.gn}" font-size="22" font-weight="700" font-family="${F}">~$111M → $1.36B+</text>`;
+
+let y=oy+20;
+legs.forEach((leg,i)=>{
+  // Leg label
+  g+=`<text x="36" y="${y}" fill="${C.tx}" font-size="18" font-weight="700" font-family="${F}">${leg.label}</text>`;
+  g+=`<text x="36" y="${y+22}" fill="${C.mu}" font-size="12" font-family="${F}">${leg.sub}</text>`;
+  g+=`<text x="36" y="${y+40}" fill="${C.dm}" font-size="11" font-family="${F}">RECEIPT: ${leg.rec}</text>`;
+
+  // Cost bar (gray, baseline)
+  const costW=sw(leg.cost);
+  g+=`<rect x="${ox}" y="${y+58}" width="${costW}" height="22" rx="3" fill="${C.dm}" opacity="0.6"/>`;
+  g+=`<text x="${ox+costW+10}" y="${y+74}" fill="${C.mu}" font-size="13" font-weight="600" font-family="${F}">$${leg.cost}M cost</text>`;
+
+  // Value bar (color, full)
+  const valW=sw(leg.value);
+  g+=`<rect x="${ox}" y="${y+86}" width="${valW}" height="32" rx="3" fill="${leg.color}" opacity="0.85"/>`;
+  // Value label inside or after bar
+  const valTxt=leg.value>=1000?`$${(leg.value/1000).toFixed(2)}B`:`$${leg.value}M+`;
+  if(valW>180){
+    g+=`<text x="${ox+valW-12}" y="${y+106}" text-anchor="end" fill="${C.bg}" font-size="16" font-weight="700" font-family="${F}">${valTxt}</text>`;
+  } else {
+    g+=`<text x="${ox+valW+10}" y="${y+106}" fill="${leg.color}" font-size="16" font-weight="700" font-family="${F}">${valTxt}</text>`;
+  }
+
+  // Gain badge
+  g+=`<rect x="${W-150}" y="${y+82}" width="110" height="36" rx="5" fill="${leg.color}" opacity="0.18" stroke="${leg.color}" stroke-width="1.5"/>`;
+  g+=`<text x="${W-95}" y="${y+106}" text-anchor="middle" fill="${leg.color}" font-size="16" font-weight="700" font-family="${F}">${leg.gain}</text>`;
+
+  y+=rowH+gap;
+});
+
+// Bottom note
+g+=`<line x1="36" y1="${H-90}" x2="${W-36}" y2="${H-90}" stroke="${C.gr}" stroke-width="0.5"/>`;
+g+=`<text x="36" y="${H-66}" fill="${C.tx}" font-size="13" font-weight="600" font-family="${F}">Mark-to-market · intrinsic value only · 5/8/26 close</text>`;
+g+=`<text x="36" y="${H-46}" fill="${C.mu}" font-size="11" font-family="${F}">Bar widths are log-scaled to show both cost ($58M / $53M) and outcome ($1.21B / $149M+) without dwarfing</text>`;
+
+return sv(hd('The Whale Math: $111M → $1.36B in 6 weeks','Receipt-grade intrinsic value, 3/31 → 5/8 close')+g);
+}
+
+// ─── CHART 1: 6 Receipts Chronology ─────────────────────────────
+function c1(){
+let g='';
+const items=[
+  {date:'3/31',time:'4:01 PM',handle:'@FL0WG0D',contract:'$MU 400C 6/18',amt:'$58M',tag:'ORIGINAL SPOTTER',color:C.cy,linked:false},
+  {date:'4/1',time:'10:54 AM',handle:'@FlowbyBobby',contract:'$MU 900C 9/18',amt:'$913K · 143% OTM',tag:'whale extending',color:C.pu,linked:false},
+  {date:'4/1',time:'',handle:'@CheddarFlow',contract:'$TSM sweep',amt:'$1.7M flagged',tag:'cross-ticker leg',color:C.bl,linked:false},
+  {date:'4/1',time:'',handle:'@AnthonySandford',contract:'$MU + $TSM both',amt:'unusual flow',tag:'SAW THE RELATIONSHIP',color:C.gn,linked:true},
+  {date:'5/8',time:'12:38 PM',handle:'@IncBulls',contract:'$MU 610C 1/15/27 LEAP',amt:'$50M block',tag:'gamma-day institutional',color:C.or,linked:false},
+  {date:'5/8',time:'',handle:'@snorlax_uw',contract:'"surely the same trader"',amt:'retroactive',tag:'CONFIRMED SAME-TRADER',color:C.gn,linked:true},
+];
+
+const top=104,rh=72,gap=4;
+let y=top;
+items.forEach((it,i)=>{
+  // Row background
+  g+=`<rect x="36" y="${y}" width="${W-72}" height="${rh}" rx="5" fill="${C.cd}" opacity="0.5"/>`;
+  // Left accent
+  g+=`<rect x="36" y="${y}" width="4" height="${rh}" fill="${it.color}"/>`;
+
+  // Date column
+  g+=`<text x="58" y="${y+30}" fill="${it.color}" font-size="22" font-weight="700" font-family="${F}">${it.date}</text>`;
+  g+=`<text x="58" y="${y+50}" fill="${C.mu}" font-size="11" font-family="${F}">${it.time}</text>`;
+
+  // Handle column
+  g+=`<text x="170" y="${y+30}" fill="${C.tx}" font-size="17" font-weight="600" font-family="${F}">${it.handle}</text>`;
+
+  // Contract + amount
+  g+=`<text x="170" y="${y+52}" fill="${C.mu}" font-size="13" font-family="${F}">${it.contract} · ${it.amt}</text>`;
+
+  // Tag badge (right side)
+  const tagW=Math.max(it.tag.length*7+24,140);
+  g+=`<rect x="${W-58-tagW}" y="${y+rh/2-14}" width="${tagW}" height="28" rx="14" fill="${it.color}" opacity="${it.linked?0.25:0.12}" stroke="${it.color}" stroke-width="${it.linked?1.5:1}"/>`;
+  g+=`<text x="${W-58-tagW/2}" y="${y+rh/2+5}" text-anchor="middle" fill="${it.color}" font-size="11" font-weight="700" font-family="${F}" letter-spacing="1">${it.tag.toUpperCase()}</text>`;
+
+  y+=rh+gap;
+});
+
+// Bottom takeaway
+y+=14;
+g+=`<rect x="36" y="${y}" width="${W-72}" height="56" rx="6" fill="${C.cy}" opacity="0.08" stroke="${C.cy}" stroke-width="1"/>`;
+g+=`<text x="${W/2}" y="${y+24}" text-anchor="middle" fill="${C.tx}" font-size="14" font-weight="600" font-family="${F}">Six accounts caught pieces. A few saw the relationship.</text>`;
+g+=`<text x="${W/2}" y="${y+44}" text-anchor="middle" fill="${C.cy}" font-size="14" font-weight="700" font-family="${F}">The missing layer was systematic basket detection.</text>`;
+
+return sv(hd('Six Accounts. Six Receipts. Zero Unified Signal.','Real-time chronology of the 3/31 → 5/8 MU+TSM whale trade')+g);
+}
+
+// ─── CHART 2: Price Path with Catalysts ─────────────────────────
+function c2(){
+let g='';
+const ox=110,oy=110,cw=W-220,ch=420;
+
+const pts=[
+  {x:0,y:338,label:'3/31',event:'Whale buys $111M',sub:'MU+TSM ASK sweeps · 6/18 expiry',color:C.cy},
+  {x:1,y:450,label:'4/14',event:'$450 breakout',sub:'+3.4% in 4 hours · qualified',color:C.bl},
+  {x:2,y:519,label:'4/28',event:'DA Davidson $1000 PT',sub:'Highest on Street',color:C.or},
+  {x:3,y:640,label:'5/5',event:'Minervini sells',sub:'"into climactic strength"',color:C.pu},
+  {x:4,y:746.81,label:'5/8',event:'Gamma event',sub:'+15.5% · $14.5B notional · 34× avg',color:C.gn},
+];
+
+const minY=320,maxY=780;
+const sx=i=>ox+(i/4)*cw;
+const sy=v=>oy+(1-((v-minY)/(maxY-minY)))*ch;
+
+// Y axis
+[400,500,600,700].forEach(v=>{
+  const y=sy(v);
+  g+=`<line x1="${ox}" y1="${y}" x2="${ox+cw}" y2="${y}" stroke="${C.gr}" stroke-width="0.5"/>`;
+  g+=`<text x="${ox-12}" y="${y+5}" text-anchor="end" fill="${C.mu}" font-size="13" font-family="${F}">$${v}</text>`;
+});
+
+// Whale entry line
+g+=`<line x1="${ox}" y1="${sy(338)}" x2="${ox+cw}" y2="${sy(338)}" stroke="${C.cy}" stroke-width="1" stroke-dasharray="4,4" opacity="0.4"/>`;
+g+=`<text x="${ox+cw-8}" y="${sy(338)-6}" text-anchor="end" fill="${C.cy}" font-size="10" font-family="${F}" opacity="0.7">whale entry $338</text>`;
+
+// Area + line
+let areaD=`M${sx(0)},${sy(minY)}`;
+pts.forEach(p=>{areaD+=` L${sx(p.x)},${sy(p.y)}`});
+areaD+=` L${sx(4)},${sy(minY)} Z`;
+g+=`<defs><linearGradient id="ag2" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${C.gn}" stop-opacity="0.18"/><stop offset="100%" stop-color="${C.gn}" stop-opacity="0.01"/></linearGradient></defs>`;
+g+=`<path d="${areaD}" fill="url(#ag2)"/>`;
+let lineD='';
+pts.forEach((p,i)=>{lineD+=(i===0?'M':'L')+sx(p.x)+','+sy(p.y)+' '});
+g+=`<path d="${lineD.trim()}" fill="none" stroke="${C.gn}" stroke-width="2.5" stroke-linejoin="round"/>`;
+
+// Points + labels
+pts.forEach((p,i)=>{
+  const px=sx(p.x),py=sy(p.y);
+  g+=`<circle cx="${px}" cy="${py}" r="14" fill="${p.color}" opacity="0.15"/>`;
+  g+=`<circle cx="${px}" cy="${py}" r="6" fill="${C.bg}" stroke="${p.color}" stroke-width="2.5"/>`;
+  g+=`<circle cx="${px}" cy="${py}" r="3" fill="${p.color}"/>`;
+
+  // Price badge
+  const priceTxt=`$${p.y.toFixed(p.y%1?2:0)}`;
+  const bw=priceTxt.length*10+16;
+  let bx,by;
+  if(i===0){bx=px+12;by=py-12;}
+  else if(i===4){bx=px-bw-12;by=py-12;}
+  else {bx=px-bw/2;by=py-44;}
+  g+=`<rect x="${bx}" y="${by}" width="${bw}" height="26" rx="4" fill="${C.bg}" stroke="${p.color}" stroke-width="1.5"/>`;
+  g+=`<text x="${bx+bw/2}" y="${by+17}" text-anchor="middle" fill="${p.color}" font-size="13" font-weight="700" font-family="${F}">${priceTxt}</text>`;
+
+  // X-axis date
+  g+=`<text x="${px}" y="${oy+ch+24}" text-anchor="middle" fill="${C.tx}" font-size="13" font-weight="600" font-family="${F}">${p.label}</text>`;
+
+  // Event annotations below dates
+  g+=`<text x="${px}" y="${oy+ch+46}" text-anchor="middle" fill="${p.color}" font-size="11" font-weight="600" font-family="${F}">${p.event}</text>`;
+  g+=`<text x="${px}" y="${oy+ch+62}" text-anchor="middle" fill="${C.mu}" font-size="10" font-family="${F}">${p.sub}</text>`;
+});
+
+// Net move callout
+g+=`<rect x="${W-260}" y="86" width="220" height="40" rx="5" fill="${C.gn}" opacity="0.12" stroke="${C.gn}" stroke-width="1.5"/>`;
+g+=`<text x="${W-150}" y="112" text-anchor="middle" fill="${C.gn}" font-size="16" font-weight="700" font-family="${F}">+121% in 6 weeks</text>`;
+
+return sv(hd('MU Price Path: 3/31 → 5/8','$338 whale-entry to $746.81 gamma close')+g);
+}
+
+// ─── CHART 3: Position Ladder ───────────────────────────────────
+function c3(){
+let g='';
+const positions=[
+  {date:'3/31',contract:'MU 400C 6/18',cost:'$58M',basis:'~$16.66 VWAP',type:'Directional · ATM-ish',otm:'18.4% OTM',dte:'79 DTE',color:C.cy,rec:'@FL0WG0D · Bullflow.io',gain:'+1,990%'},
+  {date:'4/1',contract:'MU 900C 9/18',cost:'$913K',basis:'$3.98 avg',type:'Convexity lottery',otm:'143% OTM',dte:'170 DTE',color:C.pu,rec:'@FlowbyBobby · UW',gain:'unrealized'},
+  {date:'4/1',contract:'TSM 370C 6/18',cost:'$53M',basis:'~$14 avg',type:'Cross-ticker pair',otm:'9.5% OTM',dte:'79 DTE',color:C.bl,rec:'@CheddarFlow · @AnthonySandford',gain:'+181%'},
+  {date:'5/8',contract:'MU 610C 1/15/27',cost:'$50M',basis:'$255.43 fill',type:'Long-dated conviction add',otm:'ITM',dte:'252 DTE',color:C.or,rec:'@IncBulls · NexsenTerminal',gain:'live position'},
+];
+
+const top=110,rh=120,gap=10;
+let y=top;
+positions.forEach((p,i)=>{
+  // Card background
+  g+=`<rect x="36" y="${y}" width="${W-72}" height="${rh}" rx="6" fill="${C.cd}" opacity="0.6"/>`;
+  // Left color stripe
+  g+=`<rect x="36" y="${y}" width="6" height="${rh}" fill="${p.color}"/>`;
+
+  // Date
+  g+=`<text x="64" y="${y+34}" fill="${p.color}" font-size="20" font-weight="700" font-family="${F}">${p.date}</text>`;
+
+  // Contract title
+  g+=`<text x="64" y="${y+62}" fill="${C.tx}" font-size="22" font-weight="700" font-family="${F}">${p.contract}</text>`;
+
+  // Sub-line: type + OTM + DTE
+  g+=`<text x="64" y="${y+86}" fill="${C.mu}" font-size="13" font-family="${F}">${p.type} · ${p.otm} · ${p.dte}</text>`;
+
+  // Receipt line
+  g+=`<text x="64" y="${y+106}" fill="${C.dm}" font-size="11" font-family="${F}">RECEIPT: ${p.rec}</text>`;
+
+  // Right side: cost + basis
+  g+=`<text x="${W-280}" y="${y+34}" fill="${C.mu}" font-size="11" font-family="${F}" letter-spacing="1">PREMIUM</text>`;
+  g+=`<text x="${W-280}" y="${y+58}" fill="${C.tx}" font-size="22" font-weight="700" font-family="${F}">${p.cost}</text>`;
+  g+=`<text x="${W-280}" y="${y+76}" fill="${C.dm}" font-size="11" font-family="${F}">basis ${p.basis}</text>`;
+
+  // Gain badge (far right)
+  const gainW=p.gain.length*8+24;
+  g+=`<rect x="${W-58-gainW}" y="${y+rh/2-16}" width="${gainW}" height="32" rx="5" fill="${p.color}" opacity="0.18" stroke="${p.color}" stroke-width="1.5"/>`;
+  g+=`<text x="${W-58-gainW/2}" y="${y+rh/2+5}" text-anchor="middle" fill="${p.color}" font-size="13" font-weight="700" font-family="${F}">${p.gain}</text>`;
+
+  y+=rh+gap;
+});
+
+// Bottom thesis
+g+=`<rect x="36" y="${y+8}" width="${W-72}" height="44" rx="6" fill="${C.cy}" opacity="0.08" stroke="${C.cy}" stroke-width="1"/>`;
+g+=`<text x="${W/2}" y="${y+36}" text-anchor="middle" fill="${C.tx}" font-size="14" font-weight="600" font-family="${F}">Four positions · three strikes · three expiries · two tickers · one thesis: <tspan fill="${C.cy}" font-weight="700">AI memory supercycle</tspan></text>`;
+
+return sv(hd('The Position Ladder: Multi-Strike Conviction','3 different option expressions of the same thesis · 3/31 → 5/8')+g);
+}
+
+// ─── META ──────────────────────────────────────────────────────
+const cFn=[c0,c1,c2,c3];
+const LB=['Whale Math','6 Receipts','Price Path','Position Ladder'];
+const FN=['mu_whale_math','mu_6_receipts','mu_price_path','mu_position_ladder'];
+let ac=0;
+
+function dlPNG(i){
+  const s=cFn[i](),cv=document.createElement('canvas');cv.width=1200;cv.height=675;
+  const ctx=cv.getContext('2d'),img=new Image(),b=new Blob([s],{type:'image/svg+xml;charset=utf-8'}),u=URL.createObjectURL(b);
+  img.onload=()=>{ctx.drawImage(img,0,0,1200,675);URL.revokeObjectURL(u);const a=document.createElement('a');a.download=FN[i]+'.png';a.href=cv.toDataURL('image/png');a.click();const st=document.getElementById('st');if(st){st.textContent='Saved '+FN[i]+'.png';st.classList.add('v');setTimeout(()=>st.classList.remove('v'),2000)}};
+  img.src=u;
+}
+function dlAll(){let i=0;(function n(){if(i<4){dlPNG(i);i++;setTimeout(n,600)}})()}
+function sC(i){ac=i;[0,1,2,3].forEach(n=>document.getElementById('b'+n).classList.toggle('on',i===n));R()}
+function R(){
+  const el=document.getElementById('main');
+  el.innerHTML=`<div class="lbl">Chart ${ac+1} — ${LB[ac]} — 1200×675</div><div class="cw">${cFn[ac]()}</div>`;
+}
+R();
+</script>
+</body>
+</html>

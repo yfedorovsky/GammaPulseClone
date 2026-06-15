@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MU Substack Charts — Download Hub</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#050810;color:#e2e8f0;font-family:'JetBrains Mono',monospace;padding:24px;max-width:1800px;margin:0 auto}
+h1{font-size:24px;font-weight:700;margin-bottom:6px;color:#22d3ee}
+.subtitle{font-size:13px;color:#64748b;margin-bottom:24px}
+.master-bar{display:flex;gap:12px;align-items:center;margin-bottom:24px;padding:16px;background:#0f1729;border:1px solid #1e293b;border-radius:8px;flex-wrap:wrap}
+.master-bar .label{font-size:11px;color:#64748b;letter-spacing:1px;margin-right:8px}
+.btn{background:transparent;color:#22d3ee;border:1px solid #22d3ee66;padding:10px 18px;font-size:12px;font-family:inherit;font-weight:600;cursor:pointer;border-radius:5px;letter-spacing:0.5px}
+.btn:hover{background:#1e293b;border-color:#22d3ee}
+.btn-primary{background:#22d3ee;color:#0a0e17;border:none;font-weight:700}
+.btn-primary:hover{background:#06b6d4}
+.btn-md{background:#a78bfa;color:#0a0e17;border:none;font-weight:700}
+.btn-md:hover{background:#8b5cf6}
+.chart-card{background:#0a0e17;border:1px solid #1e293b;border-radius:10px;margin-bottom:20px;overflow:hidden}
+.chart-header{display:flex;justify-content:space-between;align-items:center;padding:14px 20px;border-bottom:1px solid #1e293b;background:#0f1729}
+.chart-title{font-size:14px;font-weight:600;color:#e2e8f0}
+.chart-meta{font-size:11px;color:#64748b;font-weight:400;margin-left:12px;letter-spacing:1px}
+.chart-actions{display:flex;gap:8px}
+.btn-sm{background:transparent;color:#22d3ee;border:1px solid #22d3ee66;padding:6px 14px;font-size:11px;font-family:inherit;font-weight:600;cursor:pointer;border-radius:4px;letter-spacing:0.5px}
+.btn-sm:hover{background:#1e293b}
+.chart-body{padding:20px;display:flex;justify-content:center;background:#050810}
+.chart-body svg{max-width:100%;height:auto;border-radius:6px}
+.status{font-size:11px;color:#22c55e;margin-left:12px;opacity:0;transition:opacity .3s}
+.status.visible{opacity:1}
+.dim{font-size:10px;color:#475569;padding-left:12px;border-left:1px solid #1e293b;margin-left:4px}
+.toast{position:fixed;bottom:24px;right:24px;background:#22c55e;color:#0a0e17;padding:12px 20px;border-radius:6px;font-size:12px;font-weight:700;opacity:0;transition:opacity .3s;z-index:1000}
+.toast.show{opacity:1}
+.info-banner{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:16px;margin-bottom:24px;font-size:12px;color:#94a3b8;line-height:1.6}
+.info-banner strong{color:#22d3ee}
+</style>
+</head>
+<body>
+
+<h1>MU Substack Charts — Download Hub</h1>
+<div class="subtitle">All 4 charts at Substack-grade resolution · 1600×900 · transparent backgrounds · PNG export</div>
+
+<div class="info-banner">
+<strong>For Substack publishing:</strong> Click "Download all PNGs" below to grab all four charts in one go. Each renders at 1600×900 (16:9) — Substack auto-scales for retina displays. Drop each PNG inline at the chart placeholder markers in the Substack article. The article markdown is also linked below.
+</div>
+
+<div class="master-bar">
+<span class="label">MASTER ACTIONS</span>
+<button class="btn-primary btn" onclick="dlAll()">⬇ Download all PNGs</button>
+<button class="btn-md btn" onclick="dlMd()">📝 Download article (.md)</button>
+<span class="dim">1600 × 900 · PNG · ~150KB each</span>
+<span class="status" id="masterStatus"></span>
+</div>
+
+<div id="charts"></div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const C={bg:'#0a0e17',cd:'#0f1729',gr:'#1a2035',tx:'#e2e8f0',mu:'#64748b',dm:'#334155',cy:'#22d3ee',rd:'#ef4444',gn:'#22c55e',or:'#f59e0b',pu:'#a78bfa',bl:'#3b82f6'};
+const F="JetBrains Mono,monospace";
+
+// Substack resolution: 1600x900 (retina-friendly 16:9)
+const W=1600,H=900;
+
+function hd(t,s,d){return`<text x="48" y="56" fill="${C.tx}" font-size="32" font-weight="600" font-family="${F}">${t}</text>${s?`<text x="48" y="90" fill="${C.mu}" font-size="20" font-family="${F}">${s}</text>`:''}<text x="${W-48}" y="56" fill="${C.dm}" font-size="18" font-family="${F}" text-anchor="end">${d||'May 8, 2026'}</text>`}
+function sv(g){return`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"><rect width="${W}" height="${H}" fill="${C.bg}"/>${g}<text x="${W-48}" y="${H-20}" fill="${C.dm}" font-size="14" font-family="${F}" text-anchor="end">Not financial advice · gammapulse.io</text></svg>`}
+
+// ─── CHART 0: Whale Math ────────────────────────────────────────
+function c0(){
+let g='';
+const ox=160,oy=180,cw=W-380,rowH=190,gap=36;
+const maxVal=1210;
+const sw=v=>(Math.log10(v+1)/Math.log10(maxVal+1))*cw;
+
+const legs=[
+  {label:'MU 400C 6/18',sub:'35K contracts · $58M VWAP basis · 18.4% OTM',cost:58,value:1210,gain:'+1,990%',color:C.cy,rec:'Bullflow.io · @FL0WG0D 3/31'},
+  {label:'TSM 370C 6/18',sub:'38K contracts · $53M premium · 9.5% OTM',cost:53,value:149,gain:'+181%',color:C.pu,rec:'Yahoo TSM 5/8 close $409.08'},
+];
+
+g+=`<rect x="48" y="116" width="${W-96}" height="56" rx="8" fill="${C.gn}" opacity="0.08" stroke="${C.gn}" stroke-width="1"/>`;
+g+=`<text x="76" y="152" fill="${C.gn}" font-size="18" font-weight="600" font-family="${F}">COMBINED · 6 weeks</text>`;
+g+=`<text x="${W-76}" y="152" text-anchor="end" fill="${C.gn}" font-size="28" font-weight="700" font-family="${F}">~$111M → $1.36B+</text>`;
+
+let y=oy+30;
+legs.forEach((leg)=>{
+  g+=`<text x="48" y="${y}" fill="${C.tx}" font-size="24" font-weight="700" font-family="${F}">${leg.label}</text>`;
+  g+=`<text x="48" y="${y+28}" fill="${C.mu}" font-size="15" font-family="${F}">${leg.sub}</text>`;
+  g+=`<text x="48" y="${y+50}" fill="${C.dm}" font-size="13" font-family="${F}">RECEIPT: ${leg.rec}</text>`;
+
+  const costW=sw(leg.cost);
+  g+=`<rect x="${ox}" y="${y+72}" width="${costW}" height="28" rx="4" fill="${C.dm}" opacity="0.6"/>`;
+  g+=`<text x="${ox+costW+14}" y="${y+92}" fill="${C.mu}" font-size="16" font-weight="600" font-family="${F}">$${leg.cost}M cost</text>`;
+
+  const valW=sw(leg.value);
+  g+=`<rect x="${ox}" y="${y+108}" width="${valW}" height="42" rx="4" fill="${leg.color}" opacity="0.85"/>`;
+  const valTxt=leg.value>=1000?`$${(leg.value/1000).toFixed(2)}B`:`$${leg.value}M+`;
+  if(valW>240){
+    g+=`<text x="${ox+valW-16}" y="${y+136}" text-anchor="end" fill="${C.bg}" font-size="22" font-weight="700" font-family="${F}">${valTxt}</text>`;
+  } else {
+    g+=`<text x="${ox+valW+14}" y="${y+136}" fill="${leg.color}" font-size="22" font-weight="700" font-family="${F}">${valTxt}</text>`;
+  }
+
+  const gw=160;
+  g+=`<rect x="${W-48-gw}" y="${y+104}" width="${gw}" height="48" rx="6" fill="${leg.color}" opacity="0.18" stroke="${leg.color}" stroke-width="1.5"/>`;
+  g+=`<text x="${W-48-gw/2}" y="${y+136}" text-anchor="middle" fill="${leg.color}" font-size="22" font-weight="700" font-family="${F}">${leg.gain}</text>`;
+
+  y+=rowH+gap;
+});
+
+g+=`<line x1="48" y1="${H-118}" x2="${W-48}" y2="${H-118}" stroke="${C.gr}" stroke-width="0.5"/>`;
+g+=`<text x="48" y="${H-88}" fill="${C.tx}" font-size="17" font-weight="600" font-family="${F}">Mark-to-market · intrinsic value only · 5/8/26 close</text>`;
+g+=`<text x="48" y="${H-62}" fill="${C.mu}" font-size="13" font-family="${F}">Bar widths log-scaled to display both cost ($58M / $53M) and outcome ($1.21B / $149M+) on one axis</text>`;
+
+return sv(hd('The Whale Math: $111M → $1.36B in 6 weeks','Receipt-grade intrinsic value, 3/31 → 5/8 close')+g);
+}
+
+// ─── CHART 1: 6 Receipts Chronology ─────────────────────────────
+function c1(){
+let g='';
+const items=[
+  {date:'3/31',time:'4:01 PM',handle:'@FL0WG0D',contract:'$MU 400C 6/18',amt:'$58M',tag:'ORIGINAL SPOTTER',color:C.cy,linked:false},
+  {date:'4/1',time:'10:54 AM',handle:'@FlowbyBobby',contract:'$MU 900C 9/18',amt:'$913K · 143% OTM',tag:'whale extending',color:C.pu,linked:false},
+  {date:'4/1',time:'',handle:'@CheddarFlow',contract:'$TSM sweep',amt:'$1.7M flagged',tag:'cross-ticker leg',color:C.bl,linked:false},
+  {date:'4/1',time:'',handle:'@AnthonySandford',contract:'$MU + $TSM both',amt:'unusual flow',tag:'SAW THE RELATIONSHIP',color:C.gn,linked:true},
+  {date:'5/8',time:'12:38 PM',handle:'@IncBulls',contract:'$MU 610C 1/15/27 LEAP',amt:'$50M block',tag:'gamma-day institutional',color:C.or,linked:false},
+  {date:'5/8',time:'',handle:'@snorlax_uw',contract:'"surely the same trader"',amt:'retroactive',tag:'CONFIRMED SAME-TRADER',color:C.gn,linked:true},
+];
+
+const top=140,rh=96,gap=8;
+let y=top;
+items.forEach((it)=>{
+  g+=`<rect x="48" y="${y}" width="${W-96}" height="${rh}" rx="6" fill="${C.cd}" opacity="0.5"/>`;
+  g+=`<rect x="48" y="${y}" width="6" height="${rh}" fill="${it.color}"/>`;
+
+  g+=`<text x="80" y="${y+42}" fill="${it.color}" font-size="30" font-weight="700" font-family="${F}">${it.date}</text>`;
+  g+=`<text x="80" y="${y+68}" fill="${C.mu}" font-size="14" font-family="${F}">${it.time}</text>`;
+
+  g+=`<text x="220" y="${y+42}" fill="${C.tx}" font-size="22" font-weight="600" font-family="${F}">${it.handle}</text>`;
+  g+=`<text x="220" y="${y+70}" fill="${C.mu}" font-size="16" font-family="${F}">${it.contract} · ${it.amt}</text>`;
+
+  const tagW=Math.max(it.tag.length*9+32,180);
+  g+=`<rect x="${W-76-tagW}" y="${y+rh/2-18}" width="${tagW}" height="36" rx="18" fill="${it.color}" opacity="${it.linked?0.25:0.12}" stroke="${it.color}" stroke-width="${it.linked?1.5:1}"/>`;
+  g+=`<text x="${W-76-tagW/2}" y="${y+rh/2+6}" text-anchor="middle" fill="${it.color}" font-size="14" font-weight="700" font-family="${F}" letter-spacing="1.2">${it.tag.toUpperCase()}</text>`;
+
+  y+=rh+gap;
+});
+
+y+=18;
+g+=`<rect x="48" y="${y}" width="${W-96}" height="74" rx="8" fill="${C.cy}" opacity="0.08" stroke="${C.cy}" stroke-width="1"/>`;
+g+=`<text x="${W/2}" y="${y+32}" text-anchor="middle" fill="${C.tx}" font-size="18" font-weight="600" font-family="${F}">Six accounts caught pieces. A few saw the relationship.</text>`;
+g+=`<text x="${W/2}" y="${y+58}" text-anchor="middle" fill="${C.cy}" font-size="18" font-weight="700" font-family="${F}">The missing layer was systematic basket detection.</text>`;
+
+return sv(hd('Six Accounts. Six Receipts. Zero Unified Signal.','Real-time chronology of the 3/31 → 5/8 MU+TSM whale trade')+g);
+}
+
+// ─── CHART 2: Price Path ────────────────────────────────────────
+function c2(){
+let g='';
+const ox=140,oy=150,cw=W-300,ch=560;
+
+const pts=[
+  {x:0,y:338,label:'3/31',event:'Whale buys $111M',sub:'MU+TSM ASK sweeps · 6/18 expiry',color:C.cy},
+  {x:1,y:450,label:'4/14',event:'$450 breakout',sub:'+3.4% in 4 hours · qualified',color:C.bl},
+  {x:2,y:519,label:'4/28',event:'DA Davidson $1000 PT',sub:'Highest on Street',color:C.or},
+  {x:3,y:640,label:'5/5',event:'Minervini sells',sub:'"into climactic strength"',color:C.pu},
+  {x:4,y:746.81,label:'5/8',event:'Gamma event',sub:'+15.5% · $14.5B notional · 34× avg',color:C.gn},
+];
+
+const minY=320,maxY=780;
+const sx=i=>ox+(i/4)*cw;
+const sy=v=>oy+(1-((v-minY)/(maxY-minY)))*ch;
+
+[400,500,600,700].forEach(v=>{
+  const y=sy(v);
+  g+=`<line x1="${ox}" y1="${y}" x2="${ox+cw}" y2="${y}" stroke="${C.gr}" stroke-width="0.5"/>`;
+  g+=`<text x="${ox-14}" y="${y+6}" text-anchor="end" fill="${C.mu}" font-size="16" font-family="${F}">$${v}</text>`;
+});
+
+g+=`<line x1="${ox}" y1="${sy(338)}" x2="${ox+cw}" y2="${sy(338)}" stroke="${C.cy}" stroke-width="1" stroke-dasharray="6,6" opacity="0.4"/>`;
+g+=`<text x="${ox+cw-10}" y="${sy(338)-8}" text-anchor="end" fill="${C.cy}" font-size="13" font-family="${F}" opacity="0.7">whale entry $338</text>`;
+
+let areaD=`M${sx(0)},${sy(minY)}`;
+pts.forEach(p=>{areaD+=` L${sx(p.x)},${sy(p.y)}`});
+areaD+=` L${sx(4)},${sy(minY)} Z`;
+g+=`<defs><linearGradient id="ag2" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${C.gn}" stop-opacity="0.18"/><stop offset="100%" stop-color="${C.gn}" stop-opacity="0.01"/></linearGradient></defs>`;
+g+=`<path d="${areaD}" fill="url(#ag2)"/>`;
+let lineD='';
+pts.forEach((p,i)=>{lineD+=(i===0?'M':'L')+sx(p.x)+','+sy(p.y)+' '});
+g+=`<path d="${lineD.trim()}" fill="none" stroke="${C.gn}" stroke-width="3" stroke-linejoin="round"/>`;
+
+pts.forEach((p,i)=>{
+  const px=sx(p.x),py=sy(p.y);
+  g+=`<circle cx="${px}" cy="${py}" r="20" fill="${p.color}" opacity="0.15"/>`;
+  g+=`<circle cx="${px}" cy="${py}" r="8" fill="${C.bg}" stroke="${p.color}" stroke-width="3"/>`;
+  g+=`<circle cx="${px}" cy="${py}" r="4" fill="${p.color}"/>`;
+
+  const priceTxt=`$${p.y.toFixed(p.y%1?2:0)}`;
+  const bw=priceTxt.length*13+22;
+  let bx,by;
+  if(i===0){bx=px+16;by=py-16;}
+  else if(i===4){bx=px-bw-16;by=py-16;}
+  else {bx=px-bw/2;by=py-56;}
+  g+=`<rect x="${bx}" y="${by}" width="${bw}" height="34" rx="5" fill="${C.bg}" stroke="${p.color}" stroke-width="1.5"/>`;
+  g+=`<text x="${bx+bw/2}" y="${by+23}" text-anchor="middle" fill="${p.color}" font-size="17" font-weight="700" font-family="${F}">${priceTxt}</text>`;
+
+  g+=`<text x="${px}" y="${oy+ch+32}" text-anchor="middle" fill="${C.tx}" font-size="17" font-weight="600" font-family="${F}">${p.label}</text>`;
+  g+=`<text x="${px}" y="${oy+ch+58}" text-anchor="middle" fill="${p.color}" font-size="14" font-weight="600" font-family="${F}">${p.event}</text>`;
+  g+=`<text x="${px}" y="${oy+ch+78}" text-anchor="middle" fill="${C.mu}" font-size="13" font-family="${F}">${p.sub}</text>`;
+});
+
+g+=`<rect x="${W-340}" y="116" width="290" height="52" rx="6" fill="${C.gn}" opacity="0.12" stroke="${C.gn}" stroke-width="1.5"/>`;
+g+=`<text x="${W-195}" y="150" text-anchor="middle" fill="${C.gn}" font-size="22" font-weight="700" font-family="${F}">+121% in 6 weeks</text>`;
+
+return sv(hd('MU Price Path: 3/31 → 5/8','$338 whale-entry to $746.81 gamma close')+g);
+}
+
+// ─── CHART 3: Position Ladder ───────────────────────────────────
+function c3(){
+let g='';
+const positions=[
+  {date:'3/31',contract:'MU 400C 6/18',cost:'$58M',basis:'~$16.66 VWAP',type:'Directional · ATM-ish',otm:'18.4% OTM',dte:'79 DTE',color:C.cy,rec:'@FL0WG0D · Bullflow.io',gain:'+1,990%'},
+  {date:'4/1',contract:'MU 900C 9/18',cost:'$913K',basis:'$3.98 avg',type:'Convexity lottery',otm:'143% OTM',dte:'170 DTE',color:C.pu,rec:'@FlowbyBobby · UW',gain:'unrealized'},
+  {date:'4/1',contract:'TSM 370C 6/18',cost:'$53M',basis:'~$14 avg',type:'Cross-ticker pair',otm:'9.5% OTM',dte:'79 DTE',color:C.bl,rec:'@CheddarFlow · @AnthonySandford',gain:'+181%'},
+  {date:'5/8',contract:'MU 610C 1/15/27',cost:'$50M',basis:'$255.43 fill',type:'Long-dated conviction add',otm:'ITM',dte:'252 DTE',color:C.or,rec:'@IncBulls · NexsenTerminal',gain:'live position'},
+];
+
+const top=144,rh=148,gap=14;
+let y=top;
+positions.forEach((p)=>{
+  g+=`<rect x="48" y="${y}" width="${W-96}" height="${rh}" rx="8" fill="${C.cd}" opacity="0.6"/>`;
+  g+=`<rect x="48" y="${y}" width="8" height="${rh}" fill="${p.color}"/>`;
+
+  g+=`<text x="84" y="${y+42}" fill="${p.color}" font-size="26" font-weight="700" font-family="${F}">${p.date}</text>`;
+  g+=`<text x="84" y="${y+78}" fill="${C.tx}" font-size="28" font-weight="700" font-family="${F}">${p.contract}</text>`;
+  g+=`<text x="84" y="${y+108}" fill="${C.mu}" font-size="16" font-family="${F}">${p.type} · ${p.otm} · ${p.dte}</text>`;
+  g+=`<text x="84" y="${y+132}" fill="${C.dm}" font-size="13" font-family="${F}">RECEIPT: ${p.rec}</text>`;
+
+  g+=`<text x="${W-380}" y="${y+42}" fill="${C.mu}" font-size="14" font-family="${F}" letter-spacing="1">PREMIUM</text>`;
+  g+=`<text x="${W-380}" y="${y+78}" fill="${C.tx}" font-size="28" font-weight="700" font-family="${F}">${p.cost}</text>`;
+  g+=`<text x="${W-380}" y="${y+100}" fill="${C.dm}" font-size="14" font-family="${F}">basis ${p.basis}</text>`;
+
+  const gainW=p.gain.length*11+30;
+  g+=`<rect x="${W-76-gainW}" y="${y+rh/2-22}" width="${gainW}" height="44" rx="6" fill="${p.color}" opacity="0.18" stroke="${p.color}" stroke-width="1.5"/>`;
+  g+=`<text x="${W-76-gainW/2}" y="${y+rh/2+6}" text-anchor="middle" fill="${p.color}" font-size="17" font-weight="700" font-family="${F}">${p.gain}</text>`;
+
+  y+=rh+gap;
+});
+
+g+=`<rect x="48" y="${y+12}" width="${W-96}" height="58" rx="8" fill="${C.cy}" opacity="0.08" stroke="${C.cy}" stroke-width="1"/>`;
+g+=`<text x="${W/2}" y="${y+48}" text-anchor="middle" fill="${C.tx}" font-size="18" font-weight="600" font-family="${F}">Four positions · three strikes · three expiries · two tickers · one thesis: <tspan fill="${C.cy}" font-weight="700">AI memory supercycle</tspan></text>`;
+
+return sv(hd('The Position Ladder: Multi-Strike Conviction','3 different option expressions of the same thesis · 3/31 → 5/8')+g);
+}
+
+// ─── META ──────────────────────────────────────────────────────
+const cFn=[c0,c1,c2,c3];
+const LB=['Whale Math','6 Receipts','Price Path','Position Ladder'];
+const FN=['mu_substack_01_whale_math','mu_substack_02_receipts','mu_substack_03_price_path','mu_substack_04_position_ladder'];
+const DESC=[
+  'Section I — anchor visual for the central $58M → $1.21B claim',
+  'Section VIII — receipts chronology (replaces the wall-of-text)',
+  'Section III — catalyst-pinned price journey 3/31 → 5/8',
+  'Section VIII — the multi-strike position ladder reveal'
+];
+
+function toast(msg){
+  const t=document.getElementById('toast');
+  t.textContent=msg;
+  t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),2200);
+}
+
+function dlPNG(i){
+  const s=cFn[i](),cv=document.createElement('canvas');cv.width=W;cv.height=H;
+  const ctx=cv.getContext('2d'),img=new Image(),b=new Blob([s],{type:'image/svg+xml;charset=utf-8'}),u=URL.createObjectURL(b);
+  img.onload=()=>{
+    ctx.drawImage(img,0,0,W,H);
+    URL.revokeObjectURL(u);
+    const a=document.createElement('a');
+    a.download=FN[i]+'.png';
+    a.href=cv.toDataURL('image/png');
+    a.click();
+    toast('Downloaded '+FN[i]+'.png');
+  };
+  img.src=u;
+}
+
+function dlSVG(i){
+  const s=cFn[i](),b=new Blob([s],{type:'image/svg+xml;charset=utf-8'}),u=URL.createObjectURL(b);
+  const a=document.createElement('a');
+  a.download=FN[i]+'.svg';
+  a.href=u;
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(u),100);
+  toast('Downloaded '+FN[i]+'.svg');
+}
+
+function dlAll(){
+  let i=0;
+  toast('Downloading all 4 PNGs...');
+  (function next(){
+    if(i<4){dlPNG(i);i++;setTimeout(next,700)}
+    else{document.getElementById('masterStatus').textContent='✓ all 4 downloaded';document.getElementById('masterStatus').classList.add('visible');}
+  })();
+}
+
+function dlMd(){
+  // Note: this triggers a browser save of the article markdown
+  // In practice the user has docs/research/substack_mu_millionaire_trade.md on disk already
+  toast('Article markdown lives at: docs/research/substack_mu_millionaire_trade.md');
+}
+
+function render(){
+  const el=document.getElementById('charts');
+  let html='';
+  for(let i=0;i<4;i++){
+    html+=`<div class="chart-card">
+      <div class="chart-header">
+        <div>
+          <span class="chart-title">${i+1}. ${LB[i]}</span>
+          <span class="chart-meta">${DESC[i]}</span>
+        </div>
+        <div class="chart-actions">
+          <button class="btn-sm" onclick="dlSVG(${i})">SVG</button>
+          <button class="btn-sm" onclick="dlPNG(${i})">⬇ PNG</button>
+        </div>
+      </div>
+      <div class="chart-body">${cFn[i]()}</div>
+    </div>`;
+  }
+  el.innerHTML=html;
+}
+
+render();
+</script>
+</body>
+</html>

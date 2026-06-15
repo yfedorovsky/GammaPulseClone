@@ -1,0 +1,786 @@
+[
+  {
+    "alert": {
+      "ts": "15:21",
+      "type": "CLUSTER_FLOW_MIXED",
+      "ticker": "SPY",
+      "direction": "MIXED-BEAR",
+      "spot": 734.62,
+      "bull_legs": 60,
+      "bear_legs": 79,
+      "notional": 2174335394,
+      "contract": null,
+      "premium": null,
+      "target": null,
+      "stop": null,
+      "notes": "272 legs $595-$815"
+    },
+    "underlying": {
+      "current_spot": 733.73,
+      "yesterday_close": 738.65,
+      "today_open": 734.78,
+      "today_high": 737.65,
+      "today_low": 731.53,
+      "today_close": null,
+      "intraday_after_alert_high": 737.65,
+      "intraday_after_alert_low": 731.53,
+      "vs_alert_pct": -0.12115107130216797,
+      "alert_day_high": 737.65,
+      "alert_day_low": 731.53,
+      "alert_day_close": 733.73
+    },
+    "opt_eod_519": null,
+    "opt_current": null,
+    "outcome": {
+      "verdict": "DIR_WRONG (info)",
+      "spot_mfe_pct": 0.4206256295772007,
+      "spot_mae_pct": -0.41245814162423733,
+      "option_pct_close_519": null,
+      "option_pct_now": null,
+      "target_hit": false,
+      "stop_hit": false,
+      "reasoning": ""
+    }
+  },
+  {
+    "alert": {
+      "ts": "15:21",
+      "type": "CLUSTER_FLOW_MIXED",
+      "ticker": "IWM",
+      "direction": "MIXED-BEAR",
+      "spot": 273.41,
+      "bull_legs": 14,
+      "bear_legs": 20,
+      "notional": 548394678,
+      "contract": null,
+      "premium": null,
+      "target": null,
+      "stop": null,
+      "notes": "86 legs $225-$280"
+    },
+    "underlying": {
+      "current_spot": 273.0,
+      "yesterday_close": 275.97,
+      "today_open": 273.805,
+      "today_high": 275.075,
+      "today_low": 270.63,
+      "today_close": null,
+      "intraday_after_alert_high": 275.075,
+      "intraday_after_alert_low": 270.63,
+      "vs_alert_pct": -0.14995793862697962,
+      "alert_day_high": 275.075,
+      "alert_day_low": 270.63,
+      "alert_day_close": 273.0
+    },
+    "opt_eod_519": null,
+    "opt_current": null,
+    "outcome": {
+      "verdict": "DIR_WRONG (info)",
+      "spot_mfe_pct": 1.016787974104835,
+      "spot_mae_pct": -0.6089755312534155,
+      "option_pct_close_519": null,
+      "option_pct_now": null,
+      "target_hit": false,
+      "stop_hit": false,
+      "reasoning": ""
+    }
+  },
+  {
+    "alert": {
+      "ts": "15:21",
+      "type": "CLUSTER_FLOW_MIXED",
+      "ticker": "SPX",
+      "direction": "MIXED-BULL",
+      "spot": 7364.6,
+      "bull_legs": 88,
+      "bear_legs": 74,
+      "notional": 5577640760,
+      "contract": null,
+      "premium": null,
+      "target": null,
+      "stop": null,
+      "notes": "318 legs $5800-$7755"
+    },
+    "underlying": {
+      "current_spot": 7353.61,
+      "yesterday_close": 7403.05,
+      "today_open": 7375.75,
+      "today_high": 7395.32,
+      "today_low": 7333.68,
+      "today_close": null,
+      "intraday_after_alert_high": 7395.32,
+      "intraday_after_alert_low": 7333.68,
+      "vs_alert_pct": -0.149227385058261,
+      "alert_day_high": 7395.32,
+      "alert_day_low": 7333.68,
+      "alert_day_close": 7353.61
+    },
+    "opt_eod_519": null,
+    "opt_current": null,
+    "outcome": {
+      "verdict": "DIR_WRONG (info)",
+      "spot_mfe_pct": 0.4171305977242395,
+      "spot_mae_pct": -0.41984629171984994,
+      "option_pct_close_519": null,
+      "option_pct_now": null,
+      "target_hit": false,
+      "stop_hit": false,
+      "reasoning": ""
+    }
+  },
+  {
+    "alert": {
+      "ts": "15:26",
+      "type": "SOE_A",
+      "ticker": "XLE",
+      "direction": "BULL",
+      "spot": 61.23,
+      "target": 65.0,
+      "stop": 60.12,
+      "contract": {
+        "strike": 62,
+        "exp": "2026-05-29",
+        "right": "call",
+        "dte": 10
+      },
+      "premium": 0.9,
+      "score": 4.6,
+      "fade_watch": false,
+      "notes": "SUPPORT BOUNCE"
+    },
+    "underlying": {
+      "current_spot": 61.29,
+      "yesterday_close": 60.58,
+      "today_open": 60.81,
+      "today_high": 61.49,
+      "today_low": 60.295,
+      "today_close": null,
+      "intraday_after_alert_high": 61.49,
+      "intraday_after_alert_low": 60.295,
+      "vs_alert_pct": 0.09799118079373229,
+      "alert_day_high": 61.49,
+      "alert_day_low": 60.295,
+      "alert_day_close": 61.29
+    },
+    "opt_eod_519": null,
+    "opt_current": {
+      "bid": 0.76,
+      "ask": 0.98,
+      "mid": 0.87,
+      "last": 0.74,
+      "volume": 455,
+      "oi": 1733
+    },
+    "outcome": {
+      "verdict": "N/A",
+      "spot_mfe_pct": 0.4246284501061655,
+      "spot_mae_pct": -1.5270292340355955,
+      "option_pct_close_519": null,
+      "option_pct_now": -3.333333333333336,
+      "target_hit": false,
+      "stop_hit": false,
+      "reasoning": ""
+    }
+  },
+  {
+    "alert": {
+      "ts": "15:26",
+      "type": "SOE_AP_FADE",
+      "ticker": "GOOGL",
+      "direction": "BULL",
+      "spot": 388.95,
+      "target": 410.0,
+      "stop": 382.87,
+      "contract": {
+        "strike": 395,
+        "exp": "2026-05-29",
+        "right": "call",
+        "dte": 10
+      },
+      "premium": 6.05,
+      "score": 5.6,
+      "fade_watch": true,
+      "notes": "MAGNET BREAKOUT, FADE WATCH (20% 1d hit historical)"
+    },
+    "underlying": {
+      "current_spot": 387.66,
+      "yesterday_close": 396.94,
+      "today_open": 396.96,
+      "today_high": 397.15,
+      "today_low": 386.11,
+      "today_close": null,
+      "intraday_after_alert_high": 397.15,
+      "intraday_after_alert_low": 386.11,
+      "vs_alert_pct": -0.33166216737368903,
+      "alert_day_high": 397.15,
+      "alert_day_low": 386.11,
+      "alert_day_close": 387.66
+    },
+    "opt_eod_519": null,
+    "opt_current": {
+      "bid": 5.0,
+      "ask": 5.5,
+      "mid": 5.25,
+      "last": 5.15,
+      "volume": 757,
+      "oi": 551
+    },
+    "outcome": {
+      "verdict": "N/A",
+      "spot_mfe_pct": 2.108240133693274,
+      "spot_mae_pct": -0.730170973132787,
+      "option_pct_close_519": null,
+      "option_pct_now": -13.223140495867765,
+      "target_hit": false,
+      "stop_hit": false,
+      "reasoning": ""
+    }
+  },
+  {
+    "alert": {
+      "ts": "15:47",
+      "type": "CLUSTER_FLOW_BULL",
+      "ticker": "VIX",
+      "direction": "BULL",
+      "spot": 18.02,
+      "bull_legs": 12,
+      "bear_legs": 4,
+      "notional": 105903926,
+      "contract": null,
+      "premium": null,
+      "target": null,
+      "stop": null,
+      "notes": "36 legs $20-$65"
+    },
+    "underlying": {
+      "current_spot": 18.06,
+      "yesterday_close": 17.82,
+      "today_open": 18.01,
+      "today_high": 18.36,
+      "today_low": 17.66,
+      "today_close": null,
+      "intraday_after_alert_high": 18.36,
+      "intraday_after_alert_low": 17.66,
+      "vs_alert_pct": 0.22197558268589984,
+      "alert_day_high": 18.36,
+      "alert_day_low": 17.66,
+      "alert_day_close": 18.06
+    },
+    "opt_eod_519": null,
+    "opt_current": null,
+    "outcome": {
+      "verdict": "DIR_WRONG (info)",
+      "spot_mfe_pct": 1.8867924528301878,
+      "spot_mae_pct": -1.997780244173138,
+      "option_pct_close_519": null,
+      "option_pct_now": null,
+      "target_hit": false,
+      "stop_hit": false,
+      "reasoning": ""
+    }
+  },
+  {
+    "alert": {
+      "ts": "15:47",
+      "type": "CLUSTER_FLOW_BULL",
+      "ticker": "NDX",
+      "direction": "BULL",
+      "spot": 29068.53,
+      "bull_legs": 14,
+      "bear_legs": 0,
+      "notional": 410202902,
+      "contract": null,
+      "premium": null,
+      "target": null,
+      "stop": null,
+      "notes": "30 legs $28000-$29150"
+    },
+    "underlying": {
+      "current_spot": 29031.31,
+      "yesterday_close": 28818.844,
+      "today_open": null,
+      "today_high": null,
+      "today_low": null,
+      "today_close": null,
+      "intraday_after_alert_high": 29031.919,
+      "intraday_after_alert_low": 28567.162,
+      "vs_alert_pct": -0.1280422505025109,
+      "alert_day_high": 29031.919,
+      "alert_day_low": 28567.162,
+      "alert_day_close": 28818.844
+    },
+    "opt_eod_519": null,
+    "opt_current": null,
+    "outcome": {
+      "verdict": "DIR_WRONG (info)",
+      "spot_mfe_pct": -0.125947201320456,
+      "spot_mae_pct": -1.7247793404069578,
+      "option_pct_close_519": null,
+      "option_pct_now": null,
+      "target_hit": false,
+      "stop_hit": false,
+      "reasoning": ""
+    }
+  },
+  {
+    "alert": {
+      "ts": "15:47",
+      "type": "SOE_A_FADE",
+      "ticker": "V",
+      "direction": "BULL",
+      "spot": 330.18,
+      "target": 350.0,
+      "stop": 330.0,
+      "contract": {
+        "strike": 332.5,
+        "exp": "2026-05-29",
+        "right": "call",
+        "dte": 10
+      },
+      "premium": 3.88,
+      "score": 5.1,
+      "fade_watch": true,
+      "notes": "MAGNET BREAKOUT, FADE WATCH"
+    },
+    "underlying": {
+      "current_spot": 329.91,
+      "yesterday_close": 332.64,
+      "today_open": 333.33,
+      "today_high": 335.17,
+      "today_low": 329.49,
+      "today_close": null,
+      "intraday_after_alert_high": 335.17,
+      "intraday_after_alert_low": 329.49,
+      "vs_alert_pct": -0.08177357804833175,
+      "alert_day_high": 335.17,
+      "alert_day_low": 329.49,
+      "alert_day_close": 329.91
+    },
+    "opt_eod_519": null,
+    "opt_current": {
+      "bid": 3.45,
+      "ask": 3.9,
+      "mid": 3.675,
+      "last": 4.45,
+      "volume": 33,
+      "oi": 159
+    },
+    "outcome": {
+      "verdict": "LOSS (stop hit)",
+      "spot_mfe_pct": 1.5112968683748287,
+      "spot_mae_pct": -0.20897692167908344,
+      "option_pct_close_519": null,
+      "option_pct_now": -5.283505154639177,
+      "target_hit": false,
+      "stop_hit": true,
+      "reasoning": ""
+    }
+  },
+  {
+    "alert": {
+      "ts": "15:56",
+      "type": "FLOW_MEDIUM",
+      "ticker": "IBIT",
+      "direction": "BEAR",
+      "spot": 43.52,
+      "vol": 5240,
+      "oi": 9686,
+      "notional": 5895000,
+      "contract": {
+        "strike": 40,
+        "exp": "2027-06-17",
+        "right": "call"
+      },
+      "premium": null,
+      "target": null,
+      "stop": null,
+      "notes": "CALL SELLING (covered-call/roll), 0.5x V/OI"
+    },
+    "underlying": {
+      "current_spot": 43.5,
+      "yesterday_close": 43.53,
+      "today_open": 43.34,
+      "today_high": 43.63,
+      "today_low": 43.075,
+      "today_close": null,
+      "intraday_after_alert_high": 43.63,
+      "intraday_after_alert_low": 43.075,
+      "vs_alert_pct": -0.04595588235294836,
+      "alert_day_high": 43.63,
+      "alert_day_low": 43.075,
+      "alert_day_close": 43.5
+    },
+    "opt_eod_519": null,
+    "opt_current": {
+      "bid": 11.0,
+      "ask": 11.45,
+      "mid": 11.225,
+      "last": 11.22,
+      "volume": 5241,
+      "oi": 9686
+    },
+    "outcome": {
+      "verdict": "DIR_RIGHT (info)",
+      "spot_mfe_pct": 1.0225183823529418,
+      "spot_mae_pct": -0.25275735294117513,
+      "option_pct_close_519": null,
+      "option_pct_now": null,
+      "target_hit": false,
+      "stop_hit": false,
+      "reasoning": ""
+    }
+  },
+  {
+    "alert": {
+      "ts": "15:56",
+      "type": "SETUP_FORMING",
+      "ticker": "MU",
+      "direction": "BULL",
+      "spot": 707.45,
+      "target": 800.0,
+      "stop": 700.0,
+      "contract": {
+        "strike": 730,
+        "exp": "2026-05-29",
+        "right": "call",
+        "dte": 10
+      },
+      "premium": 30.5,
+      "score": 7,
+      "notes": "MAGNET UP, SEMI_MEMORY_HBM basket"
+    },
+    "underlying": {
+      "current_spot": 698.74,
+      "yesterday_close": 681.54,
+      "today_open": 665.58,
+      "today_high": 725.95,
+      "today_low": 652.21,
+      "today_close": null,
+      "intraday_after_alert_high": 725.95,
+      "intraday_after_alert_low": 652.21,
+      "vs_alert_pct": -1.2311824157184303,
+      "alert_day_high": 725.95,
+      "alert_day_low": 652.21,
+      "alert_day_close": 698.74
+    },
+    "opt_eod_519": null,
+    "opt_current": {
+      "bid": 29.2,
+      "ask": 30.4,
+      "mid": 29.799999999999997,
+      "last": 29.5,
+      "volume": 497,
+      "oi": 587
+    },
+    "outcome": {
+      "verdict": "LOSS (stop hit)",
+      "spot_mfe_pct": 2.615025796876104,
+      "spot_mae_pct": -7.808325676726271,
+      "option_pct_close_519": null,
+      "option_pct_now": -2.295081967213124,
+      "target_hit": false,
+      "stop_hit": true,
+      "reasoning": ""
+    }
+  },
+  {
+    "alert": {
+      "ts": "15:57",
+      "type": "ZERO_DTE_EMA",
+      "ticker": "QQQ",
+      "direction": "BULL",
+      "spot": 702.98,
+      "target": 730.0,
+      "stop": 700.32,
+      "contract": {
+        "strike": 705,
+        "exp": "2026-05-19",
+        "right": "call",
+        "dte": 0
+      },
+      "premium": null,
+      "score": null,
+      "notes": "TREND DAY, LOW VOLUME"
+    },
+    "underlying": {
+      "current_spot": 701.53,
+      "yesterday_close": 705.88,
+      "today_open": 699.81,
+      "today_high": 706.49,
+      "today_low": 695.25,
+      "today_close": null,
+      "intraday_after_alert_high": 706.49,
+      "intraday_after_alert_low": 695.25,
+      "vs_alert_pct": -0.20626475859911314,
+      "alert_day_high": 706.49,
+      "alert_day_low": 695.25,
+      "alert_day_close": 701.53
+    },
+    "opt_eod_519": null,
+    "opt_current": {
+      "bid": 0,
+      "ask": 0.01,
+      "mid": 0.01,
+      "last": 0.01,
+      "volume": 334921,
+      "oi": 5763
+    },
+    "outcome": {
+      "verdict": "LOSS (stop hit)",
+      "spot_mfe_pct": 0.4993029673674914,
+      "spot_mae_pct": -1.099604540669723,
+      "option_pct_close_519": null,
+      "option_pct_now": null,
+      "target_hit": false,
+      "stop_hit": true,
+      "reasoning": ""
+    }
+  },
+  {
+    "alert": {
+      "ts": "15:57",
+      "type": "ZERO_DTE_EMA",
+      "ticker": "SPY",
+      "direction": "BULL",
+      "spot": 734.62,
+      "target": 740.0,
+      "stop": 732.33,
+      "contract": {
+        "strike": 735,
+        "exp": "2026-05-19",
+        "right": "call",
+        "dte": 0
+      },
+      "premium": null,
+      "score": null,
+      "notes": "Volume confirmed"
+    },
+    "underlying": {
+      "current_spot": 733.73,
+      "yesterday_close": 738.65,
+      "today_open": 734.78,
+      "today_high": 737.65,
+      "today_low": 731.53,
+      "today_close": null,
+      "intraday_after_alert_high": 737.65,
+      "intraday_after_alert_low": 731.53,
+      "vs_alert_pct": -0.12115107130216797,
+      "alert_day_high": 737.65,
+      "alert_day_low": 731.53,
+      "alert_day_close": 733.73
+    },
+    "opt_eod_519": null,
+    "opt_current": {
+      "bid": 0,
+      "ask": 0.01,
+      "mid": 0.01,
+      "last": 0.01,
+      "volume": 582056,
+      "oi": 6592
+    },
+    "outcome": {
+      "verdict": "LOSS (stop hit)",
+      "spot_mfe_pct": 0.41245814162423733,
+      "spot_mae_pct": -0.4206256295772007,
+      "option_pct_close_519": null,
+      "option_pct_now": null,
+      "target_hit": false,
+      "stop_hit": true,
+      "reasoning": ""
+    }
+  },
+  {
+    "alert": {
+      "ts": "16:12",
+      "type": "FLOW_MEDIUM",
+      "ticker": "USO",
+      "direction": "BULL",
+      "spot": 152.9,
+      "vol": 1210,
+      "oi": 3069,
+      "notional": 3206500,
+      "contract": {
+        "strike": 130,
+        "exp": "2026-06-18",
+        "right": "call"
+      },
+      "premium": null,
+      "target": null,
+      "stop": null,
+      "notes": "CALL BUYING but OI dominates (weak signal)"
+    },
+    "underlying": {
+      "current_spot": 152.96,
+      "yesterday_close": 149.29,
+      "today_open": 152.878,
+      "today_high": 153.5,
+      "today_low": 150.22,
+      "today_close": null,
+      "intraday_after_alert_high": 153.5,
+      "intraday_after_alert_low": 150.22,
+      "vs_alert_pct": 0.039241334205364464,
+      "alert_day_high": 153.5,
+      "alert_day_low": 150.22,
+      "alert_day_close": 152.96
+    },
+    "opt_eod_519": null,
+    "opt_current": {
+      "bid": 25.1,
+      "ask": 26.55,
+      "mid": 25.825000000000003,
+      "last": 26.27,
+      "volume": 1215,
+      "oi": 3069
+    },
+    "outcome": {
+      "verdict": "DIR_WRONG (info)",
+      "spot_mfe_pct": 0.3924133420536261,
+      "spot_mae_pct": -1.7527795945062177,
+      "option_pct_close_519": null,
+      "option_pct_now": null,
+      "target_hit": false,
+      "stop_hit": false,
+      "reasoning": ""
+    }
+  },
+  {
+    "alert": {
+      "ts": "16:23",
+      "type": "CLUSTER_FLOW_BEAR",
+      "ticker": "GLD",
+      "direction": "BEAR",
+      "spot": 412.62,
+      "bull_legs": 2,
+      "bear_legs": 8,
+      "notional": 88142310,
+      "contract": null,
+      "premium": null,
+      "target": null,
+      "stop": null,
+      "notes": "14 legs $370-$600"
+    },
+    "underlying": {
+      "current_spot": 411.5,
+      "yesterday_close": 418.43,
+      "today_open": 412.45,
+      "today_high": 414.47,
+      "today_low": 409.8808,
+      "today_close": null,
+      "intraday_after_alert_high": 414.47,
+      "intraday_after_alert_low": 409.8808,
+      "vs_alert_pct": -0.27143618826038596,
+      "alert_day_high": 414.47,
+      "alert_day_low": 409.8808,
+      "alert_day_close": 411.5
+    },
+    "opt_eod_519": null,
+    "opt_current": null,
+    "outcome": {
+      "verdict": "DIR_WRONG (info)",
+      "spot_mfe_pct": 0.6638553632882513,
+      "spot_mae_pct": -0.44835441810867693,
+      "option_pct_close_519": null,
+      "option_pct_now": null,
+      "target_hit": false,
+      "stop_hit": false,
+      "reasoning": ""
+    }
+  },
+  {
+    "alert": {
+      "ts": "16:23",
+      "type": "CLUSTER_FLOW_BULL",
+      "ticker": "SOXL",
+      "direction": "BULL",
+      "spot": 155.45,
+      "bull_legs": 12,
+      "bear_legs": 2,
+      "notional": 31122024,
+      "contract": null,
+      "premium": null,
+      "target": null,
+      "stop": null,
+      "notes": "14 legs $80-$200"
+    },
+    "underlying": {
+      "current_spot": 151.89,
+      "yesterday_close": 151.75,
+      "today_open": 141.24,
+      "today_high": 160.6,
+      "today_low": 135.02,
+      "today_close": null,
+      "intraday_after_alert_high": 160.6,
+      "intraday_after_alert_low": 135.02,
+      "vs_alert_pct": -2.2901254422643955,
+      "alert_day_high": 160.6,
+      "alert_day_low": 135.02,
+      "alert_day_close": 151.89
+    },
+    "opt_eod_519": null,
+    "opt_current": null,
+    "outcome": {
+      "verdict": "DIR_WRONG (info)",
+      "spot_mfe_pct": 3.3129623673206856,
+      "spot_mae_pct": -13.142489546477954,
+      "option_pct_close_519": null,
+      "option_pct_now": null,
+      "target_hit": false,
+      "stop_hit": false,
+      "reasoning": ""
+    }
+  },
+  {
+    "alert": {
+      "ts": "16:23",
+      "type": "FLOW_MEDIUM",
+      "ticker": "SQQQ",
+      "direction": "BULL",
+      "spot": 44.12,
+      "vol": 1474,
+      "oi": 0,
+      "notional": 340494,
+      "contract": {
+        "strike": 44,
+        "exp": "2026-06-12",
+        "right": "call"
+      },
+      "premium": null,
+      "target": null,
+      "stop": null,
+      "notes": "BUY CALLS, OI=0 fresh-strike"
+    },
+    "underlying": {
+      "current_spot": 44.37,
+      "yesterday_close": 43.54,
+      "today_open": 44.68,
+      "today_high": 45.53,
+      "today_low": 43.455,
+      "today_close": null,
+      "intraday_after_alert_high": 45.53,
+      "intraday_after_alert_low": 43.455,
+      "vs_alert_pct": 0.5666364460562103,
+      "alert_day_high": 45.53,
+      "alert_day_low": 43.455,
+      "alert_day_close": 44.37
+    },
+    "opt_eod_519": null,
+    "opt_current": {
+      "bid": 3.1,
+      "ask": 3.6,
+      "mid": 3.35,
+      "last": 3.25,
+      "volume": 91,
+      "oi": 142
+    },
+    "outcome": {
+      "verdict": "DIR_WRONG (info)",
+      "spot_mfe_pct": 3.195829555757035,
+      "spot_mae_pct": -1.5072529465095177,
+      "option_pct_close_519": null,
+      "option_pct_now": null,
+      "target_hit": false,
+      "stop_hit": false,
+      "reasoning": ""
+    }
+  }
+]
