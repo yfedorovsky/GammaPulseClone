@@ -594,6 +594,87 @@ def _oldest_greeks_age(per_strike: dict) -> float:
     return round(now - oldest_ts, 1)
 
 
+def _compute_floor_ceiling(
+    per_strike: dict[float, dict[str, Any]],
+    strikes_sorted: list[float],
+    king_strike: float,
+    spot: float,
+) -> tuple[float | None, float | None]:
+    """Pure helper: pick the gamma FLOOR and CEILING strikes from a per-strike
+    net_gex map, given the king and spot.
+
+    Returns ``(floor_strike, ceiling_strike)`` where either may be ``None`` when
+    no qualifying positive-GEX wall exists in the search window. ``None`` means
+    "no floor/ceiling exists" — it is NOT the same as a $0 strike and callers
+    must treat it as absence, not as a real level at zero dollars.
+
+    Semantics (king-relative framing, see compute_exp_data for rationale):
+      - king > spot: CEIL = biggest +GEX above king; FLOOR = biggest +GEX below spot
+      - king < spot: FLOOR = biggest +GEX below king; CEIL  = biggest +GEX above spot
+      - king ≈ spot: both measured from spot directly
+
+    Primary search caps at 10% above/below spot. If nothing qualifies, a relaxed
+    15% fallback runs for BOTH the ceiling and the floor — independent of king
+    position (the floor fallback used to be wrongly gated on ``king < spot``,
+    which skipped it whenever the king sat above spot).
+    """
+    MAX_CEILING_DIST_PCT = 0.10   # 10% above spot
+    MAX_FLOOR_DIST_PCT = 0.10     # 10% below spot
+    ceiling_max = spot * (1.0 + MAX_CEILING_DIST_PCT)
+    floor_min = spot * (1.0 - MAX_FLOOR_DIST_PCT)
+
+    king_above_spot = king_strike > spot
+    king_below_spot = king_strike < spot
+    ceil_search_floor = max(spot, king_strike) if king_above_spot else spot
+    floor_search_ceil = min(spot, king_strike) if king_below_spot else spot
+
+    floor_strike: float | None = None
+    ceiling_strike: float | None = None
+    best_below = 0.0
+    best_above = 0.0
+    for s in strikes_sorted:
+        if s == king_strike:
+            continue
+        g = per_strike[s]["net_gex"]
+        if g <= 0:
+            continue
+        # Floor: biggest +GEX strictly below floor_search_ceil, within window
+        if s < floor_search_ceil and s >= floor_min and g > best_below:
+            best_below = g
+            floor_strike = s
+        # Ceiling: biggest +GEX strictly above ceil_search_floor, within window
+        elif s > ceil_search_floor and s <= ceiling_max and g > best_above:
+            best_above = g
+            ceiling_strike = s
+
+    # Fallbacks if nothing found within window
+    if ceiling_strike is None:
+        # Fall back to strongest +GEX above spot, still within 15% cap
+        # (relaxed fallback window since no signif. level exists in 10%)
+        ceiling_max_fallback = spot * 1.15
+        best_above = 0.0
+        for s in strikes_sorted:
+            if (s > spot and s <= ceiling_max_fallback
+                    and s != king_strike
+                    and per_strike[s]["net_gex"] > best_above):
+                best_above = per_strike[s]["net_gex"]
+                ceiling_strike = s
+    if floor_strike is None:
+        # Relaxed floor fallback: allow 15% below spot if nothing within 10%.
+        # Applies regardless of king position (previously skipped when the king
+        # was above spot, which left the floor as None even when a deeper +GEX
+        # wall existed in the 10-15% band).
+        floor_min_fallback = spot * 0.85
+        for s in sorted(per_strike.keys(), reverse=True):
+            if (s < spot and s >= floor_min_fallback
+                    and s != king_strike
+                    and per_strike[s]["net_gex"] > 0):
+                floor_strike = s
+                break
+
+    return floor_strike, ceiling_strike
+
+
 def compute_exp_data(
     contracts: list[dict[str, Any]], spot: float, oi_mode: str = "effective",
 ) -> dict[str, Any]:
@@ -900,17 +981,6 @@ def compute_exp_data(
     king_gex_abs = abs(per_strike[king_strike]["net_gex"]) or 1
     significance_threshold = king_gex_abs * 0.03  # 3% of king
 
-    # Sanity cap on ceiling/floor distance from spot (added 2026-04-20).
-    # AVGO had ceiling $510 when trading $397-406 (28% above spot) because
-    # a far-OTM +GEX cluster exceeded the significance threshold. Ceilings
-    # that far from spot are not tradeable intraday levels — they act as
-    # "blue sky" zones, making SELL_POP signals impossible to ever fire.
-    # Cap search window at 10% above/below spot for primary selection.
-    MAX_CEILING_DIST_PCT = 0.10   # 10% above spot
-    MAX_FLOOR_DIST_PCT = 0.10     # 10% below spot
-    ceiling_max = spot * (1.0 + MAX_CEILING_DIST_PCT)
-    floor_min = spot * (1.0 - MAX_FLOOR_DIST_PCT)
-
     # Ceiling / floor are "next significant wall BEYOND the king" semantically:
     #   - If king > spot: CEIL = biggest +GEX ABOVE king (next resistance past magnet)
     #                     FLOOR = biggest +GEX below spot (support, king isn't in the way)
@@ -924,51 +994,15 @@ def compute_exp_data(
     # though it's conceptually INSIDE the king's magnet range, not beyond it.
     #
     # Matches GammaPulse Pro behavior (verified 2026-04-21 vs SPX 4/22).
-    king_above_spot = king_strike > spot
-    king_below_spot = king_strike < spot
-    ceil_search_floor = max(spot, king_strike) if king_above_spot else spot
-    floor_search_ceil = min(spot, king_strike) if king_below_spot else spot
-
-    floor_strike = None
-    ceiling_strike = None
-    best_below = 0.0
-    best_above = 0.0
-    for s in strikes_sorted:
-        if s == king_strike:
-            continue
-        g = per_strike[s]["net_gex"]
-        if g <= 0:
-            continue
-        # Floor: biggest +GEX strictly below floor_search_ceil, within window
-        if s < floor_search_ceil and s >= floor_min and g > best_below:
-            best_below = g
-            floor_strike = s
-        # Ceiling: biggest +GEX strictly above ceil_search_floor, within window
-        elif s > ceil_search_floor and s <= ceiling_max and g > best_above:
-            best_above = g
-            ceiling_strike = s
-
-    # Fallbacks if nothing found within window
-    if ceiling_strike is None:
-        # Fall back to strongest +GEX above spot, still within 15% cap
-        # (relaxed fallback window since no signif. level exists in 10%)
-        ceiling_max_fallback = spot * 1.15
-        best_above = 0.0
-        for s in strikes_sorted:
-            if (s > spot and s <= ceiling_max_fallback
-                    and s != king_strike
-                    and per_strike[s]["net_gex"] > best_above):
-                best_above = per_strike[s]["net_gex"]
-                ceiling_strike = s
-    if floor_strike is None and king_strike < spot:
-        # Relaxed floor fallback: allow 15% below spot if nothing within 10%
-        floor_min_fallback = spot * 0.85
-        for s in sorted(per_strike.keys(), reverse=True):
-            if (s < spot and s >= floor_min_fallback
-                    and s != king_strike
-                    and per_strike[s]["net_gex"] > 0):
-                floor_strike = s
-                break
+    #
+    # Sanity cap (2026-04-20): primary search is capped at 10% above/below spot;
+    # a relaxed 15% fallback runs if nothing qualifies in 10% (see helper). The
+    # search returns None — not 0 — when no +GEX wall exists, so "no floor" is
+    # honestly distinguishable from a real $0 level (today's SPY: king 741 above
+    # spot 737.76, entire sub-spot region negative GEX → floor is genuinely None).
+    floor_strike, ceiling_strike = _compute_floor_ceiling(
+        per_strike, strikes_sorted, king_strike, spot
+    )
 
     # Gatekeepers: top 6 by |net_gex| excluding king
     gk = sorted(
@@ -1121,7 +1155,10 @@ def compute_exp_data(
         "structure_score": structure_score,      # 0 calm .. 100 short-gamma/risk-off
         "structure_risk_off": structure_risk_off,  # bool — bear-day guardrail input
         "ceiling": ceiling_strike or 0,
-        "floor": floor_strike or 0,
+        # floor: emit None (JSON null) when NO +GEX wall exists below spot, so
+        # "no floor" is honestly distinguishable from a real $0 level. All
+        # consumers guard with truthiness / `or 0` / `or '?'` (verified #68).
+        "floor": floor_strike,
         "gatekeepers": sorted(gk),
         "pos_gex": total_pos,
         "neg_gex": total_neg,
