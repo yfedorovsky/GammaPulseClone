@@ -43,6 +43,7 @@ from __future__ import annotations
 import csv
 import io
 import sqlite3
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -123,13 +124,7 @@ def open_store(db_path: Path | str = DEFAULT_DB) -> sqlite3.Connection:
     return con
 
 
-def _http_csv(url: str, timeout: float) -> Optional[list[dict]]:
-    """GET -> CSV rows as dicts; None on failure; [] on no-data.
-
-    ThetaData signals "no data" inconsistently: some shapes return HTTP 200
-    with a text body, others HTTP 472 — both are CLEAN EMPTIES, not failures
-    (treating 472 as FAIL caused 370 phantom fails + endless retries on
-    pre-listing LEAP weeks, diagnosed 2026-06-10)."""
+def _http_csv_inner(url: str, timeout: float) -> Optional[list[dict]]:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             if resp.status != 200:
@@ -142,6 +137,35 @@ def _http_csv(url: str, timeout: float) -> Optional[list[dict]]:
     if text.startswith("No data"):
         return []
     return list(csv.DictReader(io.StringIO(text)))
+
+
+def _http_csv(url: str, timeout: float) -> Optional[list[dict]]:
+    """GET -> CSV rows as dicts; None on failure; [] on no-data.
+
+    ThetaData signals "no data" inconsistently: some shapes return HTTP 200
+    with a text body, others HTTP 472 — both are CLEAN EMPTIES, not failures
+    (treating 472 as FAIL caused 370 phantom fails + endless retries on
+    pre-listing LEAP weeks, diagnosed 2026-06-10).
+
+    HARD WALL-CLOCK DEADLINE (diagnosed 2026-06-11): urllib's ``timeout`` is
+    per-socket-operation, NOT total. A huge ETF chunk (XLE-class) that trickles
+    in slowly never trips it and hangs the whole serial fetch forever — this
+    silently stalled the run at the ETF-heavy tail three times. Run the request
+    in a daemon thread and abandon it past ``timeout * 2``: a hang becomes a
+    clean None (ledger FAIL, loop continues) instead of a frozen job. The
+    abandoned thread dies with the process; the ledger means the chunk simply
+    retries next run."""
+    box: dict = {}
+
+    def _worker():
+        box["r"] = _http_csv_inner(url, timeout)
+
+    th = threading.Thread(target=_worker, daemon=True)
+    th.start()
+    th.join(timeout * 2.0)
+    if th.is_alive():
+        return None   # hung past the hard deadline — treat as failure.
+    return box.get("r")
 
 
 def list_expirations(root: str, cfg: FetchConfig) -> list[str]:
