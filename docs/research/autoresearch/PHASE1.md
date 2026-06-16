@@ -495,3 +495,15 @@ hedging (GLD/SMH/RUT) and non-theme names are flat-to-negative. So WHALE
 "passing every hard gate" is **universe-conditional and likely single-regime**,
 not a general edge. Full analysis + the deliberate decision NOT to slice for a
 positive sub-universe: REPLAY_FINDINGS.md "Robustness" section.
+
+**FULL-UNIVERSE CONFIRMATION (2026-06-12, valid re-run after a terminal fix):**
+all 113 banked roots, clean labels. WHALE dilutes to ZERO — h0 **−0.009 R**,
+h3 **+0.0006 R** (n=1864); INFORMED worse at breadth — h0 **−0.475**, h3
+**−0.615 R** (n>3,300, 0% CPCV positive). The trajectory +0.108→+0.065→+0.0006
+(17→38→113 roots, h3) is the definitive close: whale-following is real only in
+~10 AI/semis 2026 names, indistinguishable from zero pooled across the market;
+all gates reject (SPA no longer beats baseline, h3 LABEL_CONF artifact fires).
+First full-universe attempt was a multi-terminal "Invalid session ID"
+contamination (cached as empty tape) — caught via coverage, fixed (`d4c05ad`,
+sources never cache failures), purged, re-run clean. REPLAY_FINDINGS.md has the
+full matrix + the dilution table.

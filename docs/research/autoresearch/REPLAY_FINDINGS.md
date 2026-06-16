@@ -1,8 +1,9 @@
 # Historical Replay — Findings
 
-**Status:** top-17 verdicts + 38-root robustness COMPLETE (2026-06-11); the
-edge does NOT generalize past the whale-dense mega-caps (see Robustness
-section — likely thematic/single-regime). 133-root tail still fetching. Charter:
+**Status:** COMPLETE (2026-06-12) — full 113-root YTD verdict in. WHALE edge
+dilutes monotonically to ZERO (+0.108 -> +0.065 -> +0.0006 R as the universe
+widens); INFORMED worse at breadth (-0.48/-0.62 R). Definitive: whale-following
+is NOT a general edge — real only in ~10 AI/semis 2026 names. Charter:
 `HISTORICAL_REPLAY.md`. Code: `autoresearch/replay/` + `scripts/run_historical_replay.py`.
 
 ## The durable asset (goal #2 — done)
@@ -153,6 +154,50 @@ a non-AI-capex regime. Also: ETF/index roots (GLD/SMH/RUT and class) should be
 added to the WHALE exclusion list on the live side regardless — MM hedging is
 not directional conviction (proposal, operator decides). Per-root table:
 `autoresearch/_artifacts/per_root_h3.log`.
+
+### Full universe — 113 roots, YTD (the definitive confirmation)
+
+Re-ran all four cells on every root with a complete YTD chain (113). The FIRST
+attempt was contaminated — a two-instance ThetaData terminal returned "Invalid
+session ID" on ~4,900 tape lookups which the source cached as empty `[]`, so the
+new roots silently dropped and the result collapsed back to the 38-root set (a
+near-identical n=1153, +0.065). Caught via the coverage line (`n_no_tape: 4851`),
+not reported as a finding. Fixed (tape/NBBO sources never cache failures — commit
+`d4c05ad`), purged ~22.5K poisoned cache files, restarted to a single terminal,
+re-ran clean (`n_no_tape: 1-4`).
+
+| Cohort·hold | n | Mean R | WR | CPCV %+ | SPA p | LABEL_CONF | Outcome |
+|---|---|---|---|---|---|---|---|
+| WHALE·0d (113) | 1864 | **−0.009** | 30.4% | 33% | 0.126 ✗ | HIGH (85%/0% inv) | REJECT (all) |
+| WHALE·3d (113) | 1864 | **+0.0006** | 40.1% | 47% | 0.140 ✗ | HIGH but **ARTIFACT** (confirmed −0.232) | REJECT (all) |
+| INFORMED·0d (113) | 3339 | **−0.475** | 16.4% | 0% | 0.438 ✗ | HIGH (87%/2%) | REJECT (all) |
+| INFORMED·3d (113) | 3327 | **−0.615** | 17.7% | 0% | 0.460 ✗ | HIGH (93%/2%) | REJECT (all) |
+
+**The dilution trajectory is now complete and VALID:**
+
+| Universe | WHALE h0 | WHALE h3 |
+|---|---|---|
+| 17 mega-caps | +0.043 | **+0.108** |
+| 38 roots | +0.008 | +0.065 |
+| **113 (full)** | **−0.009** | **+0.0006** |
+
+**Verdict (final).** The WHALE edge dilutes monotonically to ZERO as the universe
+widens — +0.108 → +0.065 → +0.0006 R at hold-3, and slightly NEGATIVE (−0.009) at
+hold-0. On the full universe it fails every gate, not just the PBO/DSR
+diagnostics: SPA no longer beats the baseline (p=0.13-0.14), CPCV is ~50/50, and
+at h3 the LABEL_CONF artifact test fires hard (full-cohort +0.001 but the
+tape-confirmed subset SIGN-FLIPS to −0.232, n=50). This is the definitive,
+clean-label, 1,864-cluster confirmation of the 38-root finding: **whale-following
+is NOT a general edge.** It was real only in the ~10 AI/semis capex names (MRVL/
+INTC/QCOM/ARM/NBIS/AMD/NVDA/NOW/IREN/DELL) in a single 2026 regime; pooled across
+the market it is indistinguishable from zero. INFORMED gets WORSE with breadth
+(−0.475/−0.615 R, 0% CPCV positive, n>3,300) — cheap short-dated OTM flow is a
+broad, persistent money-loser as a bracketed trade.
+
+The engine did its job: it caught (a) the over-claim at 38 roots, then (b) a data-
+contamination artifact that would have *falsely* read as confirmation, and only
+then delivered the honest verdict. Labels were HIGH-confidence (85-93% tape-
+confirmed) throughout — this is a real economic verdict, not a labeling problem.
 
 ### Ops log (for the record)
 
