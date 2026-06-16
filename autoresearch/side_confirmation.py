@@ -97,13 +97,21 @@ class ThetaTradeTapeSource:
             self._mem[key] = out
             return out
         out = self._fetch(ticker, expiration, strike, right, date, start_time, end_time)
+        # CRITICAL: only cache CONFIRMED results. _fetch returns None on FAILURE
+        # (HTTP error, timeout, or a ThetaData error body like "Invalid session
+        # ID. ...more than one terminal is running") — caching those as [] would
+        # poison the contract permanently (diagnosed 2026-06-11: a multi-terminal
+        # session conflict silently emptied ~4,900 tape lookups on a full-universe
+        # run). A genuine empty (valid 200, no rows) IS cached.
+        if out is None:
+            return []
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         cp.write_text(json.dumps([p.__dict__ for p in out]), encoding="utf-8")
         self._mem[key] = out
         return out
 
     def _fetch(self, ticker, expiration, strike, right, date,
-               start_time, end_time) -> list[TapePrint]:
+               start_time, end_time) -> Optional[list[TapePrint]]:
         params = urllib.parse.urlencode({
             "symbol": ticker, "expiration": expiration, "strike": f"{strike:.3f}",
             "right": right, "start_date": date, "end_date": date,
@@ -113,10 +121,15 @@ class ThetaTradeTapeSource:
         try:
             with urllib.request.urlopen(url, timeout=self.timeout) as resp:
                 if resp.status != 200:
-                    return []
+                    return None
                 text = resp.read().decode("utf-8", "replace")
         except Exception:
-            return []
+            return None
+        # ThetaData error bodies are plain text, not CSV — never cache them.
+        if text.startswith("No data"):
+            return []          # genuine empty — safe to cache.
+        if "Invalid session" in text or "error" in text[:40].lower():
+            return None        # terminal/session failure — do NOT cache.
         out: list[TapePrint] = []
         for row in csv.DictReader(io.StringIO(text)):
             try:

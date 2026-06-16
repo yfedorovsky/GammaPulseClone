@@ -93,12 +93,18 @@ class ThetaNBBOSource:
             self._mem[key] = bars
             return bars
         bars = self._fetch(ticker, expiration, strike, right, date)
+        # Only cache CONFIRMED results — _fetch returns None on failure (HTTP
+        # error / timeout / ThetaData error body like "Invalid session ID");
+        # caching those as [] would poison the contract permanently (the
+        # multi-terminal session conflict, diagnosed 2026-06-11).
+        if bars is None:
+            return []
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         cp.write_text(json.dumps([b.__dict__ for b in bars]), encoding="utf-8")
         self._mem[key] = bars
         return bars
 
-    def _fetch(self, ticker, expiration, strike, right, date) -> list[Bar]:
+    def _fetch(self, ticker, expiration, strike, right, date) -> Optional[list[Bar]]:
         params = urllib.parse.urlencode({
             "symbol": ticker, "expiration": expiration, "strike": f"{strike:.3f}",
             "right": right, "start_date": date, "end_date": date, "interval": "1m",
@@ -107,10 +113,14 @@ class ThetaNBBOSource:
         try:
             with urllib.request.urlopen(url, timeout=self.timeout) as resp:
                 if resp.status != 200:
-                    return []
+                    return None
                 text = resp.read().decode("utf-8", "replace")
         except Exception:
+            return None
+        if text.startswith("No data"):
             return []
+        if "Invalid session" in text or "error" in text[:40].lower():
+            return None
         out: list[Bar] = []
         for row in csv.DictReader(io.StringIO(text)):
             try:
