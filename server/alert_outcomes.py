@@ -612,10 +612,18 @@ async def _tradier_chain_oi(tradier, ticker: str, exp: str) -> dict[tuple[float,
 
 async def run_oi_confirmation(db_path: str = DB_PATH, max_age_days: int = 7,
                               now: float | None = None, fetcher=None) -> dict:
-    """Confirm/deny next-morning OI growth on flagged contracts, splitting them
-    into opening vs closing-churn cohorts. Idempotent — only touches rows whose
-    oi_status is still NULL and that fired on a prior day. `fetcher(ticker, exp)`
-    is injectable for tests; defaults to a Tradier chain lookup."""
+    """Record whether each flagged contract's settled OI GREW by next morning
+    (descriptive `oi_confirmed` = "settled-OI-grew", NOT a validated "opening"
+    vs "closing-churn" read). Idempotent — only touches rows whose oi_status is
+    still NULL and that fired on a prior day. `fetcher(ticker, exp)` is
+    injectable for tests; defaults to a Tradier chain lookup.
+
+    ⚠️ DISPUTED INTERPRETATION (#80, red-team 2026-06-18): the Pan-Poteshman
+    premise that OI-growth ("opening") flow out-performs non-growth ("churn")
+    was DOWNGRADED to a mechanical liquidity/price tilt — fragile under a
+    liquidity control, dead on options. This cohort is DESCRIPTIVE ONLY; do NOT
+    feed `oi_confirmed` into conviction/dispatch scoring or promote it to a gate.
+    """
     now = now if now is not None else time.time()
     rows = _select_oi_pending(db_path, now, max_age_days)
     stats = {"processed": 0, "confirmed": 0, "unconfirmed": 0,
@@ -675,8 +683,11 @@ async def run_oi_confirmation(db_path: str = DB_PATH, max_age_days: int = 7,
 
 
 def get_oi_confirmation_report(days: int = 30, db_path: str = DB_PATH) -> list[dict[str, Any]]:
-    """Win rates split by OI-confirmation cohort per alert type. The synthesis
-    hypothesis: confirmed (opening) flow should out-win unconfirmed (churn)."""
+    """Win rates split by settled-OI-growth cohort per alert type — DESCRIPTIVE
+    measurement only. ⚠️ The synthesis hypothesis (confirmed/"opening" flow
+    out-wins unconfirmed/"churn") is DISPUTED: the red-team (2026-06-18, #80)
+    found it is a mechanical liquidity tilt, not informed positioning. Do NOT
+    promote this cohort to a gate or wire `oi_confirmed` into conviction."""
     _ensure_schema(db_path)
     cutoff = time.time() - days * 86400
     conn = sqlite3.connect(db_path)

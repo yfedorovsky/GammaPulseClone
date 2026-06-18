@@ -121,6 +121,8 @@ tails stop dominating. We have Δ via ThetaData greeks and side via tick_side_tr
 *Fixes the #1 convergence finding.*
 
 ### ICE #2 — Next-morning settled-OI confirmation cohort
+> ⚠️ **SUPERSEDED (2026-06-18).** This proposed the cohort as an *operational gate* — now the documented trap. The red-team downgraded the Pan-Poteshman premise to a mechanical liquidity tilt (fragile under a liquidity control, dead on options); the cohort shipped as #60 for **descriptive measurement only** and must never become a gate (#80).
+
 **Impact H / Confidence H / Ease M.** In `alert_outcomes.py`, for every SOE-A+/INFORMED/
 WHALE alert, fetch next-morning settled OI on the flagged contract; if ΔOI ≥ ~50% of
 flagged volume → tag `oi_confirmed`, else `unconfirmed/closed`. Re-compute win rates

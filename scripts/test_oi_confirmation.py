@@ -1,9 +1,13 @@
 """Unit tests for next-morning settled-OI confirmation cohort (task #60).
 
-Pan-Poteshman: predictive power is in buy-to-OPEN volume. A flagged contract
-whose settled OI rises by ≥ a fraction of the flagged volume by next morning is
-genuine new positioning (opening); one whose OI doesn't rise was a close/churn.
-This splits alerts into cohorts so win rates can be measured separately.
+Splits flagged contracts by whether settled OI GREW by next morning (≥ a
+fraction of flagged volume), so win rates can be measured per cohort.
+
+⚠️ DISPUTED (red-team 2026-06-18, #80): the Pan-Poteshman premise that
+OI-growth ("opening") flow predicts better outcomes than non-growth ("churn")
+was downgraded to a mechanical liquidity tilt — fragile under a liquidity
+control, dead on options. The split is DESCRIPTIVE only; these tests exercise
+the classifier mechanics, not a validated edge.
 
 Run:  python scripts/test_oi_confirmation.py
 """

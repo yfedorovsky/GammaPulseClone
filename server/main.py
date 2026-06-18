@@ -993,9 +993,11 @@ async def flow_zscore_endpoint(ticker: str):
 
 @app.get("/api/outcomes/oi-confirmation")
 async def oi_confirmation_report(days: int = 30):
-    """Win rates split by next-morning OI-confirmation cohort (#60). Tests the
-    Pan-Poteshman hypothesis that confirmed (opening) flow out-wins
-    unconfirmed (closing-churn) flow per alert type."""
+    """Win rates split by next-morning settled-OI-growth cohort (#60) —
+    DESCRIPTIVE only. ⚠️ The Pan-Poteshman hypothesis that confirmed ("opening")
+    flow out-wins unconfirmed ("churn") is DISPUTED (red-team 2026-06-18, #80):
+    a mechanical liquidity tilt, fragile under control, dead on options. Not a
+    gate; not a conviction input."""
     from .alert_outcomes import get_oi_confirmation_report
     return {"days": days, "cohorts": get_oi_confirmation_report(days=days)}
 
