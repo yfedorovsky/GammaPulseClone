@@ -201,7 +201,7 @@ def synth_gamma(
 
     Returns 0 for invalid inputs (follows gex.py convention — caller filters).
     """
-    if spot <= 0 or strike <= 0 or iv <= 0 or days_to_exp <= 0:
+    if spot <= 0 or strike <= 0 or iv <= 0 or days_to_exp < 0:
         return 0.0
     if q is None:
         if root:
@@ -209,7 +209,15 @@ def synth_gamma(
             q = get_dividend_yield(root)
         else:
             q = 0.013
-    T = max(days_to_exp, 1.0) / 365.0
+    # #74: use the TRUE intraday seconds-to-close T-floor for 0DTE (days==0),
+    # consistent with gex.py #72. The OLD `max(days_to_exp, 1.0)/365` clamped
+    # 0DTE to a full calendar day — and the prior `<= 0` guard returned 0
+    # outright — both of which UNDERSTATE the 0DTE ATM gamma spike at the pin
+    # (gamma ~ 1/sqrt(T), so overstating T shrinks the spike). days >= 1 is
+    # bit-identical to the old formula (days/365). _bsm_t_floor_years clamps
+    # at/after the close to a ~5min underflow floor so BSM stays finite.
+    from .gex import _bsm_t_floor_years
+    T = _bsm_t_floor_years(int(round(days_to_exp)))
     sqrt_T = math.sqrt(T)
     d1 = (math.log(spot / strike) + (r - q + 0.5 * iv * iv) * T) / (iv * sqrt_T)
     pdf = math.exp(-0.5 * d1 * d1) / math.sqrt(2.0 * math.pi)
