@@ -1,11 +1,14 @@
 """Earnings calendar — per-ticker next-ER lookup for Telegram badges.
 
-P0.7 fix (2026-05-12). Fidget surfaces "Earnings: May 20" on every TGT/NVDA
-alert so the operator immediately sees catalyst context. We have the data
-source (Finnhub) wired in main.py but use it only as a one-shot API
-endpoint; this module caches it for badge use across all alert formatters.
+P0.7 fix (2026-05-12). Surfaces "Earnings: May 20" on every TGT/NVDA alert so
+the operator immediately sees catalyst context. Caches per-ticker for badge use
+across all alert formatters.
 
-Source: Finnhub `/calendar/earnings` (matches existing main.py integration).
+Source: Tradier production fundamentals calendar
+(`/beta/markets/fundamentals/calendars`). #78 fix (2026-06-18): Finnhub
+`/calendar/earnings` returns EMPTY on our plan (earnings calendar not entitled)
+— which had silently disabled every ER badge AND the IV-crush long-premium gate.
+Tradier IS entitled and carries future earnings dates, so we reroute to it.
 Cache: 24h per ticker (earnings dates don't change intraday).
 """
 from __future__ import annotations
@@ -28,44 +31,58 @@ _cache: dict[str, tuple[float, _dt.date | None]] = {}
 
 
 async def _fetch_next_er(ticker: str) -> _dt.date | None:
-    """Hit Finnhub for the next earnings date within LOOKAHEAD_DAYS."""
+    """Hit Tradier fundamentals for the next earnings date within LOOKAHEAD_DAYS.
+
+    Earnings events are not a single event_type — they are quarter-specific
+    Results (7/8/9/10) + Conference Call (12/13/14/15) rows, status 'Estimated'
+    for upcoming and 'Confirmed' for past. We filter on the event text containing
+    'earnings' (catches both, excludes AGM / annual-report) and take the nearest
+    future date. NOTE: Tradier exposes no structured BMO/AMC flag — we extract
+    the DATE only (sufficient for badges + the IV-crush DTE gate); precise
+    before/after-market timing is a separate research concern (#3)."""
     s = get_settings()
-    if not s.finnhub_api_key:
+    tok = s.tradier_token
+    if not tok:
         return None
+    base = s.tradier_base_url.rstrip("/")
+    # fundamentals lives under /beta, not /v1
+    host = base[: -len("/v1")] if base.endswith("/v1") else base
+    url = f"{host}/beta/markets/fundamentals/calendars"
     today = _dt.date.today()
-    end = today + _dt.timedelta(days=LOOKAHEAD_DAYS)
+    horizon = today + _dt.timedelta(days=LOOKAHEAD_DAYS)
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.get(
-                "https://finnhub.io/api/v1/calendar/earnings",
-                params={
-                    "from": today.isoformat(),
-                    "to": end.isoformat(),
-                    "symbol": ticker.upper(),
-                    "token": s.finnhub_api_key,
-                },
+                url,
+                params={"symbols": ticker.upper()},
+                headers={"Authorization": f"Bearer {tok}",
+                         "Accept": "application/json"},
                 timeout=10,
             )
             if resp.status_code != 200:
                 return None
             data = resp.json()
+            items = data if isinstance(data, list) else [data]
             dates: list[_dt.date] = []
-            for ec in data.get("earningsCalendar", []) or []:
-                if ec.get("symbol", "").upper() != ticker.upper():
-                    continue
-                ds = ec.get("date")
-                if not ds:
-                    continue
-                try:
-                    d = _dt.date.fromisoformat(ds)
-                except ValueError:
-                    continue
-                if d >= today:
-                    dates.append(d)
+            for item in items:
+                for res in (item.get("results") or []):
+                    if res.get("type") != "Company":
+                        continue
+                    cc = (res.get("tables") or {}).get("corporate_calendars") or []
+                    for ev in cc:
+                        if "earnings" not in (ev.get("event") or "").lower():
+                            continue
+                        ds = (ev.get("begin_date_time") or "")[:10]
+                        try:
+                            d = _dt.date.fromisoformat(ds)
+                        except ValueError:
+                            continue
+                        if today <= d <= horizon:
+                            dates.append(d)
             if dates:
                 return min(dates)
     except Exception as e:
-        print(f"[EARNINGS] fetch failed for {ticker}: {e}")
+        print(f"[EARNINGS] Tradier fetch failed for {ticker}: {e}", flush=True)
     return None
 
 
