@@ -47,6 +47,22 @@ MACRO_KEY = "MACRO (ALL 200D)"
 
 # Spot divergence tracker: ticker -> pct divergence (Massive vs Tradier)
 _spot_stale_flag: dict[str, float] = {}
+# #69: throttle the [GEX_STALE_SPOT] log. A persistently-bad Theta reference
+# spot (e.g. KLAC, or XLP $218-vs-$84) diverges EVERY cycle, which spammed
+# ~39 lines/cycle. GEX itself uses the Tradier `spot`, never this Theta value,
+# so divergence is cosmetic. We still set _spot_stale_flag every cycle (the API
+# flag stays live-accurate); only the LOG line is rate-limited per ticker.
+_spot_stale_log_ts: dict[str, float] = {}
+_STALE_LOG_THROTTLE_S = 600  # at most one log per ticker per 10 min
+
+
+def _should_log_stale_spot(ticker: str) -> bool:
+    """True at most once per _STALE_LOG_THROTTLE_S per ticker (log de-spam)."""
+    now = time.time()
+    if now - _spot_stale_log_ts.get(ticker, 0.0) >= _STALE_LOG_THROTTLE_S:
+        _spot_stale_log_ts[ticker] = now
+        return True
+    return False
 
 # Aggressive caches to minimize API calls
 _exp_cache: dict[str, tuple[float, list[str]]] = {}  # ticker → (ts, [exps])
@@ -537,7 +553,8 @@ async def _compute_one(
                         threshold = 0.003 if in_rth else 0.10
                         pct_diff = abs(t_spot - spot) / spot
                         if pct_diff > threshold:
-                            print(f"[GEX_STALE_SPOT] {ticker}: Tradier=${spot:.2f} Theta=${t_spot:.2f} ({pct_diff*100:.1f}% divergence)")
+                            if _should_log_stale_spot(ticker):
+                                print(f"[GEX_STALE_SPOT] {ticker}: Tradier=${spot:.2f} Theta=${t_spot:.2f} ({pct_diff*100:.1f}% divergence; GEX uses Tradier — log throttled 10min)")
                             _spot_stale_flag[ticker] = round(pct_diff * 100, 2)
                         else:
                             _spot_stale_flag.pop(ticker, None)
@@ -558,7 +575,8 @@ async def _compute_one(
                     m_spot = get_massive_spot(ticker)
                     if m_spot and spot and abs(m_spot - spot) / spot > 0.003:
                         pct_diff = abs(m_spot - spot) / spot * 100
-                        print(f"[GEX_STALE_SPOT] {ticker}: Tradier=${spot:.2f} Massive=${m_spot:.2f} ({pct_diff:.1f}% divergence)")
+                        if _should_log_stale_spot(ticker):
+                            print(f"[GEX_STALE_SPOT] {ticker}: Tradier=${spot:.2f} Massive=${m_spot:.2f} ({pct_diff:.1f}% divergence; log throttled 10min)")
                         _spot_stale_flag[ticker] = round(pct_diff, 2)
                     else:
                         _spot_stale_flag.pop(ticker, None)
