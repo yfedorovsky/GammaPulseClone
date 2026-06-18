@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store.js';
 import { api } from '../api.js';
 import HeatmapPanel, { findNearestMonthlyOpex } from '../components/HeatmapPanel.jsx';
+import GexMatrix from '../components/GexMatrix.jsx';
 
 export default function HeatmapsTab() {
   const {
@@ -40,10 +41,13 @@ export default function HeatmapsTab() {
   const [customInput, setCustomInput] = useState('');
   const [showCustom, setShowCustom] = useState(false);
 
-  // Determine which tickers we actually need data for
+  // Determine which tickers we actually need data for.
+  // MATRIX view always needs the focus ticker's chain (its 2D grid is built
+  // from that one ticker's per-expiration exp_data), regardless of MULTI/FOCUS.
   const neededTickers = useMemo(() => {
+    if (viewMode === 'matrix') return [focusTicker];
     return focus ? [focusTicker] : multiTickers;
-  }, [focus, focusTicker, multiTickers]);
+  }, [viewMode, focus, focusTicker, multiTickers]);
 
   useEffect(() => {
     let alive = true;
@@ -92,16 +96,22 @@ export default function HeatmapsTab() {
    */
   const visiblePanelExps = useMemo(() => {
     if (!focus) return [];
+    // #73 (2026-06-18): when the focus name has a 0DTE expiration (indices like
+    // SPY/QQQ/SPX), default panel 0 to it so the displayed king matches
+    // GammaPulse Pro / OG, which key off the front (0DTE) expiration. Names
+    // WITHOUT a 0DTE keep the nearest-monthly-OPEX default (king-selection-v3
+    // fix #1 / task #10 — intraday-relevant dealer hedging for swing names).
+    // ET "today" in YYYY-MM-DD (en-CA) to match the ISO exp keys.
+    const etToday = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    const realExps = focusExps.filter(e => !String(e).startsWith('MACRO'));
+    const front0DTE = realExps[0] === etToday ? realExps[0] : null;
     return Array.from({ length: focusPanelCount }).map((_, i) => {
       const userPick = exps[`${focusTicker}-${i}`];
-      // king-selection-v3 fix #1 (2026-05-27): swap MACRO out of the
-      // panel-0 default for the nearest monthly OPEX. Panel idx 0 typically
-      // resolves to focusExps[0] which is the MACRO sentinel; replace with
-      // monthly OPEX so default king/floor/ceiling reflect intraday-relevant
-      // dealer hedging rather than the 200D aggregate.
       const rawFallback = focusExps[Math.min(i, focusExps.length - 1)] || 'MACRO (ALL 200D)';
+      // Panel 0 resolves to the MACRO sentinel by default — replace it with the
+      // 0DTE expiration (if one exists) else nearest monthly OPEX, never MACRO.
       const fallback = String(rawFallback).startsWith('MACRO')
-        ? (findNearestMonthlyOpex(focusExps) || rawFallback)
+        ? (front0DTE || findNearestMonthlyOpex(focusExps) || rawFallback)
         : rawFallback;
       return userPick || fallback;
     });
@@ -156,11 +166,15 @@ export default function HeatmapsTab() {
     setCustomInput('');
   };
 
-  return (
-    <div style={{ display: 'grid', gridTemplateRows: focus ? 'auto 1fr' : '1fr', height: '100%', minHeight: 0 }}>
+  const isMatrix = viewMode === 'matrix';
+  // Matrix view + FOCUS both surface the single-ticker picker at the top.
+  const showPicker = focus || isMatrix;
 
-      {/* FOCUS-mode ticker picker */}
-      {focus && (
+  return (
+    <div style={{ display: 'grid', gridTemplateRows: showPicker ? 'auto 1fr' : '1fr', height: '100%', minHeight: 0 }}>
+
+      {/* FOCUS-mode / MATRIX-mode ticker picker */}
+      {showPicker && (
         <div style={{
           display: 'flex', alignItems: 'center', gap: 10, padding: '6px 12px',
           borderBottom: '1px solid var(--border-faint)',
@@ -254,15 +268,21 @@ export default function HeatmapsTab() {
           )}
 
           <span style={{ color: 'var(--text-3)', fontSize: 10, marginLeft: 'auto' }}>
-            {focusTickerOverride
+            {isMatrix
+              ? <>Matrix view · <b style={{ color: '#f4c430' }}>{focusTicker}</b> — strikes × expirations</>
+              : focusTickerOverride
               ? <>Showing <b style={{ color: '#f4c430' }}>{focusTickerOverride}</b> across {focusPanelCount} expirations</>
               : <>Showing <b>{focusTicker}</b> (watchlist position 1)</>}
           </span>
         </div>
       )}
 
-      {/* Panels grid */}
-      {focus ? (
+      {/* Body: MATRIX view (per-expiration grid) takes precedence over the
+         panel grids. It renders the focus ticker's full strike × expiration
+         heatmap. Additive — BARS / PROFILE still drive the panel grids below. */}
+      {isMatrix ? (
+        <GexMatrix ticker={focusTicker} />
+      ) : focus ? (
         <div className={`panels cols-${focusPanelCount}`}>
           {Array.from({ length: focusPanelCount }).map((_, i) => {
             // expLabelOverride is just the DEFAULT for this panel slot —

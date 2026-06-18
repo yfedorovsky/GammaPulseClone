@@ -260,6 +260,62 @@ def _bsm_charm(
     return charm / 365.0  # annual → per calendar day
 
 
+# BSM-fallback time-to-expiry floor (#72).
+#
+# The OLD fallback floored T at 0.5 calendar days (1/720 yr) for EVERY
+# expiration including 0DTE. For a same-day option observed at, say, 11:35 ET
+# (~4.4h to the 16:00 ET close) the TRUE remaining life is ~5h, not 12h, so the
+# 0.5-day floor OVERSTATES T by ~2-3x. Because ATM gamma scales ~1/sqrt(T),
+# overstating T UNDERSTATES the true 0DTE ATM gamma spike right at the pin —
+# which on a pinning day pushes the king to the wrong (next-heaviest) strike.
+#
+# Fix: for 0DTE (days == 0) use the real intraday seconds-to-close as T,
+# clamped at a small UNDERFLOW_FLOOR (~5 min) so BSM stays finite (no gamma
+# blow-up / NaN) at or after 16:00 ET. For days >= 1, T is UNCHANGED
+# (days / 365.0 exactly) — this fix touches ONLY the same-day path.
+_MARKET_CLOSE_HOUR_ET = 16  # 16:00 ET regular-session close
+# 5 minutes expressed in years — the smallest T we will ever feed BSM. Prevents
+# 1/sqrt(T) from exploding as the close is reached / passed.
+_T_UNDERFLOW_FLOOR_YEARS = (5.0 * 60.0) / (365.0 * 24.0 * 60.0 * 60.0)
+
+
+def _et_now() -> datetime:
+    """Current wall-clock time in US/Eastern. Falls back to naive local time if
+    zoneinfo is unavailable (keeps the math defined rather than crashing)."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo("America/New_York"))
+    except Exception:  # pragma: no cover - zoneinfo present on supported runtimes
+        return datetime.now()
+
+
+def _bsm_t_floor_years(days: int, now_et: datetime | None = None) -> float:
+    """Time-to-expiry (in YEARS) for the BSM gamma/charm fallback.
+
+    days == 0 (0DTE): true seconds remaining to the 16:00 ET close, clamped at
+        _T_UNDERFLOW_FLOOR_YEARS (~5 min). At/after the close this returns the
+        underflow floor, keeping BSM finite instead of dividing by ~0.
+    days >= 1: days / 365.0, IDENTICAL to the pre-#72 formula (non-0DTE
+        behavior is intentionally unchanged).
+
+    `now_et` is injectable for tests; defaults to live ET wall-clock.
+    """
+    if days >= 1:
+        return days / 365.0
+    # 0DTE: compute real time left to today's regular-session close.
+    now = now_et if now_et is not None else _et_now()
+    close = now.replace(
+        hour=_MARKET_CLOSE_HOUR_ET, minute=0, second=0, microsecond=0
+    )
+    seconds_to_close = (close - now).total_seconds()
+    if seconds_to_close <= 0:
+        # At or after 16:00 ET — nothing left; clamp to the underflow floor.
+        return _T_UNDERFLOW_FLOOR_YEARS
+    t_years = seconds_to_close / (365.0 * 24.0 * 60.0 * 60.0)
+    return max(t_years, _T_UNDERFLOW_FLOOR_YEARS)
+
+
 def _structure_regime(
     spot: float, zgl: float, pos_gex: float, neg_gex: float,
     has_real_flip: bool,
@@ -688,6 +744,7 @@ def compute_exp_data(
     per_strike: dict[float, dict[str, float]] = defaultdict(
         lambda: {
             "net_gex": 0.0,
+            "net_gex_raw": 0.0,  # #76: parallel settled-OI GEX (matrix + OG king)
             "net_vex": 0.0,
             "net_cex": 0.0,  # charm exposure $ (time-decay / pin engine)
             "net_delta": 0.0,
@@ -719,9 +776,11 @@ def compute_exp_data(
         # while MACRO and 1+ DTE work fine.
         #
         # Fix: when provider gamma==0 but we have spot/strike/IV/DTE,
-        # fall back to our own _bsm_gamma() with T floored at 0.5 days
-        # (1/720 yrs). That gives non-zero gamma for late-session 0DTE
-        # while staying numerically stable.
+        # fall back to our own _bsm_gamma() with T from _bsm_t_floor_years().
+        # For 0DTE (days==0) that is the TRUE intraday seconds-to-close (#72),
+        # NOT the old 0.5-day floor — the 0.5-day floor overstated T at the pin
+        # and understated the true 0DTE ATM gamma spike. For days>=1, T is
+        # unchanged (days/365). Both stay numerically stable.
         gamma = f["gamma"]
         if gamma == 0.0 and f["iv"] > 0 and spot > 0 and strike > 0:
             try:
@@ -729,14 +788,14 @@ def compute_exp_data(
                 if exp_str:
                     exp_d = date.fromisoformat(exp_str)
                     days = max((exp_d - today).days, 0)
-                    # T floor 0.5 days = 0.001389 yrs (prevents underflow)
-                    T = max(days / 365.0, 0.5 / 365.0)
+                    T = _bsm_t_floor_years(days)
                     gamma = _bsm_gamma(spot, strike, f["iv"], T)
             except (ValueError, TypeError):
                 pass
 
         # Charm (dDelta/day). Use provider charm if present, else BSM fallback
         # (same pattern as the 0DTE synth-gamma path above). is_call-aware.
+        # Same true-intraday-T treatment for 0DTE (#72).
         charm = f.get("charm", 0.0)
         if charm == 0.0 and f["iv"] > 0 and spot > 0 and strike > 0:
             try:
@@ -744,7 +803,7 @@ def compute_exp_data(
                 if exp_str:
                     exp_d = date.fromisoformat(exp_str)
                     days = max((exp_d - today).days, 0)
-                    T = max(days / 365.0, 0.5 / 365.0)
+                    T = _bsm_t_floor_years(days)
                     charm = _bsm_charm(spot, strike, f["iv"], T, is_call=is_call)
             except (ValueError, TypeError):
                 pass
@@ -752,6 +811,12 @@ def compute_exp_data(
         # GEX = gamma * OI * 100 * spot^2 * 0.01 (per 1% move), signed by dealer side
         gamma_dollar = (
             gamma * f["oi"] * CONTRACT_SIZE * spot * spot * 0.01 * sign
+        )
+        # #76: parallel GEX on settled (raw) OI — same formula, oi_raw instead of
+        # effective. Additive only; never feeds the effective-OI net_gex / king /
+        # alert paths. Drives the matrix cells + the OG-parity king_raw.
+        gamma_dollar_raw = (
+            gamma * f.get("oi_raw", 0.0) * CONTRACT_SIZE * spot * spot * 0.01 * sign
         )
         # VEX = vanna * OI * 100 * spot * 1 (per 1 vol point); signed likewise
         vanna_dollar = f["vanna"] * f["oi"] * CONTRACT_SIZE * spot * sign
@@ -763,6 +828,7 @@ def compute_exp_data(
 
         bucket = per_strike[strike]
         bucket["net_gex"] += gamma_dollar
+        bucket["net_gex_raw"] += gamma_dollar_raw
         bucket["net_vex"] += vanna_dollar
         bucket["net_cex"] += charm_dollar
         bucket["net_delta"] += delta_shares
@@ -867,6 +933,9 @@ def compute_exp_data(
     # as a danger marker consumed by signal/callout logic.
     pos_buckets = [(s, b["net_gex"]) for s, b in per_strike.items() if b["net_gex"] > 0]
     neg_buckets = [(s, b["net_gex"]) for s, b in per_strike.items() if b["net_gex"] < 0]
+    # #76: settled-OI positive buckets -> the OG-parity king. GammaPulse Pro keys
+    # its king off settled OI, not our volume-adjusted effective OI.
+    pos_buckets_raw = [(s, b["net_gex_raw"]) for s, b in per_strike.items() if b["net_gex_raw"] > 0]
 
     # king-selection-v3 fix #1.5 (2026-05-27) — KING DISTANCE CAP.
     #
@@ -907,6 +976,8 @@ def compute_exp_data(
 
     king_pos_strike, king_pos_val = _pick_king(pos_buckets, max)
     king_neg_strike, king_neg_val = _pick_king(neg_buckets, min)
+    # #76: OG-parity king on settled OI (same distance-capped picker).
+    king_raw_strike, king_raw_val = _pick_king(pos_buckets_raw, max)
 
     # Also compute UNCONSTRAINED king for MACRO/structural views. The
     # constrained king above is for intraday-relevant dealer hedge zones
@@ -1085,6 +1156,7 @@ def compute_exp_data(
             {
                 "strike": s,
                 "net_gex": b["net_gex"],
+                "net_gex_raw": b["net_gex_raw"],  # #76: settled-OI GEX (matrix)
                 "net_vex": b["net_vex"],
                 "net_cex": b["net_cex"],
                 "net_delta": b["net_delta"],
@@ -1136,6 +1208,11 @@ def compute_exp_data(
         "king_pos_gex": king_pos_val,
         "king_neg": king_neg_strike or 0,
         "king_neg_gex": king_neg_val,
+        # #76: settled-OI king for the matrix + OG-parity. 0 when no settled +GEX
+        # wall within the distance cap. Additive — does NOT change the effective-
+        # OI `king` above (which alert / king-migration logic consumes).
+        "king_raw": king_raw_strike or 0,
+        "king_raw_gex": king_raw_val,
         # Unconstrained king (no 5%/10% distance cap). Use for MACRO panel /
         # structural views where the biggest +GEX wall anywhere in the chain
         # is the meaningful answer. May equal `king` when the largest +GEX
