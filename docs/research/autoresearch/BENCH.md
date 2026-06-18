@@ -49,23 +49,47 @@ the flat-file win is **structurally sound but unmeasured**; quoting a wall-clock
 for it would be inventing a number. It is a **rebuild** (flat-file → parquet →
 polars query layer), not a config flip.
 
-## Pending anchor — one hard wire number
+## Wire anchor — and an honest correction (the bottleneck was partly self-inflicted)
 
-The chunked 5-day top-off (06-10 → 06-16) runs after the 16:05 ET close (it
-yields the terminal to the live system during RTH). Its real wall-clock + exact
-request count land here when it completes — the concrete half of the wire
-comparison, against which the flat-file's 5-requests-vs-thousands is the
-structural argument.
+The 5-day top-off (06-10 → 06-16) gave the hard wire numbers — and reading the
+ThetaData docs to the end exposed that **I built the fetcher the slow way.** Two
+in-API levers I wasn't using:
 
-> _chunked 5-day top-off: <pending post-close run>_
+1. **`expiration=*` bulk wildcard** (docs: option history returns bulk data when
+   strike/right omitted, and bulk expiration with `expiration=*`). One single-day
+   request returns a root's ENTIRE chain (all ~25 expirations); I was looping
+   per-expiration. Measured: AMD 5-day top-off = **10 requests** (`expiration=*`,
+   both endpoints) vs **~100** per-expiration.
+2. **PRO = 8 concurrent requests, NOT rate-limited** (docs). I'd made the fetch
+   serial after an early parallel attempt failed — but that was the urllib
+   socket-hang (since fixed) + RTH contention, not a real limit. Re-measured at
+   6 workers: **36/36 OK, 7.4 req/s**.
+
+| 5-day top-off | requests | wall-clock | result |
+|---|---|---|---|
+| per-expiration, serial (what I built) | ~thousands | **12+ hr** (never finished unattended) | 75/116 roots after a night |
+| **`expiration=*` bulk + 6 concurrent** | **1,480** | **87.6 s** | 149/150 roots, 3.59M rows, 0 fail |
+
+A **~500× wall-clock improvement, all in-API** — no flat-file, no rebuild. The
+"wire bottleneck" framing was right that the wire dominates, but wrong to imply
+the chunked path was near the API's ceiling: it wasn't using `expiration=*` or
+concurrency. Honest version: **most of the slowness was self-inflicted; the
+in-API ceiling is minutes, not hours.** Default fetch is now `--bulk`
+(`fetch_universe_bulk`).
+
+Flat-file (`option_flat_file_eod`) is still the play for a WHOLE-MARKET scan (all
+~1.5M contracts/day in one request) — but for a targeted universe, `expiration=*`
++ concurrency closes nearly all of that gap without leaving the local terminal.
 
 ## Bottom line
 
 - **Processing:** polars/parquet is a real 104× / 33×-smaller win for the query
   layer — worth adopting if this cache becomes a general backtest platform.
-- **Pull:** the fetch bottleneck is the wire, and the fix is flat-file bulk
-  download (a Pro-service rebuild), not a storage swap.
-- Priority: the rebuild waits on the platform decision; the next real research
-  cycle (the pre-registered sector/regime-neutral whale test) outranks parquet
-  plumbing. This benchmark was the cheap, contained measurement — banked and
-  reproducible.
+- **Pull:** the wire dominates, but the fix was mostly **using ThetaData
+  properly** (`expiration=*` + PRO's 8 concurrent) — a ~500× in-API speedup, not
+  a storage swap and not (for a targeted universe) flat-file. Flat-file remains
+  the whole-market play.
+- Priority: the next real research cycle (the pre-registered sector/regime-
+  neutral whale test) outranks any further plumbing. These benchmarks were the
+  cheap, contained measurements — banked and reproducible
+  (`scripts/bench_polars_vs_sqlite.py`, `run_historical_replay.py --bulk`).

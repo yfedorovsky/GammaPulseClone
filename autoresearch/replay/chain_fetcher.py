@@ -47,6 +47,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date as _date, timedelta
 from pathlib import Path
@@ -91,11 +92,13 @@ class FetchConfig:
     timeout: float = 180.0          # generous — the terminal serializes heavy work.
     throttle_s: float = 0.05        # small polite gap between serial requests.
     chunk_days: int = 7             # greeks chunk size (latency superlinear in range).
-    # MEASURED 2026-06-10: the terminal serializes heavy requests internally —
-    # 6 parallel workers starved each other past the timeout (38/69 FAILs on
-    # MU). Fetching is SERIAL by design; this field is retained only so older
-    # call sites don't break. Do not parallelize without re-measuring.
-    max_workers: int = 1
+    # PRO = 8 concurrent requests account-wide (docs), NOT rate-limited. The
+    # legacy per-EXPIRATION/range path (fetch_root) hangs under parallelism on
+    # heavy requests, so it stays serial. The expiration=* BULK path
+    # (fetch_universe_bulk) issues fast single-day whole-chain requests and was
+    # re-measured 2026-06-18 at 6 workers = 36/36 OK, 7.4 req/s. Default 6 to
+    # leave ~2 concurrent slots for the live system (which shares the account).
+    max_workers: int = 6
     # Expiration scope: near-dated covers everything ACTIVE in the window
     # (weeklies/dailies/monthlies); long-dated keeps only monthly-class
     # expirations (day-of-month 14..22 — third-Friday week, holiday-shifted
@@ -208,6 +211,19 @@ def _f(row: dict, key: str) -> Optional[float]:
         return None
 
 
+def _row_exp(r: dict, fallback: Optional[str]) -> Optional[str]:
+    """Each EOD/greeks/OI row carries its own ``expiration`` (present in BOTH the
+    per-expiration and ``expiration=*`` bulk responses). Prefer it (normalized to
+    YYYY-MM-DD, matching the store) so the bulk path keys each row to its real
+    expiration; fall back to the request's expiration only if absent."""
+    e = (r.get("expiration") or "").strip().strip('"')
+    if not e:
+        return fallback
+    if len(e) == 8 and e.isdigit():
+        return f"{e[:4]}-{e[4:6]}-{e[6:8]}"
+    return e
+
+
 def _span_has_candidate_volume(con, root: str, exp: str, a: str, b: str,
                                min_vol: int = 500,
                                min_notional: float = 10_000.0) -> bool:
@@ -234,6 +250,7 @@ def _apply_greeks_rows(con, root: str, exp: str, rows: list[dict]) -> int:
         if not day or strike is None or right not in ("C", "P"):
             continue
         vol = int(_f(r, "volume") or 0)
+        rexp = _row_exp(r, exp)
         con.execute(
             "INSERT INTO option_eod (date, root, expiration, strike, right,"
             " volume, trade_count, close, bid, ask, delta, iv, spot)"
@@ -242,7 +259,7 @@ def _apply_greeks_rows(con, root: str, exp: str, rows: list[dict]) -> int:
             " volume=excluded.volume, trade_count=excluded.trade_count,"
             " close=excluded.close, bid=excluded.bid, ask=excluded.ask,"
             " delta=excluded.delta, iv=excluded.iv, spot=excluded.spot",
-            (day, root, exp, strike, right, vol, int(_f(r, "count") or 0),
+            (day, root, rexp, strike, right, vol, int(_f(r, "count") or 0),
              _f(r, "close"), _f(r, "bid"), _f(r, "ask"), _f(r, "delta"),
              _f(r, "implied_vol"), _f(r, "underlying_price")))
         n += 1
@@ -257,15 +274,16 @@ def _apply_oi_rows(con, root: str, exp: str, rows: list[dict]) -> int:
         oi = int(_f(r, "open_interest") or 0)
         if not day or strike is None or right not in ("C", "P"):
             continue
+        rexp = _row_exp(r, exp)
         cur = con.execute(
             "UPDATE option_eod SET oi=? WHERE root=? AND expiration=? AND"
             " strike=? AND right=? AND date=?",
-            (oi, root, exp, strike, right, day))
+            (oi, root, rexp, strike, right, day))
         if cur.rowcount == 0 and oi > 0:
             con.execute(
                 "INSERT OR IGNORE INTO option_eod (date, root, expiration,"
                 " strike, right, volume, oi) VALUES (?,?,?,?,?,0,?)",
-                (day, root, exp, strike, right, oi))
+                (day, root, rexp, strike, right, oi))
         n += 1
     return n
 
@@ -293,6 +311,82 @@ def _fetch_url(root: str, exp: str, endpoint: str, start: str, end: str,
     if cfg.throttle_s:
         time.sleep(cfg.throttle_s)
     return _http_csv(url, cfg.timeout)
+
+
+def trading_weekdays(start: str, end: str) -> list[str]:
+    """Mon-Fri calendar days in [start, end]. Holidays return empty bulk
+    responses (cached OK-empty), so no holiday calendar is needed."""
+    out, d = [], _date.fromisoformat(start)
+    z = _date.fromisoformat(end)
+    while d <= z:
+        if d.weekday() < 5:
+            out.append(d.isoformat())
+        d += timedelta(days=1)
+    return out
+
+
+def _fetch_url_bulk(root: str, endpoint: str, day: str, cfg: FetchConfig):
+    """One ``expiration=*`` request — a whole root's chain for one day. ~10x
+    fewer requests than per-expiration (docs: bulk wildcard). HTTP only;
+    thread-safe (no DB)."""
+    url = (f"{cfg.base_url}{_ENDPOINT_PATH[endpoint]}?" + urllib.parse.urlencode(
+        {"symbol": root, "expiration": "*", "start_date": day, "end_date": day}))
+    return _http_csv(url, cfg.timeout)
+
+
+def fetch_universe_bulk(con: sqlite3.Connection, roots: list[str],
+                        start: str, end: str,
+                        cfg: Optional[FetchConfig] = None,
+                        stats: Optional[FetchStats] = None,
+                        progress=None) -> FetchStats:
+    """Bulk chain fetch: per (root, trading-day) one ``expiration=*`` request
+    per endpoint (greeks + OI). HTTP runs CONCURRENTLY (PRO = 8 concurrent;
+    cfg.max_workers, default 6 to leave headroom for the live system); SQLite
+    writes are serialized on the caller thread + committed per result, so an
+    interrupted run loses at most the in-flight batch. Idempotent via a per-day
+    ledger key (root, '*', endpoint, day, day). expiration=* returns EVERY
+    listed expiration, so no survivorship scoping is needed."""
+    cfg = cfg or FetchConfig()
+    stats = stats if stats is not None else FetchStats()
+    days = trading_weekdays(start, end)
+
+    tasks = []  # (root, endpoint, day) not already OK in the ledger.
+    for root in roots:
+        for day in days:
+            for ep in ("greeks", "oi"):
+                if _ledger_ok(con, (root, "*", ep, day, day)):
+                    stats.n_cached_skips += 1
+                else:
+                    tasks.append((root, ep, day))
+    if not tasks:
+        return stats
+
+    apply_fn = {"greeks": _apply_greeks_rows, "oi": _apply_oi_rows}
+    done = 0
+    with ThreadPoolExecutor(max_workers=cfg.max_workers) as ex:
+        fut_to_task = {ex.submit(_fetch_url_bulk, t[0], t[1], t[2], cfg): t
+                       for t in tasks}
+        for fut in as_completed(fut_to_task):
+            root, ep, day = fut_to_task[fut]
+            key = (root, "*", ep, day, day)
+            try:
+                rows = fut.result()
+            except Exception:
+                rows = None
+            stats.n_requests += 1
+            if rows is None:
+                stats.n_failures += 1
+                stats.failures.append(key)
+                _ledger_put(con, key, "FAIL", 0)
+            else:
+                n = apply_fn[ep](con, root, None, rows)  # None -> use row's exp
+                _ledger_put(con, key, "OK", n)
+                stats.n_rows += n
+            con.commit()
+            done += 1
+            if progress and done % 50 == 0:
+                progress(done, len(tasks), stats)
+    return stats
 
 
 def week_chunks(start: str, end: str, chunk_days: int = 7) -> list[tuple[str, str]]:
@@ -389,6 +483,7 @@ def trading_days(con: sqlite3.Connection, start: str, end: str) -> list[str]:
 
 __all__ = [
     "DEFAULT_DB", "FetchConfig", "FetchStats", "open_store", "fetch_root",
+    "fetch_universe_bulk", "trading_weekdays",
     "list_expirations", "scope_expirations", "prune_dead_rows", "trading_days",
     "week_chunks",
 ]

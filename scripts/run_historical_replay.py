@@ -120,6 +120,15 @@ def main(argv=None) -> int:
     ap.add_argument("--baseline", default="SOE_A")
     ap.add_argument("--fetch-only", action="store_true")
     ap.add_argument("--no-fetch", action="store_true")
+    ap.add_argument("--bulk", action="store_true",
+                    help="FAST fetch via expiration=* (whole chain per root-day, "
+                         "1 request vs ~25) + 6 concurrent (PRO budget). ~10x "
+                         "fewer requests; 150 roots x 5 days = ~90s. Default for "
+                         "new fetches; the legacy per-expiration path remains for "
+                         "reference.")
+    ap.add_argument("--workers", type=int, default=6,
+                    help="concurrent requests for --bulk (PRO allows 8 account-"
+                         "wide; default 6 leaves headroom for the live system)")
     ap.add_argument("--no-rth-pause", action="store_true",
                     help="fetch through market hours too (default: pause "
                          "09:20-16:05 ET — the live system owns the terminal)")
@@ -153,18 +162,29 @@ def main(argv=None) -> int:
     # ── Phase 1: FETCH ────────────────────────────────────────────────────
     if not args.no_fetch:
         cfg = FetchConfig()
+        cfg.max_workers = args.workers
         stats = FetchStats()
         t0 = time.time()
         _keep_awake()
-        for i, root in enumerate(roots, 1):
-            _rth_pause(not args.no_rth_pause)
-            fetch_root(con, root, args.start, args.end, cfg, stats)
-            print(f"[fetch {i}/{len(roots)}] {root}: cum reqs={stats.n_requests} "
-                  f"cached={stats.n_cached_skips} rows={stats.n_rows} "
-                  f"fail={stats.n_failures} ({time.time()-t0:.0f}s)", flush=True)
+        _rth_pause(not args.no_rth_pause)   # bulk is a short burst; pause once up front.
+        if args.bulk:
+            from autoresearch.replay.chain_fetcher import fetch_universe_bulk
+
+            def _prog(done, total, st):
+                print(f"[bulk {done}/{total}] rows={st.n_rows} fail={st.n_failures} "
+                      f"({time.time()-t0:.0f}s)", flush=True)
+            fetch_universe_bulk(con, roots, args.start, args.end, cfg, stats,
+                                progress=_prog)
+        else:
+            for i, root in enumerate(roots, 1):
+                _rth_pause(not args.no_rth_pause)
+                fetch_root(con, root, args.start, args.end, cfg, stats)
+                print(f"[fetch {i}/{len(roots)}] {root}: cum reqs={stats.n_requests} "
+                      f"cached={stats.n_cached_skips} rows={stats.n_rows} "
+                      f"fail={stats.n_failures} ({time.time()-t0:.0f}s)", flush=True)
         print(f"[fetch] DONE — {stats.n_requests} requests, {stats.n_rows} rows, "
-              f"{stats.n_failures} failures, {stats.n_cached_skips} cache skips",
-              flush=True)
+              f"{stats.n_failures} failures, {stats.n_cached_skips} cache skips "
+              f"({time.time()-t0:.0f}s)", flush=True)
         if stats.failures:
             print(f"[fetch] failed keys (will retry on next run): "
                   f"{stats.failures[:10]}{'...' if len(stats.failures) > 10 else ''}")
