@@ -686,6 +686,15 @@ async def _compute_one(
     if mir_signal:
         state["_mir_signal"] = mir_signal
 
+    # Detector B (opex_pin_detector): maintain the OPEX-pin armed registry at GEX
+    # cadence so Detector A can qualify single-name velocity breaks. Cheap no-op
+    # off-OPEX; never break a scan cycle.
+    try:
+        from .opex_pin_detector import arm_from_state
+        arm_from_state(ticker, state)
+    except Exception as e:
+        print(f"[worker] pin-arm eval failed for {ticker}: {e!r}", flush=True)
+
     return state
 
 
@@ -1149,6 +1158,24 @@ async def run_worker(stop_event: asyncio.Event) -> None:
                     await maybe_record_eod_rts(tradier)
                 except Exception as rts_err:
                     print(f"[worker] rts history record failed: {rts_err}")
+                # Intraday RS-DECOUPLE scan — a name pulling away from its sector
+                # in real time (GLW 6/18: +6.9% vs Photonics/Fiber −4..−12%). Rare
+                # by construction (2-4 / 467 names/day), prominent on purpose: cuts
+                # through the flow firehose. RTH-gated + 5-min throttled internally.
+                # CONTEXT attention flag, not a buy signal.
+                try:
+                    from .rs_decouple_detector import maybe_scan_rs_decouples
+                    await maybe_scan_rs_decouples()
+                except Exception as dc_err:
+                    print(f"[worker] rs decouple scan failed: {dc_err}")
+                # EOD RS-acceleration digest (swing complement to the intraday
+                # decouple) — once/day 16:10-16:45 ET, who's climbing/rolling off
+                # the relative-strength leaderboard over days.
+                try:
+                    from .rs_acceleration import maybe_fire_eod_accel_digest
+                    await maybe_fire_eod_accel_digest()
+                except Exception as ad_err:
+                    print(f"[worker] rs accel digest failed: {ad_err}")
                 # Refresh the index base-rate (Analogues) bias cache so the flow
                 # scorer can tag alerts with market-context confluence (task #55
                 # follow-up). Internally throttled to 30 min + 1h scan cache, and

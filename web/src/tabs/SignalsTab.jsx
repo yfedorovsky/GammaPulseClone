@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { api } from '../api.js';
 import { fmtBig, fmtPrice } from '../lib/format.js';
+import RsDecoupleStrip from '../components/RsDecoupleStrip.jsx';
 
 const GRADES = ['All Grades', 'A+', 'A', 'B+', 'B', 'C'];
 const OUTCOMES = ['All Outcomes', 'PENDING', 'WIN', 'LOSS', 'EXPIRED'];
@@ -95,6 +96,9 @@ export default function SignalsTab() {
           GammaPulse Pro v4.0
         </span>
       </div>
+
+      {/* Intraday RS-decouple leaders (#86) — prominent, self-hides when empty */}
+      <RsDecoupleStrip />
 
       {/* Stats cards */}
       <div style={{ display: 'flex', gap: 1, margin: '8px 20px', background: 'var(--border-faint)', borderRadius: 'var(--radius-md)', overflow: 'hidden' }}>

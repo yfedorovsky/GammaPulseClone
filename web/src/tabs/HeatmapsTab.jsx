@@ -3,6 +3,8 @@ import { useStore } from '../store.js';
 import { api } from '../api.js';
 import HeatmapPanel, { findNearestMonthlyOpex } from '../components/HeatmapPanel.jsx';
 import GexMatrix from '../components/GexMatrix.jsx';
+import QuadChart from '../components/QuadChart.jsx';
+import CollarStrip from '../components/CollarStrip.jsx';
 
 export default function HeatmapsTab() {
   const {
@@ -45,7 +47,7 @@ export default function HeatmapsTab() {
   // MATRIX view always needs the focus ticker's chain (its 2D grid is built
   // from that one ticker's per-expiration exp_data), regardless of MULTI/FOCUS.
   const neededTickers = useMemo(() => {
-    if (viewMode === 'matrix') return [focusTicker];
+    if (viewMode === 'matrix' || viewMode === 'quad') return [focusTicker];
     return focus ? [focusTicker] : multiTickers;
   }, [viewMode, focus, focusTicker, multiTickers]);
 
@@ -167,11 +169,17 @@ export default function HeatmapsTab() {
   };
 
   const isMatrix = viewMode === 'matrix';
-  // Matrix view + FOCUS both surface the single-ticker picker at the top.
-  const showPicker = focus || isMatrix;
+  const isQuad = viewMode === 'quad';
+  // Matrix/Quad view + FOCUS surface the single-ticker picker at the top.
+  const showPicker = focus || isMatrix || isQuad;
+  // JHEQX collar context strip — SPX only, single-ticker views (self-hides if
+  // the collar can't be detected). #81.
+  const showCollar = (focus || isMatrix || isQuad) && focusTicker === 'SPX';
+  const gridRows = [showPicker && 'auto', showCollar && 'auto', '1fr']
+    .filter(Boolean).join(' ');
 
   return (
-    <div style={{ display: 'grid', gridTemplateRows: showPicker ? 'auto 1fr' : '1fr', height: '100%', minHeight: 0 }}>
+    <div style={{ display: 'grid', gridTemplateRows: gridRows, height: '100%', minHeight: 0 }}>
 
       {/* FOCUS-mode / MATRIX-mode ticker picker */}
       {showPicker && (
@@ -277,10 +285,15 @@ export default function HeatmapsTab() {
         </div>
       )}
 
+      {/* JHEQX collar structural-context strip (SPX only; self-hides). #81 */}
+      {showCollar && <CollarStrip ticker="SPX" />}
+
       {/* Body: MATRIX view (per-expiration grid) takes precedence over the
          panel grids. It renders the focus ticker's full strike × expiration
          heatmap. Additive — BARS / PROFILE still drive the panel grids below. */}
-      {isMatrix ? (
+      {isQuad ? (
+        <QuadChart ticker={focusTicker} />
+      ) : isMatrix ? (
         <GexMatrix ticker={focusTicker} />
       ) : focus ? (
         <div className={`panels cols-${focusPanelCount}`}>

@@ -129,9 +129,16 @@ def _window_admits(window: "deque[tuple[float, float]]", now: float,
 
 def _can_send(
     ticker: str = "", priority: bool = False, force: bool = False,
-    top_value: bool = False, significance: float = 0.0,
+    top_value: bool = False, significance: float = 0.0, critical: bool = False,
 ) -> tuple[bool, str]:
     """Check if we can send a message without being spammy.
+
+    `critical` = a NEVER-MUTE class reserved for ULTRA-RARE, SELF-THROTTLED
+    signals (RS-DECOUPLE: 1/name/day; OPEX PIN-BREAK). It bypasses EVERYTHING
+    including the per-ticker daily cap and cooldown — so a hot name that already
+    spent its 6 priority alerts on whale flow (GLW 6/18) cannot starve the one
+    alert that actually mattered. Safe ONLY because the caller self-limits; never
+    pass critical=True from a high-frequency detector.
 
     Returns (allowed, reason). reason is "" when allowed; otherwise a
     short tag identifying why the message was dropped. Reason tags:
@@ -145,6 +152,9 @@ def _can_send(
     by cluster noise — bounded only by per-ticker cooldown + daily cap.
     """
     now = time.time()
+
+    if critical:
+        return True, ""  # never-mute, self-throttled callers only (see docstring)
 
     # Per-ticker DAILY cap — applies to ALL alerts including force,
     # but priority/force gets the higher cap (6/day vs 5/day).
@@ -276,6 +286,7 @@ async def send(
     priority: bool = False,
     suppress: bool = False,
     force: bool = False,
+    critical: bool = False,
 ) -> bool:
     """Send a Telegram message with rate limiting.
 
@@ -315,7 +326,8 @@ async def send(
     top_value = _is_top_value_alert(text)
     significance = _alert_significance(text)
     allowed, drop_reason = _can_send(ticker, priority, force,
-                                     top_value=top_value, significance=significance)
+                                     top_value=top_value, significance=significance,
+                                     critical=critical)
     if not allowed:
         # Option C instrumentation (2026-05-20): observe WHY each alert
         # was dropped so we can later distinguish rate-limiter noise from

@@ -702,6 +702,41 @@ def run_five_factor_gate(
     if abs((today - opex_friday).days) <= 2:
         macro_details.append("OPEX week — elevated pin risk and gamma")
 
+    # Quarter/month-end rebalancing pressure (additive CONTEXT, not a gate).
+    # Conditional direction from QTD equity-vs-bond performance. See
+    # docs/research/JPM_COLLAR_PREREG.md.
+    try:
+        from .macro_regime import compute_rebalance_pressure
+        rb = compute_rebalance_pressure()
+        if rb.get("in_quarter_end_window"):
+            dq = rb.get("trading_days_to_quarter_end")
+            emb = rb.get("equity_minus_bond_pct")
+            if rb.get("direction") == "equity_supply":
+                macro_details.append(
+                    f"Quarter-end in {dq}td — rebalancing SUPPLY (equities +{emb}pp vs bonds QTD): de-risking sell pressure")
+            elif rb.get("direction") == "equity_demand":
+                macro_details.append(
+                    f"Quarter-end in {dq}td — rebalancing DEMAND (bonds outperformed {abs(emb) if emb else emb}pp QTD): buy pressure")
+            else:
+                macro_details.append(f"Quarter-end in {dq}td — rebalancing window (direction neutral)")
+        elif rb.get("in_month_end_window"):
+            macro_details.append(
+                f"Month-end in {rb.get('trading_days_to_month_end')}td — minor rebalancing window")
+    except Exception:
+        pass
+
+    # JHEQX collar structural levels — true-index names only (SPX-scaled strikes).
+    if (ticker or "").upper() in ("SPX", "SPXW"):
+        try:
+            from .collar_detector import detect_cached
+            c = detect_cached()
+            if c.get("confidence") not in (None, "none") and c.get("short_call") and c.get("long_put"):
+                macro_details.append(
+                    f"JHEQX collar ({c['exp']}): cap {c['short_call']['strike']:g} / "
+                    f"support {c['long_put']['strike']:g} — structural levels (context)")
+        except Exception:
+            pass
+
     if not macro_details:
         macro_details.append("No macro event risk in trade window")
 

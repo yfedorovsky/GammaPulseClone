@@ -63,6 +63,7 @@ class PriceStreamer:
                     if prices:
                         self._last = prices
                         self._tick += 1
+                        _check_velocity_break(prices)
                 await asyncio.sleep(settings.stream_poll_seconds)
             except asyncio.CancelledError:
                 break
@@ -86,6 +87,31 @@ class PriceStreamer:
 
 
 streamer = PriceStreamer()
+
+
+def _check_velocity_break(prices: dict) -> None:
+    """Feed the 5s fresh-spot poll into Detector A (OPEX-day velocity break) and
+    dispatch any fires. Fail-open: must never disrupt the price-poll cadence.
+    Cheap no-op off-OPEX (returns before touching the monitor)."""
+    try:
+        import time as _t
+        from .opex_velocity_detector import maybe_fire, format_fire
+        fires = maybe_fire(prices, _t.time())
+        for f in fires:
+            print(f"[VELOCITY-BREAK] {f['ticker']} {f['ret_pct']:+.2f}% "
+                  f"{f['from']:g}->{f['to']:g} in {f.get('window_s', 60):.0f}s",
+                  flush=True)
+            asyncio.create_task(_dispatch_velocity_break(f, format_fire(f)))
+    except Exception:
+        pass
+
+
+async def _dispatch_velocity_break(fire: dict, text: str) -> None:
+    try:
+        from . import telegram
+        await telegram.send(text, ticker=fire.get("ticker", ""), priority=True)
+    except Exception:
+        pass
 
 
 def fresh_spot(ticker: str, state: dict | None = None) -> float:

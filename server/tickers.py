@@ -177,6 +177,11 @@ TIER_3 = [
              # it earlier same day. 7-day Mir backfill audit showed NVTS
              # as one of only 2 universe gaps (HIMX was the other).
     # Space (SpaceX IPO catalyst)
+    "SPCX",  # SpaceX — IPO 6/12/2026 @ $161, now ~$213 (+32%). RECYCLED ticker
+             # (was a SPAC ETF ~$25; old sub-$100 strikes linger in the chain but
+             # are >50% OTM so gex.py distance caps already exclude them). IV ~166%
+             # => gamma diffuse, NO GEX structure yet (king/floor/ceil empty until
+             # vol crushes); flow / OI-build is the lens. Added 6/16 for coverage.
     "ASTS", "RKLB",
     "SATS",  # EchoStar — spectrum/satellite/Boost Mobile, RS 93, liquid leader
     "VSAT",  # Viasat — defense/gov satcom + multi-orbit connectivity (GPT Apr 19)

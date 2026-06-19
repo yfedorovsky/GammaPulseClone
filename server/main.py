@@ -307,12 +307,58 @@ def _trim_to_window(exp_data: dict[str, Any], window: int) -> dict[str, Any]:
     return out
 
 
-def _ticker_public(state: dict[str, Any], strikes_window: int | None = 60) -> dict[str, Any]:
+def _collar_overlay(ticker: str) -> dict[str, Any] | None:
+    """JHEQX collar levels for SPX as a structural-context overlay (pin/support/
+    floor). Pure context — NOT a signal (see docs/research/JPM_COLLAR_PREREG.md).
+    Returns None for non-SPX or when legs can't be detected. Fail-open."""
+    if (ticker or "").upper() != "SPX":
+        return None
+    try:
+        from .collar_detector import detect_cached
+        c = detect_cached()
+    except Exception:
+        return None
+    if not c or c.get("confidence") in (None, "none"):
+        return None
+    labels = {"short_call": "cap", "long_put": "support", "short_put": "floor"}
+    legs = {}
+    for key, role in labels.items():
+        leg = c.get(key)
+        if leg:
+            legs[key] = {**leg, "role": role}
+    if not legs:
+        return None
+    return {
+        "exp": c.get("exp"), "spot": c.get("spot"),
+        "confidence": c.get("confidence"), "source": c.get("source"),
+        "legs": legs,
+        "note": "JHEQX collar — structural context (not a signal)",
+    }
+
+
+def _annotate_collar_strikes(exp_data: dict[str, Any], collar: dict[str, Any]) -> None:
+    """Tag matching strikes in served panels with collar_role (horizontal price
+    level — the collar legs are SPX levels, meaningful across expiry panels)."""
+    role_by_strike = {
+        round(float(leg["strike"]), 2): leg["role"]
+        for leg in collar.get("legs", {}).values()
+    }
+    if not role_by_strike:
+        return
+    for ed in exp_data.values():
+        for s in ed.get("strikes") or []:
+            role = role_by_strike.get(round(float(s.get("strike", 0)), 2))
+            if role:
+                s["collar_role"] = role
+
+
+def _ticker_public(state: dict[str, Any], strikes_window: int | None = 60,
+                   ticker: str | None = None) -> dict[str, Any]:
     exps = state.get("exps") or []
     exp_data = state.get("exp_data") or {}
     if strikes_window:
         exp_data = _trim_to_window(exp_data, strikes_window)
-    return {
+    out = {
         "exp_data": exp_data,
         "exps": exps,
         "spot": state.get("actual_spot") or state.get("_spot"),
@@ -330,6 +376,11 @@ def _ticker_public(state: dict[str, Any], strikes_window: int | None = 60) -> di
         "regime": state.get("regime"),
         "iv": state.get("iv"),
     }
+    collar = _collar_overlay(ticker) if ticker else None
+    if collar:
+        _annotate_collar_strikes(exp_data, collar)
+        out["collar"] = collar
+    return out
 
 
 async def _get_or_compute(ticker: str) -> dict[str, Any] | None:
@@ -397,8 +448,40 @@ async def chains(req: ChainsReq):
             continue
         # Also subscribe so the price stream picks it up
         await streamer.subscribe([t])
-        out[t] = _ticker_public(state, strikes_window=req.strikes or 60)
+        out[t] = _ticker_public(state, strikes_window=req.strikes or 60, ticker=t)
     return out
+
+
+@app.get("/api/collar")
+async def collar():
+    """JHEQX (JPMorgan Hedged Equity) quarterly SPX collar levels — structural
+    CONTEXT overlay (cap / support / floor). NOT a trade signal: the pin/support
+    effect is gated behind the pre-registered Direction-A test
+    (docs/research/JPM_COLLAR_PREREG.md). Returns confidence='none' if legs can't
+    be detected from settled OI."""
+    from .collar_detector import detect_cached
+    return detect_cached()
+
+
+@app.get("/api/rs-decouples")
+async def rs_decouples():
+    """Today's intraday RS-DECOUPLES — names pulling away from their sector
+    (GLW 6/18 = +6.9% vs Photonics/Fiber −4..−12%). Rare/prominent (2-4/day),
+    CONTEXT not a buy signal. Sync DB reads run off-loop (WAL-contention safe)."""
+    from .rs_decouple_detector import (
+        intraday_returns_from_db, find_decouples, confirming_flow,
+    )
+    from .industry import INDUSTRY_GROUPS
+
+    def _compute():
+        rets = intraday_returns_from_db()
+        events = find_decouples(rets, INDUSTRY_GROUPS)
+        for e in events[:12]:
+            e["flow"] = confirming_flow(e["ticker"])
+        return events
+
+    events = await asyncio.to_thread(_compute)
+    return {"decouples": events, "asof": time.strftime("%H:%M:%S")}
 
 
 @app.get("/api/confluence")
@@ -412,7 +495,7 @@ async def confluence():
         if isinstance(state, Exception) or state is None:
             out[t] = {"exp_data": {}, "exps": [], "spot": None, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")}
             continue
-        out[t] = _ticker_public(state, strikes_window=None)
+        out[t] = _ticker_public(state, strikes_window=None, ticker=t)
     return out
 
 

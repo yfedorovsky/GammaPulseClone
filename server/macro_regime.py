@@ -75,6 +75,14 @@ VIX_BACKWARDATION_RATIO = 1.0  # VIX > VIX3M = stress regime
 SKEW_ELEVATED = 145.0  # SPX SKEW Index — above this = institutional put bid
 VOL_STATE_CACHE_TTL = 60  # seconds — Tradier index quotes are cheap
 
+# Quarter/month-end rebalancing-pressure (JHEQX collar companion). The DIRECTION
+# is conditional on QTD relative performance; magnitude (~$165B, JPM/LaDuc) is an
+# estimate. CONTEXT only, never a trade signal.
+REBAL_CACHE_TTL = 6 * 3600         # QTD returns move slowly
+REBAL_OUTPERF_THRESHOLD = 1.5      # spy_qtd - tlt_qtd (pct pts) to call a direction
+REBAL_QUARTER_WINDOW_DAYS = 5      # trading days from quarter-end = "in window"
+REBAL_MONTH_WINDOW_DAYS = 3        # trading days from month-end = "in window"
+
 
 # ── Calendar pressure ────────────────────────────────────────────────
 
@@ -330,6 +338,145 @@ def compute_vol_state() -> dict[str, Any]:
 
     _vol_state_cache = out
     _vol_state_cached_at = now
+    return out
+
+
+# ── Quarter/month-end rebalancing pressure (JHEQX collar companion) ──
+#
+# Balanced funds (pensions, 60/40 mandates) rebalance to target weights at
+# month/quarter-end. The DIRECTION is conditional on QTD relative performance:
+#   equities outperform bonds  -> equity weight drifted high -> SELL equities
+#                                 into the close (supply overhang / de-risking)
+#   bonds outperform equities  -> equity weight low          -> BUY equities
+# Magnitude (~$165B, JPM/LaDuc) is an estimate. We surface DIRECTION + window
+# proximity as CONTEXT, never a trade signal — companion to the JHEQX collar.
+
+_rebal_cache: dict[str, Any] | None = None
+_rebal_cached_at: float = 0.0
+
+
+def _last_business_day(year: int, month: int) -> "datetime":
+    """Last weekday (Mon-Fri, holiday-adjusted) of year-month."""
+    if month == 12:
+        d = datetime(year, 12, 31)
+    else:
+        d = datetime(year, month + 1, 1) - timedelta(days=1)
+    try:
+        from .market_calendar import is_market_holiday
+        while d.weekday() >= 5 or is_market_holiday(d.date()):
+            d -= timedelta(days=1)
+    except Exception:
+        while d.weekday() >= 5:
+            d -= timedelta(days=1)
+    return d
+
+
+def _trading_days_between(start: "datetime", end: "datetime") -> int:
+    """Count trading days from start-date (exclusive) to end-date (inclusive).
+    Date-normalized so a time-of-day component can't drop the final day.
+    Negative if end < start."""
+    s, e = start.date(), end.date()
+    if e < s:
+        return -1
+    try:
+        from .market_calendar import is_market_holiday
+    except Exception:
+        is_market_holiday = lambda d: False  # noqa: E731
+    n, cur = 0, s + timedelta(days=1)
+    while cur <= e:
+        if cur.weekday() < 5 and not is_market_holiday(cur):
+            n += 1
+        cur += timedelta(days=1)
+    return n
+
+
+def _tradier_qtd_return(symbol: str, start_iso: str, end_iso: str, token: str) -> float | None:
+    """QTD pct return for symbol from Tradier daily history. None on any failure."""
+    try:
+        import requests as _req
+        r = _req.get(
+            "https://api.tradier.com/v1/markets/history",
+            params={"symbol": symbol, "interval": "daily",
+                    "start": start_iso, "end": end_iso},
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None
+        days = (r.json().get("history") or {}).get("day")
+        if isinstance(days, dict):
+            days = [days]
+        closes = [d.get("close") for d in (days or []) if d.get("close")]
+        if len(closes) < 2 or not closes[0]:
+            return None
+        return (closes[-1] / closes[0] - 1) * 100
+    except Exception:
+        return None
+
+
+def compute_rebalance_pressure() -> dict[str, Any]:
+    """Quarter/month-end rebalancing-pressure CONTEXT. Cached 6h. Fail-open
+    returns in_window=False with direction='unknown'."""
+    global _rebal_cache, _rebal_cached_at
+    now = time.time()
+    if _rebal_cache is not None and (now - _rebal_cached_at) < REBAL_CACHE_TTL:
+        return _rebal_cache
+
+    today = datetime.now()
+    out: dict[str, Any] = {
+        "quarter_end": None, "month_end": None,
+        "trading_days_to_quarter_end": None, "trading_days_to_month_end": None,
+        "in_quarter_end_window": False, "in_month_end_window": False,
+        "spy_qtd_pct": None, "tlt_qtd_pct": None, "equity_minus_bond_pct": None,
+        "direction": "unknown",  # equity_supply | equity_demand | neutral | unknown
+        "note": "Conditional rebalancing pressure — CONTEXT, not a signal",
+    }
+    try:
+        qe = _last_business_day(today.year, ((today.month - 1) // 3) * 3 + 3)
+        if qe < today:  # rolled past this quarter-end; use next quarter
+            nm = ((today.month - 1) // 3) * 3 + 6
+            yr = today.year + (1 if nm > 12 else 0)
+            nm = nm - 12 if nm > 12 else nm
+            qe = _last_business_day(yr, nm)
+        me = _last_business_day(today.year, today.month)
+        if me < today:
+            nxt = today.replace(day=28) + timedelta(days=8)
+            me = _last_business_day(nxt.year, nxt.month)
+
+        out["quarter_end"] = qe.date().isoformat()
+        out["month_end"] = me.date().isoformat()
+        dq = _trading_days_between(today, qe)
+        dm = _trading_days_between(today, me)
+        out["trading_days_to_quarter_end"] = dq
+        out["trading_days_to_month_end"] = dm
+        out["in_quarter_end_window"] = 0 <= dq <= REBAL_QUARTER_WINDOW_DAYS
+        out["in_month_end_window"] = 0 <= dm <= REBAL_MONTH_WINDOW_DAYS
+
+        # Only spend the Tradier calls when a window is actually near.
+        if out["in_quarter_end_window"] or out["in_month_end_window"]:
+            token = os.environ.get("TRADIER_TOKEN")
+            if token:
+                q_start = datetime(today.year, ((today.month - 1) // 3) * 3 + 1, 1)
+                s_iso = q_start.date().isoformat()
+                e_iso = today.date().isoformat()
+                spy = _tradier_qtd_return("SPY", s_iso, e_iso, token)
+                tlt = _tradier_qtd_return("TLT", s_iso, e_iso, token)
+                out["spy_qtd_pct"] = round(spy, 2) if spy is not None else None
+                out["tlt_qtd_pct"] = round(tlt, 2) if tlt is not None else None
+                if spy is not None and tlt is not None:
+                    diff = spy - tlt
+                    out["equity_minus_bond_pct"] = round(diff, 2)
+                    if diff >= REBAL_OUTPERF_THRESHOLD:
+                        out["direction"] = "equity_supply"   # sell equities to rebalance
+                    elif diff <= -REBAL_OUTPERF_THRESHOLD:
+                        out["direction"] = "equity_demand"    # buy equities to rebalance
+                    else:
+                        out["direction"] = "neutral"
+    except Exception:
+        pass  # fail-open
+
+    _rebal_cache = out
+    _rebal_cached_at = now
     return out
 
 

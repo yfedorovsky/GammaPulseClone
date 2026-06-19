@@ -17,6 +17,7 @@ export const api = {
   health: () => json('GET', '/api/health'),
   chains: (tickers, strikes = 60) => json('POST', '/api/chains', { tickers, strikes }),
   confluence: () => json('GET', '/api/confluence'),
+  rsDecouples: () => json('GET', '/api/rs-decouples'),
   quotes: (tickers) => json('POST', '/api/quotes', { tickers }),
   scanner: () => json('GET', '/api/scanner'),
   swingScanner: (mode = 'standard') => json('GET', `/api/swing-scanner?mode=${mode}`),
