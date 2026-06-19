@@ -1,0 +1,17 @@
+<svg viewBox="0 0 800 1000" xmlns="http://www.w3.org/2000/svg" width="800" height="1000">
+<rect x="0" y="0" width="800" height="1000" fill="#0B0F17"/>
+<rect x="0" y="0" width="800" height="8" fill="#26D07C"/>
+<text x="60" y="120" fill="#8B949E" font-family="Arial, sans-serif" font-size="26">Jun 18, 2026</text>
+<text x="60" y="190" fill="#E6EDF3" font-family="Arial, sans-serif" font-size="64" font-weight="bold">$GLW</text>
+<text x="60" y="232" fill="#8B949E" font-family="Arial, sans-serif" font-size="26">Corning — "the optics name nobody watched"</text>
+<text x="60" y="330" fill="#6E7681" font-family="Arial, sans-serif" font-size="28">0DTE calls printed</text>
+<text x="60" y="470" fill="#26D07C" font-family="Arial, sans-serif" font-size="150" font-weight="bold">+1,400%</text>
+<text x="60" y="540" fill="#E6EDF3" font-family="Arial, sans-serif" font-size="30">Stock: +7% from the open  ·  +11% on the day</text>
+<line x1="60" y1="600" x2="740" y2="600" stroke="#21262D" stroke-width="2"/>
+<text x="60" y="672" fill="#E6EDF3" font-family="Arial, sans-serif" font-size="29">Trump's chip post sent $INTC ripping.</text>
+<text x="60" y="716" fill="#E6EDF3" font-family="Arial, sans-serif" font-size="29">Everyone watched Intel. GLW was the real trade.</text>
+<rect x="60" y="800" width="680" height="130" rx="10" fill="#0F1A1E"/>
+<rect x="60" y="800" width="6" height="130" fill="#26D07C"/>
+<text x="90" y="858" fill="#E6EDF3" font-family="Arial, sans-serif" font-size="30" font-weight="bold">One signal saw it coming.</text>
+<text x="90" y="900" fill="#8B949E" font-family="Arial, sans-serif" font-size="28">Every flow tool missed it.</text>
+</svg>

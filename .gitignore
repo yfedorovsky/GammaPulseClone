@@ -60,3 +60,6 @@ thetav3-greeks.txt
 # Direction A GEX-spine backtest working artifacts (regenerate from scripts)
 gex_backtest/
 gex_backtest.db
+
+# Thread infographics — rendered PNGs regenerate from the committed SVGs
+thread_assets/*.png

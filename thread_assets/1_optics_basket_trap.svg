@@ -1,0 +1,28 @@
+<svg viewBox="0 0 800 1000" xmlns="http://www.w3.org/2000/svg" width="800" height="1000">
+<rect x="0" y="0" width="800" height="1000" fill="#0B0F17"/>
+<rect x="0" y="0" width="800" height="8" fill="#26D07C"/>
+<text x="60" y="110" fill="#E6EDF3" font-family="Arial, sans-serif" font-size="46" font-weight="bold">The "optics bottomed" trap</text>
+<text x="60" y="160" fill="#8B949E" font-family="Arial, sans-serif" font-size="26">June 18 — everyone called a sector bottom.</text>
+<text x="60" y="196" fill="#8B949E" font-family="Arial, sans-serif" font-size="26">One name went up. The rest got crushed.</text>
+<line x1="430" y1="270" x2="430" y2="800" stroke="#30363D" stroke-width="2"/>
+<text x="430" y="255" fill="#6E7681" font-family="Arial, sans-serif" font-size="20" text-anchor="middle">0%</text>
+<rect x="430" y="306" width="138" height="50" rx="4" fill="#26D07C"/>
+<text x="415" y="340" fill="#E6EDF3" font-family="Arial, sans-serif" font-size="30" font-weight="bold" text-anchor="end">GLW</text>
+<text x="582" y="340" fill="#26D07C" font-family="Arial, sans-serif" font-size="30" font-weight="bold">+6.9%</text>
+<rect x="360" y="406" width="70" height="50" rx="4" fill="#F85149"/>
+<text x="446" y="440" fill="#E6EDF3" font-family="Arial, sans-serif" font-size="30" font-weight="bold">AEHR</text>
+<text x="346" y="440" fill="#F85149" font-family="Arial, sans-serif" font-size="28" text-anchor="end">-3.5%</text>
+<rect x="358" y="506" width="72" height="50" rx="4" fill="#F85149"/>
+<text x="446" y="540" fill="#E6EDF3" font-family="Arial, sans-serif" font-size="30" font-weight="bold">LITE</text>
+<text x="344" y="540" fill="#F85149" font-family="Arial, sans-serif" font-size="28" text-anchor="end">-3.6%</text>
+<rect x="284" y="606" width="146" height="50" rx="4" fill="#F85149"/>
+<text x="446" y="640" fill="#E6EDF3" font-family="Arial, sans-serif" font-size="30" font-weight="bold">AAOI</text>
+<text x="270" y="640" fill="#F85149" font-family="Arial, sans-serif" font-size="28" text-anchor="end">-7.3%</text>
+<rect x="182" y="706" width="248" height="50" rx="4" fill="#F85149"/>
+<text x="446" y="740" fill="#E6EDF3" font-family="Arial, sans-serif" font-size="30" font-weight="bold">AXTI</text>
+<text x="168" y="740" fill="#F85149" font-family="Arial, sans-serif" font-size="28" text-anchor="end">-12.4%</text>
+<line x1="60" y1="838" x2="740" y2="838" stroke="#21262D" stroke-width="2"/>
+<text x="60" y="900" fill="#E6EDF3" font-family="Arial, sans-serif" font-size="28" font-weight="bold">GLW didn't lead a sector. It went solo.</text>
+<text x="60" y="945" fill="#8B949E" font-family="Arial, sans-serif" font-size="25">Buying "the optics basket" = -4% to -12% on 4 of 5.</text>
+<text x="740" y="985" fill="#4D545E" font-family="Arial, sans-serif" font-size="19" text-anchor="end">% = open to close, Jun 18, 2026</text>
+</svg>

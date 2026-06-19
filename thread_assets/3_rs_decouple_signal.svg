@@ -1,0 +1,22 @@
+<svg viewBox="0 0 800 1000" xmlns="http://www.w3.org/2000/svg" width="800" height="1000">
+<rect x="0" y="0" width="800" height="1000" fill="#0B0F17"/>
+<rect x="0" y="0" width="800" height="8" fill="#26D07C"/>
+<text x="60" y="100" fill="#E6EDF3" font-family="Arial, sans-serif" font-size="44" font-weight="bold">What actually worked</text>
+<text x="60" y="150" fill="#8B949E" font-family="Arial, sans-serif" font-size="26">A name pulling away from its sector —</text>
+<text x="60" y="186" fill="#8B949E" font-family="Arial, sans-serif" font-size="26">in real time. We call it RS-decouple.</text>
+<text x="60" y="300" fill="#6E7681" font-family="Arial, sans-serif" font-size="22">GLW lead over its sector (%)</text>
+<path d="M90,633 L168,676 L272,586 L324,529 L428,421 L532,363 L636,324 L740,356 L740,700 L90,700 Z" fill="#26D07C" opacity="0.12"/>
+<line x1="90" y1="700" x2="740" y2="700" stroke="#30363D" stroke-width="2"/>
+<polyline points="90,633 168,676 272,586 324,529 428,421 532,363 636,324 740,356" fill="none" stroke="#26D07C" stroke-width="4"/>
+<text x="636" y="304" fill="#26D07C" font-family="Arial, sans-serif" font-size="26" font-weight="bold" text-anchor="middle">peak +9.9%</text>
+<line x1="318" y1="512" x2="324" y2="529" stroke="#F4C430" stroke-width="2"/>
+<circle cx="324" cy="529" r="11" fill="#F4C430"/>
+<text x="306" y="498" fill="#F4C430" font-family="Arial, sans-serif" font-size="25" font-weight="bold" text-anchor="end">fired ~noon</text>
+<text x="306" y="528" fill="#8B949E" font-family="Arial, sans-serif" font-size="22" text-anchor="end">+3.6% still ahead</text>
+<text x="90" y="734" fill="#8B949E" font-family="Arial, sans-serif" font-size="20" text-anchor="middle">10am</text>
+<text x="740" y="734" fill="#8B949E" font-family="Arial, sans-serif" font-size="20" text-anchor="middle">close</text>
+<line x1="60" y1="788" x2="740" y2="788" stroke="#21262D" stroke-width="2"/>
+<text x="60" y="846" fill="#E6EDF3" font-family="Arial, sans-serif" font-size="30" font-weight="bold">4 of 467 names fired that day</text>
+<text x="60" y="884" fill="#8B949E" font-family="Arial, sans-serif" font-size="23">GLW · SMCI · KLAC · SOFI — all real leaders.</text>
+<text x="60" y="936" fill="#26D07C" font-family="Arial, sans-serif" font-size="24" font-weight="bold">Signal because it's rare. Not 1 of 600 alerts.</text>
+</svg>
