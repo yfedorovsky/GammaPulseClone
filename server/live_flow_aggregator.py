@@ -43,6 +43,7 @@ from typing import Any
 
 from .cache import cache
 from .config import get_settings
+from .stream import fresh_spot  # #51: 5s live spot for alerts, not stale state
 from .option_flow_daily import (
     DailyFlowAggregate,
     GOLDEN_FLOW_RULES,
@@ -228,7 +229,7 @@ class LiveFlowAggregator:
 
             # Enrich with OI + spot from worker cache for the classifier
             state = snapshot.get(agg.ticker) or {}
-            spot = state.get("actual_spot") or state.get("_spot") or 0
+            spot = fresh_spot(agg.ticker, state)  # #51: 5s live, not stale cache
             oi = self._lookup_oi(state, agg.strike, agg.expiration, agg.option_type)
 
             # Build a row dict matching option_flow_daily column names
@@ -281,7 +282,7 @@ class LiveFlowAggregator:
                 continue
 
             state = snapshot.get(agg.ticker) or {}
-            spot = state.get("actual_spot") or state.get("_spot") or 0
+            spot = fresh_spot(agg.ticker, state)  # #51: 5s live, not stale cache
             oi = self._lookup_oi(state, agg.strike, agg.expiration, agg.option_type)
 
             row = {
@@ -332,7 +333,7 @@ class LiveFlowAggregator:
         batch: list[tuple] = []
         for agg in self._aggregates.values():
             state = snapshot.get(agg.ticker) or {}
-            spot = state.get("actual_spot") or state.get("_spot") or 0
+            spot = fresh_spot(agg.ticker, state)  # #51: 5s live, not stale cache
             oi = self._lookup_oi(state, agg.strike, agg.expiration, agg.option_type)
             # IV / delta also available from cache chain — best-effort
             iv = None

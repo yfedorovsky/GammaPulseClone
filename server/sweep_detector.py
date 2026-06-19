@@ -40,6 +40,7 @@ from typing import Any
 
 from .cache import cache
 from .config import get_settings
+from .stream import fresh_spot  # #51: 5s live spot for alerts, not stale state
 from .flow_alerts import insert_sweep_alert
 from .live_flow_aggregator import (
     LiveFlowAggregator,
@@ -897,7 +898,7 @@ class SweepDetector:
                 "signal": state.get("signal"),
                 "regime": state.get("regime"),
             }
-            payload["spot"] = state.get("actual_spot") or state.get("_spot")
+            payload["spot"] = fresh_spot(rollup.ticker, state)  # #51: 5s live spot
 
             # Find the matching contract in the cached raw chain to pull
             # OI, bid, ask, delta, IV. Enables OI-based UI filtering.
@@ -1178,7 +1179,7 @@ class SweepDetector:
         try:
             snapshot = await cache.snapshot()
             state = snapshot.get(rollup.ticker) or {}
-            spot = state.get("actual_spot") or state.get("_spot")
+            spot = fresh_spot(rollup.ticker, state)  # #51: 5s live spot
         except Exception:
             spot = None
 

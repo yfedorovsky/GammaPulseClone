@@ -86,3 +86,21 @@ class PriceStreamer:
 
 
 streamer = PriceStreamer()
+
+
+def fresh_spot(ticker: str, state: dict | None = None) -> float:
+    """Freshest available spot for flow-alert / side-detection use.
+
+    #51 fix (2026-06-18): flow detectors read state['actual_spot']/['_spot'],
+    which only refreshes on the worker's per-ticker GEX cadence (~270s+, tier-
+    dependent). During a fast move — the MRVL 6/18 15:50 OPEX-into-Juneteenth
+    drop — that spot froze ~$17 stale for 10 minutes, mispricing every alert and
+    corrupting bid/ask/mid side classification. The price stream polls Tradier
+    every stream_poll_seconds (5s); prefer it. Fall back to the cached state spot
+    only when the stream lacks the symbol (not yet subscribed)."""
+    p = streamer.last_prices().get((ticker or "").upper())
+    if p and p > 0:
+        return float(p)
+    if state:
+        return state.get("actual_spot") or state.get("_spot") or 0
+    return 0
