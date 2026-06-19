@@ -4,6 +4,7 @@ import { api } from '../api.js';
 import HeatmapPanel, { findNearestMonthlyOpex } from '../components/HeatmapPanel.jsx';
 import GexMatrix from '../components/GexMatrix.jsx';
 import QuadChart from '../components/QuadChart.jsx';
+import IntervalMap from '../components/IntervalMap.jsx';
 import CollarStrip from '../components/CollarStrip.jsx';
 
 export default function HeatmapsTab() {
@@ -47,7 +48,7 @@ export default function HeatmapsTab() {
   // MATRIX view always needs the focus ticker's chain (its 2D grid is built
   // from that one ticker's per-expiration exp_data), regardless of MULTI/FOCUS.
   const neededTickers = useMemo(() => {
-    if (viewMode === 'matrix' || viewMode === 'quad') return [focusTicker];
+    if (viewMode === 'matrix' || viewMode === 'quad' || viewMode === 'interval') return [focusTicker];
     return focus ? [focusTicker] : multiTickers;
   }, [viewMode, focus, focusTicker, multiTickers]);
 
@@ -170,11 +171,13 @@ export default function HeatmapsTab() {
 
   const isMatrix = viewMode === 'matrix';
   const isQuad = viewMode === 'quad';
-  // Matrix/Quad view + FOCUS surface the single-ticker picker at the top.
-  const showPicker = focus || isMatrix || isQuad;
+  const isInterval = viewMode === 'interval';
+  const isSingle = focus || isMatrix || isQuad || isInterval;
+  // Matrix/Quad/Interval view + FOCUS surface the single-ticker picker at the top.
+  const showPicker = isSingle;
   // JHEQX collar context strip — SPX only, single-ticker views (self-hides if
   // the collar can't be detected). #81.
-  const showCollar = (focus || isMatrix || isQuad) && focusTicker === 'SPX';
+  const showCollar = isSingle && focusTicker === 'SPX';
   const gridRows = [showPicker && 'auto', showCollar && 'auto', '1fr']
     .filter(Boolean).join(' ');
 
@@ -291,7 +294,9 @@ export default function HeatmapsTab() {
       {/* Body: MATRIX view (per-expiration grid) takes precedence over the
          panel grids. It renders the focus ticker's full strike × expiration
          heatmap. Additive — BARS / PROFILE still drive the panel grids below. */}
-      {isQuad ? (
+      {isInterval ? (
+        <IntervalMap ticker={focusTicker} />
+      ) : isQuad ? (
         <QuadChart ticker={focusTicker} />
       ) : isMatrix ? (
         <GexMatrix ticker={focusTicker} />

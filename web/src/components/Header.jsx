@@ -110,6 +110,7 @@ export default function Header() {
             <button className={`ctrl-btn ${viewMode === 'profile' ? 'active' : ''}`} onClick={() => setViewMode('profile')}>PROFILE</button>
             <button className={`ctrl-btn ${viewMode === 'matrix' ? 'active' : ''}`} onClick={() => setViewMode('matrix')}>MATRIX</button>
             <button className={`ctrl-btn ${viewMode === 'quad' ? 'active' : ''}`} onClick={() => setViewMode('quad')}>QUAD</button>
+            <button className={`ctrl-btn ${viewMode === 'interval' ? 'active' : ''}`} onClick={() => setViewMode('interval')}>INTERVAL</button>
           </div>
           <button
             className={`ctrl-btn ${zeroDte ? 'active' : ''}`}
