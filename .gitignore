@@ -56,3 +56,7 @@ qqq_meta.json
 qqq_now.json
 thetav3.json
 thetav3-greeks.txt
+
+# Direction A GEX-spine backtest working artifacts (regenerate from scripts)
+gex_backtest/
+gex_backtest.db
