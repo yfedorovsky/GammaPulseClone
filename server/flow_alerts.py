@@ -1311,6 +1311,18 @@ async def _send_telegram(alert: dict[str, Any]) -> None:
         + f"Last: ${alert['last']:.2f} | Notional: ${alert['notional']:,.0f}\n"
         + f"IV: {alert['iv']}% | Delta: {alert['delta']} | Spot: ${alert['spot']:.2f}"
     )
+    # WHALE → UI-only demotion (task #94). This direct-post path bypasses
+    # telegram.send(), so gate it here too: a 🐋 WHALE FLOW banner is suppressed
+    # (UI/DB untouched) unless WHALE_TELEGRAM=1. See server/telegram.py.
+    try:
+        from .telegram import is_demoted_whale, whale_telegram_on
+        if is_demoted_whale(text) and not whale_telegram_on():
+            from . import telegram_audit
+            telegram_audit.record_drop(text=text, ticker=alert.get("ticker", ""),
+                                       drop_reason="whale_demoted")
+            return
+    except Exception:
+        pass
     try:
         async with httpx.AsyncClient() as client:
             await client.post(

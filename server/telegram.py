@@ -280,6 +280,32 @@ def _is_top_value_alert(text: str) -> bool:
     return any(m in text for m in _TOP_VALUE_MARKERS)
 
 
+# ── WHALE → UI-only (task #94, 2026-06-20) ───────────────────────────────
+# The single-WHALE banner was 36% of all Telegram fires yet tested as ~pure beta
+# (46% WR, drift-neutral excess-vs-SPY beat-rate 50.0%, +0.06% mean move) in the
+# Jun-20 alert-filter audit (docs/research/ALERT_CATEGORY_CUTS.md). Demote it to
+# UI-only: the whale strip + DB writes are untouched; only the Telegram push is
+# suppressed. Multi-tenor LADDER whales are KEPT (genuine held conviction — the
+# NBIS-class catch). Reversible: set env WHALE_TELEGRAM=1 to restore. Suppressed
+# sends are audited (drop_reason="whale_demoted") so the muted volume stays visible.
+_WHALE_MARK = ("🐋", "WHALE")
+_LADDER_MARK = ("MULTI-TENOR", "LADDER")
+
+
+def whale_telegram_on() -> bool:
+    return os.getenv("WHALE_TELEGRAM", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def is_demoted_whale(text: str) -> bool:
+    """A single-WHALE banner (demoted to UI-only) — NOT a multi-tenor ladder (kept)."""
+    if not text:
+        return False
+    up = text.upper()
+    has_whale = any(m in text or m.upper() in up for m in _WHALE_MARK)
+    is_ladder = any(m in up for m in _LADDER_MARK)
+    return has_whale and not is_ladder
+
+
 async def send(
     text: str,
     ticker: str = "",
@@ -304,6 +330,16 @@ async def send(
 
     s = get_settings()
     if not s.telegram_bot_token or not s.telegram_chat_id:
+        return False
+
+    # WHALE → UI-only demotion (task #94). Suppress the single-whale banner's
+    # Telegram push unless explicitly re-enabled. force/critical paths are exempt.
+    if not force and not critical and not whale_telegram_on() and is_demoted_whale(text):
+        try:
+            from . import telegram_audit
+            telegram_audit.record_drop(text=text, ticker=ticker, drop_reason="whale_demoted")
+        except Exception:
+            pass
         return False
 
     # Auto-elevate high-value alerts (task #52). The global 3-per-10-min
