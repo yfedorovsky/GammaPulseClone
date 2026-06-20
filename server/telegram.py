@@ -296,6 +296,15 @@ def whale_telegram_on() -> bool:
     return os.getenv("WHALE_TELEGRAM", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def triple_telegram_on() -> bool:
+    """TRIPLE-confluence composite alert was anti-predictive in the Jun-20 audit
+    (lowest WR 36.4%, the ONLY category with a negative mean move -0.73%, loses on
+    both train and test). Suppressed by default; set env TRIPLE_TELEGRAM=1 to restore.
+    Gated at the triple_confluence dispatch site (it sends with force=True, which
+    bypasses the central send() gates)."""
+    return os.getenv("TRIPLE_TELEGRAM", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def is_demoted_whale(text: str) -> bool:
     """A single-WHALE banner (demoted to UI-only) — NOT a multi-tenor ladder (kept)."""
     if not text:

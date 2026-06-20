@@ -410,7 +410,23 @@ async def maybe_fire_triple_confluence() -> int:
 
         try:
             msg = _format_telegram(conf)
-            from .telegram import send
+            # TRIPLE → suppressed (task #94 follow-up). The composite triple-
+            # confluence alert tested ANTI-PREDICTIVE in the Jun-20 audit (lowest
+            # WR 36.4%, the only category with a NEGATIVE mean move -0.73%, loses
+            # train AND test). Suppress the Telegram push; dedup + console log are
+            # untouched so it stays visible. Reversible: env TRIPLE_TELEGRAM=1.
+            from .telegram import send, triple_telegram_on
+            if not triple_telegram_on():
+                try:
+                    from . import telegram_audit
+                    telegram_audit.record_drop(text=msg, ticker=conf["ticker"],
+                                               drop_reason="triple_demoted")
+                except Exception:
+                    pass
+                _fired_today.add(key)   # dedup so it isn't re-evaluated all session
+                print(f"[TRIPLE] suppressed {conf['ticker']} {conf['direction']} "
+                      f"(TRIPLE_TELEGRAM off — anti-predictive in audit)", flush=True)
+                continue
             ok = await send(msg, ticker=conf["ticker"], priority=True, force=True)
             if ok:
                 _fired_today.add(key)
