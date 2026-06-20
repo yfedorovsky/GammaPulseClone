@@ -290,6 +290,10 @@ def _is_top_value_alert(text: str) -> bool:
 # sends are audited (drop_reason="whale_demoted") so the muted volume stays visible.
 _WHALE_MARK = ("🐋", "WHALE")
 _LADDER_MARK = ("MULTI-TENOR", "LADDER")
+# OTHER-category banners that are KEPT despite the OTHER cut (task #91): RS DECOUPLE
+# is genuine edge; RS ACCELERATION is the once-daily EOD leaderboard digest the
+# operator wants. Matched case-insensitively against the message text.
+_OTHER_KEEP = ("RS DECOUPLE", "RS ACCELERATION")
 
 
 def whale_telegram_on() -> bool:
@@ -334,6 +338,47 @@ def is_demoted_whale(text: str) -> bool:
     return has_whale and not is_ladder
 
 
+def other_telegram_on() -> bool:
+    """OTHER (uncategorized soft-context) telegram demotion (task #91, Jun-20 audit).
+    Default suppressed; set env OTHER_TELEGRAM=1 to restore the push."""
+    return os.getenv("OTHER_TELEGRAM", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def is_demoted_other(text: str) -> bool:
+    """A residual 'OTHER'-category telegram message — demoted to UI-only.
+
+    OTHER is the categorizer's catch-all (telegram_audit) for messages matching
+    none of the 10 known markers. The Jun-20 audit (docs/research/ALERT_CATEGORY_CUTS.md)
+    found it is 5.5% of fires (236/8d) and is dominated by self-labeled soft-context
+    flags — 💹 NET FLOW (net_flow_signals), 🔍 SWING WATCHLIST (swing_alerts),
+    📈 RS ACCELERATION EOD (rs_acceleration), 🧲 GEX MAGNET, PRICE WATCH/TRIM,
+    🏃 RUNNER, 🔥 MACRO PIVOT, SETUP-no-King — whose own banner text says "not a
+    buy signal" and which have ZERO measured edge (none is logged to alert_outcomes.db).
+
+    CARVE-OUTS (kept, not demoted):
+      • 🚀 RS DECOUPLE — genuine edge (the product's core sector-decoupling thesis;
+        it also dispatches critical=True, so the send() gate's `not critical` guard
+        exempts it too).
+      • 📈 RS ACCELERATION — the once-daily EOD multi-day RS leaderboard digest
+        (operator wants the context; ~1 fire/day).
+
+    SCOPE: this only affects messages routed through send(). Position-management
+    exits (trade_tracker._send_exit_telegram — FLOOR_BREAK / MOVE_UP / IV_CRUSH /
+    THETA_WARNING, also OTHER-categorized) post to Telegram DIRECTLY, bypass send(),
+    and are intentionally unaffected — they are actionable alerts about your open
+    trades. Reversible: env OTHER_TELEGRAM=1."""
+    if not text:
+        return False
+    up = text.upper()
+    if any(k in up for k in _OTHER_KEEP):
+        return False  # carve-outs: genuine-edge / wanted-context
+    try:
+        from . import telegram_audit
+        return telegram_audit.categorize(text) == "OTHER"
+    except Exception:
+        return False
+
+
 async def send(
     text: str,
     ticker: str = "",
@@ -376,6 +421,22 @@ async def send(
         try:
             from . import telegram_audit
             telegram_audit.record_drop(text=text, ticker=ticker, drop_reason="king_demoted")
+        except Exception:
+            pass
+        return False
+
+    # OTHER → UI-only demotion (task #91, Jun-20 audit). The residual "OTHER"
+    # category is 5.5% of fires and is dominated by self-labeled soft-context flags
+    # (💹 NET FLOW, 🔍 SWING, 📈 RS ACCEL EOD, 🧲 GEX MAGNET, PRICE WATCH, 🏃 RUNNER,
+    # 🔥 MACRO PIVOT) with no measured edge. UNLIKE the whale/king gates this does
+    # NOT check `not force`, because the largest OTHER source (💹 NET FLOW) sends
+    # force=True and we WANT it suppressed. `not critical` is kept so 🚀 RS DECOUPLE
+    # (the one genuine-edge OTHER member, dispatched critical=True) keeps firing;
+    # is_demoted_other also carves RS DECOUPLE out by text. Reversible: OTHER_TELEGRAM=1.
+    if not critical and not other_telegram_on() and is_demoted_other(text):
+        try:
+            from . import telegram_audit
+            telegram_audit.record_drop(text=text, ticker=ticker, drop_reason="other_demoted")
         except Exception:
             pass
         return False
