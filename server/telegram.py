@@ -296,6 +296,25 @@ def whale_telegram_on() -> bool:
     return os.getenv("WHALE_TELEGRAM", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def king_telegram_on() -> bool:
+    return os.getenv("KING_TELEGRAM", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def is_demoted_king(text: str) -> bool:
+    """A KING breakout/migration alert (suppressed, task #94 follow-up). Tested
+    NOT ROBUST in the Jun-20 audit: 64.5% WR on the train fold collapsed to 36.4%
+    on the held-out test fold (derived migration signal, no clean flow row).
+    Uses the audit categorizer so precedence is respected (a CLUSTER+KING message
+    stays CLUSTER). Reversible: env KING_TELEGRAM=1."""
+    if not text:
+        return False
+    try:
+        from . import telegram_audit
+        return telegram_audit.categorize(text) == "KING"
+    except Exception:
+        return False
+
+
 def triple_telegram_on() -> bool:
     """TRIPLE-confluence composite alert was anti-predictive in the Jun-20 audit
     (lowest WR 36.4%, the ONLY category with a negative mean move -0.73%, loses on
@@ -347,6 +366,16 @@ async def send(
         try:
             from . import telegram_audit
             telegram_audit.record_drop(text=text, ticker=ticker, drop_reason="whale_demoted")
+        except Exception:
+            pass
+        return False
+
+    # KING → suppressed (task #94 follow-up). Not robust out-of-sample (64.5%
+    # train WR → 36.4% test). force/critical exempt. Reversible: env KING_TELEGRAM=1.
+    if not force and not critical and not king_telegram_on() and is_demoted_king(text):
+        try:
+            from . import telegram_audit
+            telegram_audit.record_drop(text=text, ticker=ticker, drop_reason="king_demoted")
         except Exception:
             pass
         return False
