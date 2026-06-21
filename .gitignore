@@ -67,3 +67,6 @@ thread_assets/*.png
 # Throwaway per-pattern backtest scripts written by workflow agents (findings
 # docs capture the results; the named harness scripts are the durable artifacts)
 scripts/gex_bt/_*.py
+
+# research-loop output artifacts (regenerated; docs capture the findings)
+research/results/

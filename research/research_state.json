@@ -1,0 +1,581 @@
+{
+  "session_id": "2026-06-20_overnight",
+  "cycle_count": 26,
+  "cumulative_hypotheses_tested": 27,
+  "global_trial_seed": 100,
+  "_seed_note": "n_trials passed to deflated-Sharpe = global_trial_seed + cumulative_hypotheses_tested. Seed=100 accounts for the repo's prior Direction-A families (GEX 42-cell preg, FibLV/DEX/gap/microstructure/EMA sweeps, 4-LLM rounds) so deflation pays for everything already looked at.",
+  "engine": "research/signal_bt.py (Layer-1, underlying daily). Layer-2 option translation = research/option_translate.py (TODO, ThetaData NBBO ask-in/bid-out).",
+  "category_coverage": {
+    "A": 5,
+    "B": 4,
+    "C": 1,
+    "D": 3,
+    "E": 4,
+    "F": 0,
+    "G": 0,
+    "interactions_AxE_ExA_etc": 10
+  },
+  "data_reality": {
+    "deep_daily": "QQQ OHLCV 1999-2026; 40 single-name OHLC (IPO-dependent); SPY close-only 1993-2026. Supports multi-year/multi-regime/cross-section rigor.",
+    "regime_proxy": "per-instrument 20d realized-vol terciles + 200SMA trend (no VIX parquet). VIX overlay = known_unknown.",
+    "option_fills_shallow": "chains_ytd_2026.db = Jan-Jun 2026 (ONE regime); intraday SPY/QQQ 160d. Cannot do multi-year option-level robustness; Layer-2 = recent-occurrence ThetaData NBBO sample only.",
+    "constraint": "Spec criteria 'edge in >=2 of 3 calendar years' + '>=3 of 5 regimes' are satisfiable at LAYER 1 (underlying) only. C (options-structure) and F (intraday 0-3DTE) are data-thin -> flagged, tested narrowly or deferred."
+  },
+  "known_unknowns": [
+    "VIX/term-structure regime overlay (only realized-vol proxy today)",
+    "FOMC/CPI/macro-event calendars not cached -> D-category event-drift signals blocked",
+    "No bonds/dollar/credit series -> true cross-asset (E) limited to equity-panel internals",
+    "Layer-2 option translation engine not built yet (slippage/IV-crush kill-test pending)",
+    "C-category (IV skew/term/put-call) untestable on deep history; only 6mo chains_ytd",
+    "Layer-2 robustness: high NBBO-skip on ATM weekly strikes (~55-60%). FIX before trusting any economic verdict: prefer monthly expiries, widen strike tolerance, raise n to full population or a large representative sample, add bootstrap CI on mean option P&L + edge-vs-control, consider Grok's regime-portfolio P&L attribution for overlapping holds."
+  ],
+  "hypotheses": [
+    {
+      "id": "A1_panic_bounce",
+      "category": "A1",
+      "status": "rejected",
+      "result": {
+        "n": 93,
+        "lift": 0.00149,
+        "perm_p": 0.5832,
+        "win": 0.527,
+        "base_win": 0.569,
+        "breadth": 0.323
+      },
+      "failure": "capitulation bounce is noise; dips slightly continue down cross-sectionally (breadth 0.32)"
+    },
+    {
+      "id": "A2_vol_term_backwardation",
+      "category": "C1",
+      "status": "rejected",
+      "result": {
+        "n": 436,
+        "lift": 0.00121,
+        "perm_p": 0.453,
+        "breadth": 0.462
+      },
+      "failure": "realized-vol backwardation bounce: CI includes 0, perm_p 0.45, breadth 0.46"
+    },
+    {
+      "id": "B1_mom_12_1",
+      "category": "B1",
+      "status": "REJECTED_at_layer2_STABLE_beta",
+      "result": {
+        "n": 2071,
+        "lift": 0.0036,
+        "perm_p": 0.0,
+        "ci": [
+          0.00208,
+          0.00508
+        ],
+        "win": 0.648,
+        "base_win": 0.599,
+        "oos_over_is": 2.245,
+        "oos_sharpe": 2.618,
+        "dsr": 0.978,
+        "breadth": 0.667,
+        "name_perm_sig": 0.59
+      },
+      "skeptic": [
+        "IS the momentum factor (Jegadeesh-Titman) \u2014 not novel",
+        "fires 30% of days = a long/beta REGIME filter, not a discrete setup; 64.8% win sits on 59.9% drift base",
+        "OOS Sharpe 2.618 OVERSTATED: 10d holds entered daily overlap ~90%, trade-independence violated",
+        "+0.36pp/10d magnitude almost surely too small to beat option premium+theta -> predict Layer-2 REJECT for naive long calls"
+      ],
+      "next": "Layer-2: ThetaData 10d ATM/OTM call P&L on a sample of entries, ask-in/bid-out",
+      "strict_verdict": "NEEDS_REFINEMENT (years_pos 0.58<0.60 after gate-nesting fix)",
+      "survivor_v2": false,
+      "layer2": {
+        "verdict": "LAYER2_REJECT (stable, CI-based, hardened engine)",
+        "powered": "n=50-69 valid, retention 0.85-0.87, frac_monthly 1.0 (monthly-preference fixed the old 55-60% NBBO skip)",
+        "ci_signal_mean_pnl": "positive (~[+1.3,+33]) -- long calls in a 2018-26 bull make money in absolute terms",
+        "ci_edge_vs_random": "INCLUDES 0 at BOTH n=60 [-27.4,+21.9] and n=80 [-2.1,+37.6] -- NO timing edge over random long calls",
+        "stability": "verdict = REJECT at BOTH samples (old engine flipped PASS/REJECT). Point estimate still noisy (-2.4 vs +17.7) but the CI-based verdict is stable -- that is the fix.",
+        "mono_regime_block": "100% trend_up -> hard PASS-blocker fires independently (edge is regime-conditional, can't be certified robust)",
+        "conclusion": "STABLE REJECT. Option gains are bull-market beta; no edge over random; regime-conditional. This RESOLVES the earlier INCONCLUSIVE -- the hardened engine reaches a powered sample and the CI gives a stable verdict.",
+        "regime_conditioned": "REJECT confirmed under FAIRER test: B1 does not beat same-regime (trend_up) random either -- ci_edge_vs_regime_random [-23.0,+23.8] includes 0. B1 IS the regime (be long in uptrends); no within-regime edge. Most honest possible verdict."
+      },
+      "disposition": "PARKED: Layer-1 = year-concentrated mono-regime beta (not a discrete edge); Layer-2 = inconclusive at attainable power. Re-test DEPRIORITIZED until Layer-2 hardened (bootstrap CI + monthly-expiry skip fix). Not a queue priority."
+    },
+    {
+      "id": "B2_52wk_low_reclaim",
+      "category": "B3",
+      "status": "rejected",
+      "result": {
+        "n": 56,
+        "lift": 0.00241,
+        "perm_p": 0.6034,
+        "breadth": 0.588
+      },
+      "failure": "52wk-low up-day reclaim: perm_p 0.60, CI includes 0, breadth 0.59"
+    },
+    {
+      "id": "D1_turn_of_month",
+      "category": "D1",
+      "status": "rejected",
+      "result": {
+        "n": 327,
+        "lift": 0.00022,
+        "perm_p": 0.9028,
+        "breadth": 0.462
+      },
+      "failure": "turn-of-month anomaly DECAYED on QQQ: lift ~0, perm_p 0.90 (consistent with post-publication decay)"
+    },
+    {
+      "id": "D2_opex_week",
+      "category": "D2",
+      "status": "rejected",
+      "result": {
+        "n": 304,
+        "lift": -0.00056,
+        "perm_p": 0.7832,
+        "breadth": 0.718,
+        "name_perm_sig": 0.0
+      },
+      "failure": "OPEX-week Mon->Fri: QQQ null; faint +0.25pp single-name tilt but 0% individually significant -> noise"
+    },
+    {
+      "id": "A3_vol_collapse_relief",
+      "category": "A3",
+      "status": "rejected",
+      "result": {
+        "n": 446,
+        "lift": -0.00146,
+        "perm_p": 0.357,
+        "oos_over_is": -0.052,
+        "breadth": 0.513
+      },
+      "failure": "vol-collapse relief rally is null (lift slightly negative, perm_p 0.36)",
+      "verified_lookahead_clean": true
+    },
+    {
+      "id": "A4_low_vol_trend",
+      "category": "A2",
+      "status": "rejected",
+      "result": {
+        "n": 2291,
+        "lift": -0.00033,
+        "perm_p": 0.6796,
+        "oos_over_is": -1.709,
+        "breadth": 0.41
+      },
+      "failure": "low-vol+uptrend melt-up FALSE: always-on (n=2291) pure beta, lift ~0 negative; breadth 0.41",
+      "verified_lookahead_clean": true
+    },
+    {
+      "id": "A5_vol_expansion_downtrend_short",
+      "category": "A3",
+      "status": "rejected",
+      "result": {
+        "n": 96,
+        "lift": 0.00201,
+        "perm_p": 0.5754,
+        "oos_over_is": -288.4,
+        "breadth": 0.632
+      },
+      "failure": "vol-expansion downtrend SHORT: positive-ish lift but perm_p 0.58 (noise), degenerate OOS",
+      "verified_lookahead_clean": true
+    },
+    {
+      "id": "A6_extreme_vol_meanrev",
+      "category": "A4",
+      "status": "rejected_significant_WRONG_direction",
+      "result": {
+        "n": 794,
+        "lift": -0.00426,
+        "perm_p": 0.0072,
+        "oos_over_is": -0.331,
+        "breadth": 0.641
+      },
+      "failure": "FALSIFIED LONG: extreme rv20 (>90th pct) -> CONTINUED DECLINE -0.43pp/10d, perm_p 0.007 SIGNIFICANT. Vol-clustering/crash-continuation, not bounce. Symmetric short = widow-maker (A5 downtrend-short null), NOT promoted",
+      "verified_lookahead_clean": true
+    },
+    {
+      "id": "E1_breadth_high",
+      "category": "E1",
+      "status": "rejected",
+      "result": {
+        "n": 3405,
+        "lift": -0.00013,
+        "perm_p": 0.8216,
+        "oos_over_is": -2.091,
+        "breadth": null
+      },
+      "failure": "breadth>0.70 continuation null: always-on (n=3405) beta, lift ~0, perm_p 0.82",
+      "verified_lookahead_clean": true
+    },
+    {
+      "id": "E2_breadth_washout_bounce",
+      "category": "E2",
+      "status": "rejected",
+      "result": {
+        "n": 1615,
+        "lift": -0.00062,
+        "perm_p": 0.5388,
+        "oos_over_is": -1.868,
+        "breadth": null
+      },
+      "failure": "breadth<0.25 washout bounce null (perm_p 0.54)",
+      "verified_lookahead_clean": true
+    },
+    {
+      "id": "E3_semis_leadership",
+      "category": "E3",
+      "status": "rejected",
+      "result": {
+        "n": 1622,
+        "lift": 0.0015,
+        "perm_p": 0.1438,
+        "oos_over_is": -729.8,
+        "breadth": null
+      },
+      "failure": "semis leadership marginally positive (+0.15pp, perm_p 0.14) but fails year-consistency (0.52) + OOS -> not robust",
+      "verified_lookahead_clean": true
+    },
+    {
+      "id": "E4_qqq_spy_rs_top",
+      "category": "E4",
+      "status": "rejected",
+      "result": {
+        "n": 2171,
+        "lift": -0.00088,
+        "perm_p": 0.3024,
+        "oos_over_is": -1.299,
+        "breadth": null
+      },
+      "failure": "QQQ/SPY RS top-tercile null: lift negative, regimes 2/5, years 0.52, DSR fails",
+      "verified_lookahead_clean": true
+    },
+    {
+      "id": "B3_pullback_in_uptrend",
+      "category": "B2",
+      "status": "needs_refinement_LIKELY_BETA",
+      "result": {
+        "n": 632,
+        "lift": 0.00334,
+        "perm_p": 0.0108,
+        "oos_over_is": 0.78,
+        "breadth": 0.641
+      },
+      "failure": "NEAR-MISS: perm_p 0.011, +0.33pp/5d, OOS 0.78, breadth 0.64 all PASS -- but fails years_pos (0.59) AND is mono-regime trend_up by construction (close>200SMA) = B1's beta cousin. Skeptic: LIKELY_BETA_OR_ARTIFACT. NOT promoted; year-gate+skeptic both caught it",
+      "verified_lookahead_clean": true
+    },
+    {
+      "id": "B4_momentum_accel",
+      "category": "B4",
+      "status": "rejected",
+      "result": {
+        "n": 830,
+        "lift": -0.00138,
+        "perm_p": 0.2278,
+        "oos_over_is": -0.379,
+        "breadth": 0.41
+      },
+      "failure": "momentum acceleration null/negative (lift -0.14pp, perm_p 0.23, breadth 0.41)",
+      "verified_lookahead_clean": true
+    },
+    {
+      "id": "I1_lowvol_highbreadth_cont",
+      "category": "AxE",
+      "status": "rejected",
+      "result": {
+        "n": 1953,
+        "lift": -9e-05,
+        "perm_p": 0.9232,
+        "oos_over_is": -2.134
+      },
+      "failure": "calm+broad continuation null: always-on (n=1953) beta, lift ~0, perm_p 0.92",
+      "verified_lookahead_clean": true
+    },
+    {
+      "id": "I2_highvol_lowbreadth_washout",
+      "category": "AxE",
+      "status": "REJECTED_at_layer2",
+      "result": {
+        "n": 1014,
+        "lift": 0.00268,
+        "perm_p": 0.0498,
+        "oos_over_is": 1.064
+      },
+      "failure": "LONE Wave-3 survivor (looser gate) -> Layer-2 REJECT. See layer2 block.",
+      "verified_lookahead_clean": true,
+      "layer2": {
+        "verdict": "LAYER2_REJECT (regime_conditioned)",
+        "dom_regime": "vol_high (0.92)",
+        "ci_sig_mean": "[0.4,44.5] barely excludes 0",
+        "ci_edge_all_random": "[-5.9,45.2] incl 0",
+        "ci_edge_REGIME_random": "[-14.6,40.7] incl 0 -> does NOT beat random high-vol entries; low-breadth adds nothing beyond 'stress'",
+        "per_year": "works in V-bottoms (2019+64,2020+60,2025+85) but LOSES in sustained 2022 bear (-15.5% n=24, largest cell); +mean leans on 2026 +199% n=2",
+        "read": "vol BETA + V-bottom survivorship + outlier-driven. The regime-conditioned path correctly engaged (mono vol_high) and rejected. First real-signal exercise of PASS_REGIME_CONDITIONAL machinery -> worked."
+      }
+    },
+    {
+      "id": "I3_breadth_thrust_lowvol",
+      "category": "ExA",
+      "status": "rejected",
+      "result": {
+        "n": 195,
+        "lift": 0.00211,
+        "perm_p": 0.5208,
+        "oos_over_is": -21.343
+      },
+      "failure": "confirmed-thrust null: perm_p 0.52, degenerate OOS",
+      "verified_lookahead_clean": true
+    },
+    {
+      "id": "I4_semis_lead_lowvol",
+      "category": "ExA",
+      "status": "rejected",
+      "result": {
+        "n": 1033,
+        "lift": 0.00216,
+        "perm_p": 0.1144,
+        "oos_over_is": 2.401
+      },
+      "failure": "semis-lead+calm: perm_p 0.114 (>0.05), fails years_pos + deflated_sharpe (0.18). Marginal, not robust",
+      "verified_lookahead_clean": true
+    },
+    {
+      "id": "I5_semis_lag_highvol_short",
+      "category": "ExA",
+      "status": "rejected",
+      "result": {
+        "n": 577,
+        "lift": -0.00263,
+        "perm_p": 0.0588,
+        "oos_over_is": 0.791
+      },
+      "failure": "short falsified-ish: lift wrong-direction, perm_p 0.059, oos_sharpe -0.90",
+      "verified_lookahead_clean": true
+    },
+    {
+      "id": "I6_qqq_spy_rs_accel",
+      "category": "E",
+      "status": "rejected",
+      "result": {
+        "n": 2279,
+        "lift": -9e-05,
+        "perm_p": 0.901,
+        "oos_over_is": -2.167
+      },
+      "failure": "RS-acceleration null: always-on (n=2279) beta, lift ~0, perm_p 0.90",
+      "verified_lookahead_clean": true
+    },
+    {
+      "id": "I7_calm_pullback_uptrend",
+      "category": "AxB",
+      "status": "needs_refinement_LIKELY_BETA",
+      "result": {
+        "n": 701,
+        "lift": 0.00237,
+        "perm_p": 0.0606,
+        "oos_over_is": 0.949
+      },
+      "failure": "B3 + vol filter = STILL trend beta. Only fails years_pos; mono-trend by construction (close>200SMA); skeptic LIKELY_BETA. Same family as B1/B3. Not promoted.",
+      "verified_lookahead_clean": true
+    },
+    {
+      "id": "I8_vol_expansion_breadth_break_short",
+      "category": "AxE",
+      "status": "rejected",
+      "result": {
+        "n": 741,
+        "lift": -0.00032,
+        "perm_p": 0.7818,
+        "oos_over_is": -3.54
+      },
+      "failure": "short null: perm_p 0.78, lift ~0",
+      "verified_lookahead_clean": true
+    },
+    {
+      "id": "I9_double_rs_lag_short",
+      "category": "E",
+      "status": "rejected_significant_WRONG_direction",
+      "result": {
+        "n": 565,
+        "lift": -0.00296,
+        "perm_p": 0.0328
+      },
+      "failure": "short SIGNIFICANTLY WRONG-direction (perm_p 0.033): when semis AND tech both lag, QQQ BOUNCES next 5d (contrarian mean-reversion, not a short edge). Catching-falling-knives = dangerous; NOT promoted.",
+      "verified_lookahead_clean": true
+    },
+    {
+      "id": "I10_breadth_price_divergence_short",
+      "category": "ExB",
+      "status": "rejected",
+      "result": {
+        "n": 248,
+        "lift": -0.0012,
+        "perm_p": 0.5712,
+        "oos_over_is": 0.325
+      },
+      "failure": "bearish breadth-divergence null: perm_p 0.57",
+      "verified_lookahead_clean": true
+    },
+    {
+      "id": "D_pre_fomc_drift",
+      "category": "D1",
+      "status": "REJECTED_decayed_anomaly",
+      "result": {
+        "spy_lift_bps": 4.1,
+        "spy_perm_p": 0.7,
+        "qqq_lift_bps": 17.7,
+        "qqq_perm_p": 0.24,
+        "n": 124,
+        "breadth": 0.846
+      },
+      "failure": "Pre-FOMC drift (Lucca-Moench) REJECTED in modern era. Positive + market-wide (breadth 0.85) but NOT significant 2011-2026 (CI incl 0). Clean DECAY replication: strong 2011-2015 (+16 to +74bps), faded/reversed post-2015 publication (2018 -46bps), 2022 resurgence (+47/+91, hiking cycle). No Layer-2 (rejected + magnitude can't clear 1d ATM premium).",
+      "verified_lookahead_clean": true,
+      "doc": "docs/research/PRE_FOMC_FINDINGS.md"
+    }
+  ],
+  "validated_edges": [
+    {
+      "id": "PRIOR_fib_lv_up",
+      "name": "FibLV EMA100 +2sigma break -> 5d band (UP only)",
+      "verdict": "SURVIVES (Layer-1.5, SPY intraday)",
+      "key": "+3.7pp vs distance-matched, 95% CI [+0.1,+7.4], p=0.020; split-half robust; DOWN side NULL; 'almost always' is FALSE",
+      "source": "docs/research/FIB_LV_FINDINGS.md",
+      "caveat": "intraday SPY tick; not yet option-translated"
+    },
+    {
+      "id": "PRIOR_opening_drive",
+      "name": "Opening 30m drive -> same-side close",
+      "verdict": "VALIDATED as CONTEXT (not a fresh entry)",
+      "key": "SPY 67.3% [60,75], QQQ 71.1% [64,78], symmetric; 10am move mostly done",
+      "source": "docs/research/MICROSTRUCTURE_FINDINGS.md"
+    }
+  ],
+  "rejected_hypotheses": [
+    {
+      "id": "PRIOR_gap_fill_fade",
+      "reason": "lift +1.3pp CI [-0.2,+2.8] includes 0; distance-matched control kills it; deep-fill = coin flip"
+    },
+    {
+      "id": "PRIOR_day_of_week",
+      "reason": "Holm-corrected p>0.10 all weekdays since 2021; Mon->Tue only full-history survivor, dead 2021-2026"
+    },
+    {
+      "id": "PRIOR_ema_9_21_ride",
+      "reason": "SURVIVORSHIP only: rides persist (55% vs 17%) but distance-matched fwd lift ~0 (SPY -0.1pp, QQQ -1.5pp)"
+    },
+    {
+      "id": "PRIOR_ofi_return",
+      "reason": "COINCIDENT not leading: corr(OFI,ret_t)=+0.32 but partial corr(OFI,ret_t+1|ret_t)=-0.009"
+    },
+    {
+      "id": "PRIOR_dex_intraday_flow",
+      "reason": "FLOW_COINCIDENT: contemp corr +0.40 but partial(flow|contemp ret)=+0.004; zero leadership"
+    },
+    {
+      "id": "PRIOR_bubble_magnet",
+      "reason": "FALSIFIED: bubble-placebo migration -2.0e-5, one-sided p=0.98; bubbles drift slightly AWAY"
+    },
+    {
+      "id": "PRIOR_ema_8_20_cross",
+      "reason": "WEAKER/complementary: win50 36% vs 57% GEX; keep as shadow parallel only, not a standalone edge"
+    },
+    {
+      "id": "DARKPOOL_SR_GUARDRAIL",
+      "reason": "REJECTED by lit control ($7.11 Databento). DP levels 72% coincide with lit volume nodes; DP holds no better than LIT (-1.8pp, CI incl 0). Pilot's +5pp was a PRICE-PATH ARTIFACT (test-day path built from the dark tape itself -> anchored at dark levels). On a clean lit path, neither dark NOR lit levels beat random for S/R. See docs/research/DARKPOOL_SR_FINDINGS.md."
+    },
+    {
+      "id": "KING_MIGRATION_RUNNER",
+      "reason": "FAILS OOS. n=174 'validation' was single-window April 2026. Jan-Jun re-validation: overall lift +0.49% (day-clustered CI [-0.35,+1.31] incl 0); April lift +0.62% / NON-April +0.01% (zero); Feb/Mar/Jun NEGATIVE (Jun -2.52%, 7% WR). Trend beta like B1 (April +5.78% = 5.16% beta + 0.62% signal). Telegram mute (64.5%->36.4% WR) was correct. Option economics: low-WR (40%), tail-driven, not significant. See docs/research/KING_MIG_OOS_FINDINGS.md."
+    }
+  ],
+  "open_questions": [
+    "Does vol mean-reversion (panic-bounce) survive once option-translated (IV is highest exactly when the signal fires)?",
+    "Cross-sectional 12-1 momentum on the 40-name panel: real or just beta to the AI-megacap run?",
+    "Turn-of-month / OPEX-week calendar effects on QQQ post-2015?",
+    "ANSWERED (B1): momentum is real-but-beta on the underlying and NEGATIVE-vs-control as long calls. Closed."
+  ],
+  "session_insights": [
+    "Two-layer design forced by data: signals discovered on deep underlying (Layer 1), then killed-or-confirmed by realistic option fills on the shallow recent window (Layer 2).",
+    "The 40-name cross-section is a stronger overfitting guard than the spec asks for: breadth (frac names with positive lift) must clear 0.65 or a QQQ-only 'edge' is suspect.",
+    "Wave 1: 5/6 rejected; the lone Layer-1 pass (B1 momentum) is the momentum FACTOR = beta, queued for Layer-2 where its +0.36pp/10d should die to option premium.",
+    "Calendar anomalies (turn-of-month, OPEX week) are DEAD on modern QQQ \u2014 clean replication of the post-publication anomaly-decay literature.",
+    "Buy-the-panic-dip (A1) is NOT an edge on QQQ/single names: high-vol 2-sigma drops slightly continue down (cross-breadth 0.32).",
+    "Layer-2 PROVED its worth on B1: a signal that passed strict Layer-1 made +10.6% on long calls IN ISOLATION but LOST to a random-entry control (+22.8%). The absolute option gains were pure QQQ bull beta; the momentum timing actively hurt. This is the exact failure the two-layer design exists to catch.",
+    "METHODOLOGY: Layer-2 economic verdict FLIPPED (REJECT@2018+ vs PASS@2021+) on the same signal due to small-n + 55-60% NBBO-skip. Added engine power-guard (n>=30 AND skip_rate<=0.40 required for a confident verdict). A noisy option-translation is worse than none \u2014 it manufactures false PASS/REJECTs.",
+    "Wave 2 (10 signals): 0 survivors. E-category (breadth + semis-RS + QQQ/SPY-RS) is COMPREHENSIVELY NULL -- well-known/priced factors; no forward edge on QQQ.",
+    "A6 extreme-vol-washout is SIGNIFICANT in the WRONG direction (perm_p 0.007, -0.43pp/10d): extreme rv20 -> continued decline (vol clustering), falsifying 'buy the washout'. The tradeable read (short) is a widow-maker; not promoted.",
+    "B3 pullback-in-uptrend was the only near-miss and is B1's structural cousin (mono-regime trend_up, year-concentrated). The years_pos gate AND the adversarial skeptic BOTH flagged it as beta -- the pipeline is catching exactly the false positives raw permutation-significance would wave through.",
+    "Always-on signals (A4 n=2291, E1 n=3405) are textbook beta: huge n, lift ~0. High event count != edge.",
+    "Layer-2 HARDENED: monthly-expiry preference cut NBBO-skip 55-60%->~13% (retention 0.40->0.87); bootstrap CIs replace point estimates; mono-regime is a hard PASS-blocker. B1 now gives a STABLE REJECT at both n=60 and n=80 (was INCONCLUSIVE/flipping). The CI-based verdict is stable even though the point estimate stays noisy -- exactly the goal.",
+    "Guard validated 3 ways: true-negative B1 REJECT (stable 6/6) + true-positive multi-regime oracle PASS + true-positive mono-regime oracle REJECTED-despite-+61pp-edge. The last quantifies the mono-regime block's Type-II cost and is the strongest motivation for regime-conditioned controls.",
+    "Regime-conditioned controls SHIPPED + validated: the mono-regime hard block (a Type-II liability that rejected a real +61pp regime-specific edge) is replaced by comparison vs SAME-regime random. Result: B1 still REJECTs (fails even the fairer same-regime test = pure regime beta), locked-oracle now PASS_REGIME_CONDITIONAL. The guard distinguishes regime beta from genuine within-regime edge.",
+    "Wave 3 (10 INTERACTION signals): 0 genuine edges. Combining two null/beta conditions (vol x breadth, vol x RS, divergences) does NOT manufacture an edge -- the interaction space is also null on QQQ.",
+    "I2 (lone survivor, high-vol+low-breadth washout) -> Layer-2 REJECT: it's vol BETA. Works in V-bottoms (2020,2025) but lost -15.5% across 24 trades in the 2022 bear; does NOT beat random high-vol entries (regime CI [-14.6,+40.7] incl 0). First real-signal test of the regime-conditioned path -> it correctly engaged + rejected.",
+    "I9 double-RS-lag SHORT is significantly WRONG-direction (perm_p 0.033): when semis AND tech both lag, QQQ bounces -- a contrarian effect, not a short edge (and a falling-knife trade). Like A6, a significant negative finding.",
+    "I7 calm-pullback = B3 + vol filter = STILL trend beta. Adding a vol condition to a trend-beta signal does not de-beta it.",
+    "Dark-pool S/R idea: REJECTED. The decisive lit-control ($7) showed DP levels are redundant with lit volume (72% coincide, no better hold), and the suggestive pilot was a price-path artifact (building the test path from the dark tape inflated hold at dark levels). Lesson: the price PATH must be independent of the LEVELS being tested, not just the level-construction being causal. $7 control saved a $30-55 powered pull + a false Telegram feature.",
+    "Category D pre-FOMC drift: REJECTED. Faithful replication of POST-PUBLICATION DECAY -- Lucca-Moench strong 2011-2015, faded post-2015, 2022 resurgence (hiking cycle when FOMC was THE driver). Market-wide (breadth 0.85) but not significant on the modern sample. The best non-earnings/no-IV-crush event candidate decayed; Category D looks thin (PEAD=IV crush, ToM=dead, CPI=direction-set-by-10am).",
+    "King-migration runner FAILS OOS: the n=174 +4.14% 'validation' was single-window April 2026; Jan-Jun re-validation shows non-April lift = +0.01% (zero), Feb/Mar/Jun negative. It's trend beta (April return = 5.16% beta + 0.62% signal), same family as B1. The user's own telegram mute (failed OOS 64.5->36.4%) was the tell. Execution optimization correctly NOT built on it. LESSON: a single-window 'validation' (even n=174) is not OOS validation; cluster the CI (naive perm over-rejected here because events cluster in one strong-beta month).",
+    "EXIT-POLICY = first actionable POSITIVE finding. On fat-tailed OTM-call lottos, MANAGING winners destroys expectancy: hold-to-expiry +57% (CI [19,96] excludes 0, max +966%, 25%>+100%) vs fixed TP+50/+100% NEGATIVE (-12%/-11%, cap the tail). Matches user's real wins (let runners run) + losses (greedy TPs/overleverage). Caveat: April single-window -> magnitude beta-inflated, RANKING robust. Phase 2: cross-regime confirm + SIZING layer (median -100% demands tiny fixed-fraction). doc: docs/research/EXIT_POLICY_FINDINGS.md",
+    "EXIT-POLICY PHASE 2 (cross-regime CONFIRMED): 'don't cap winners' holds Jan-Jun (CIs exclude 0), retiring the April single-window caveat. PARTIAL SCALING (sell 1/3 @+100-150%, run rest) is the tradeable rule: keeps ~75% expectancy + full tail, cuts median -58%->-17%. REGIME GATE is the biggest lever (Mar/Apr/May +112/+235/+134 vs Feb/Jun -37/-18; no exit saves down months). This + the engine = the session's durable, positive deliverables. Telegram: refine TP-window alert to scale-1/3 + regime-caution flag."
+  ],
+  "next_priorities": [
+    "HARDEN Layer-2 (bootstrap CI + monthly-expiry skip fix) -- still the gating bottleneck; no economic verdict is trustworthy until done.",
+    "Categories F (intraday 0-3DTE) and G (combinations) remain at 0 coverage. F needs intraday option data (160d, single-regime -> n-guard risk); G needs >=5 validated bases (have 0). Both DEFERRED with cause.",
+    "If continuing Layer-1: the productive frontier is NON-price-derived signals (the price/vol/breadth/RS space is now well-covered and mostly null). Options-structure (C) needs the 6mo chains_ytd or ThetaData IV history; event-drift (D) needs FOMC/CPI calendars (known_unknown)."
+  ],
+  "layer2_queue": [],
+  "layer2_resolved": [
+    {
+      "id": "B1_mom_12_1",
+      "verdict": "STABLE REJECT (beta, no edge vs random, mono-regime)"
+    }
+  ],
+  "gate_fix": "years_pos>=0.60 added to BOTH survivor(v2) and strict evaluate() so VALIDATED is a strict superset of survivor. B1 correctly downgraded VALIDATED->NEEDS_REFINEMENT.",
+  "parked_likely_beta": [
+    {
+      "id": "B1_mom_12_1",
+      "reason": "momentum factor = beta; mono-regime trend-up; Layer-2 inconclusive; re-test only after Layer-2 CI/skip hardening"
+    }
+  ],
+  "methodology_notes": "research/methodology_notes.md \u2014 dual controls, power guard, NBBO tail bias, mono-regime trap, year-concentration, gate nesting",
+  "layer2_hardening_todo": [
+    "Overlapping-position P&L attribution (regime-portfolio view) -- the per-trade bootstrap still assumes approx-independence; fine for year-stratified samples, not for dense consecutive entries."
+  ],
+  "wave3_guidance": [
+    "BIAS toward INTERACTION/conditional signals (vol x breadth, vol x relative-strength), NOT another pure level/momentum/breadth variant \u2014 that space is mined and mostly null",
+    "Event-style D ideas once FOMC/CPI calendars are sourced",
+    "C options-structure once IV-term/skew history is available (chains_ytd 6mo or ThetaData greeks)",
+    "AVOID: more pure momentum, more simple breadth, anything close to the 9 priors / B1-B3 trend-filtered family"
+  ],
+  "layer2_hardening_done": [
+    "Bootstrap CI on edge_vs_random AND edge_vs_opposite_dir -- DONE",
+    "Monthly-expiry preference (skip 55-60%->13-15%, retention 0.40->0.85) -- DONE",
+    "mono_regime now a HARD PASS-blocker; richer regime_diversity reporting -- DONE",
+    "Data-access split to theta_options.py + retry-wrapped _get + config block -- DONE",
+    "Regime-conditioned controls: mono-regime signals now evaluated vs SAME-regime random (PASS_REGIME_CONDITIONAL) instead of hard-blocked. Resolves the Type-II cost; B1 still REJECTs (no within-regime edge), locked-oracle PASSes."
+  ],
+  "guard_validation": {
+    "true_negative_B1": "REJECT, STABLE across 6 draws (n=50/60/65/80/80/95); edge_vs_random CI includes 0 every time. Old engine flipped -12/+32/+72.",
+    "true_positive_multiregime_oracle": "PASS. Lookahead +3% oracle (80% trend_up, spans vol 5/29/15): ci_sig_mean [69,92], ci_edge_random [40,87] both exclude 0; mono-block correctly did NOT fire.",
+    "true_positive_monoregime_oracle": "RESOLVED by regime-conditioned controls: uptrend-locked +3% oracle now -> LAYER2_PASS_REGIME_CONDITIONAL (ci_edge_vs_regime_random [38.0,76.6] excludes 0). Old hard-block rejected this +61pp real edge; the regime-conditioned control rescues it while STILL rejecting B1 (which fails the same-regime test).",
+    "conclusion": "Guard validated 4 ways: (1) B1 beta -> REJECT (fails even same-regime test), (2) multi-regime oracle -> PASS, (3) regime-locked oracle -> PASS_REGIME_CONDITIONAL (Type-II cost RESOLVED), (4) underpowered -> INCONCLUSIVE. Regime-conditioned controls replaced the mono-regime hard block: a real within-regime edge survives; regime beta still dies.",
+    "test_fixtures": [
+      "_ORACLE_lookahead_test",
+      "_ORACLE_uptrend_locked_test (deliberate-LOOKAHEAD fixtures, NOT hypotheses; excluded from category_coverage)"
+    ]
+  },
+  "exit_findings": {
+    "summary": "DON'T cap winners on OTM lottos; hold-to-expiry or wide trail; size tiny; regime-gate",
+    "best_policy": "hold_expiry +57% CI[19,96]",
+    "worst": "fixed TP+50/+100% NEGATIVE",
+    "phase2": [
+      "cross-regime confirm (add chop/June)",
+      "sizing/circuit-breaker layer",
+      "IV-crush/earnings-blackout exits"
+    ],
+    "phase2_crossregime": {
+      "confirmed": "RANKING HOLDS Jan-Jun (not April-only): hold_expiry +72.7% / partial-scale +37-54%, all CIs exclude 0; trailing/fixed-TP lose.",
+      "tradeable_rule": "PARTIAL SCALING: sell 1/3 at +100-150%, run the rest -> keeps ~75% expectancy + full tail (28%>+100%, +1100% max), cuts median loss -58%->-17%. Or sell 1/2 at +100% for breakeven median + 48% WR.",
+      "regime_gate": "BIGGEST lever: by-month hold_expiry = Jan+12 Feb-37 Mar+112 Apr+235 May+134 Jun-18. Lottos print in trending-up tape, bleed in chop/down; NO exit saves Feb/Jun. Gating out down/chop > any exit tweak.",
+      "telegram": "EARNED: refine Mir TP-Window alert -> suggest scale-1/3-at-+100% (not flat TP) for lotto positions; add regime-caution flag in downtrends. Inform discipline, don't hard-gate auto-trade.",
+      "phase3": "Sizing layer: median still -17% w/ partial-scale + correlated (all fire in up months) -> correlation-capped fractional Kelly + concurrent-exposure cap."
+    }
+  }
+}

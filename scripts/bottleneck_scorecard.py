@@ -134,6 +134,24 @@ UNIVERSE = [
 
 LAYER_ORDER = ["POWER", "PACKAGING", "MEMORY", "PASSIVES", "ASIC", "COMPUTE", "PHOTONICS", "FOUNDRY", "DEMAND"]
 
+# Phase 1-2 = the asymmetric, pre-consensus set (best risk-adjusted entry is the
+# Phase 1->2 transition). Used by scripts/bottleneck_phase_watch.py (framework #4).
+PHASE_WATCH_MAX = 2
+_BY_TICKER = {r["ticker"]: r for r in UNIVERSE}
+
+
+def context_for(ticker: str) -> dict | None:
+    """Return the bottleneck-context record for a ticker, or None if not in the
+    US-optionable bottleneck universe. The importable hook for framework #4 and any
+    future CONTEXT-only alert annotation (never a trigger)."""
+    if not ticker:
+        return None
+    return _BY_TICKER.get(ticker.upper())
+
+
+def universe_tickers() -> list[str]:
+    return [r["ticker"] for r in UNIVERSE]
+
 
 def _load_universe_membership():
     """Return (all_set, tier_fn) from server.tickers, or (None, None) if unavailable."""

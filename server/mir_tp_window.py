@@ -23,11 +23,25 @@ Dedup: fires once per calendar day (ET). Resets at midnight.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 import time
 from datetime import datetime, date
 from pathlib import Path
 from typing import Any
+
+# Data-backed exit/sizing discipline (2026-06-21 research, cross-regime confirmed
+# Jan-Jun 2026): on far-OTM "lotto" single-name calls, flat profit-targets were
+# NEGATIVE-EV; scaling 1/3 at +100% and running the rest kept ~75% of expectancy +
+# the full right tail while halving the median loss. And these lottos LOSE in
+# down/chop tape (Feb -37%, Jun -18%) — hence the downtrend caution. This is
+# DISCIPLINE guidance, never an auto-trade rule. Reversible: env MIR_TP_DISCIPLINE=0.
+# See docs/research/EXIT_POLICY_FINDINGS.md.
+SPY_DOWNTREND_PCT = -1.5   # SPY <= this over ~1wk -> down/chop caution
+
+
+def _discipline_on() -> bool:
+    return os.getenv("MIR_TP_DISCIPLINE", "1").strip().lower() in ("1", "true", "yes", "on")
 
 
 # Once-per-day dedup state (in-memory; resets on restart)
@@ -63,6 +77,24 @@ def _spot_at(conn, ticker: str, target_ts: int, window: int = 900) -> float | No
         (ticker, target_ts, window, target_ts),
     ).fetchone()
     return float(r[0]) if r and r[0] else None
+
+
+def _tape_caution(conn) -> tuple[bool, str]:
+    """True if the broad tape looks like a down/chop regime — where the lotto-call
+    payoff bled (Feb -37% / Jun -18% in the 2026 study). Uses SPY's ~1-week trend
+    from snapshots. Fail-open: any missing data / error -> (False, '') so a flaky
+    read never adds a false caution. DISCIPLINE context, not a signal."""
+    try:
+        now_ts = int(time.time())
+        spy_now = _spot_at(conn, "SPY", now_ts, window=1800)
+        spy_past = _spot_at(conn, "SPY", now_ts - 6 * 86400, window=2 * 86400)
+        if spy_now and spy_past:
+            chg = (spy_now / spy_past - 1) * 100
+            if chg <= SPY_DOWNTREND_PCT:
+                return True, f"SPY {chg:+.1f}% / ~1wk"
+    except Exception:
+        pass
+    return False, ""
 
 
 def _direction(opt_type: str | None, sentiment: str | None) -> str:
@@ -211,8 +243,9 @@ def _collect_open_alerts() -> dict[str, list[dict[str, Any]]]:
             flow_by_key[key] = f
     flow_open = list(flow_by_key.values())
 
+    tape_caution = _tape_caution(conn)
     conn.close()
-    return {"flow": flow_open, "soe": soe_open}
+    return {"flow": flow_open, "soe": soe_open, "tape_caution": tape_caution}
 
 
 def _format_telegram(open_alerts: dict[str, list[dict]]) -> str:
@@ -284,6 +317,24 @@ def _format_telegram(open_alerts: dict[str, list[dict]]) -> str:
         "<i>Mir's rule: take partial profits regardless of target. "
         "Re-enter at power hour (3-4 PM ET) or tomorrow morning if setup intact.</i>"
     )
+
+    # Data-backed exit/sizing discipline for OTM/lotto single-name calls (reversible:
+    # env MIR_TP_DISCIPLINE=0). Guidance only — never an auto-trade rule.
+    if _discipline_on():
+        lines.append("")
+        lines.append("📊 <b>DATA-BACKED DISCIPLINE</b> <i>(far-OTM / lotto single-name calls)</i>")
+        lines.append(
+            "<i>Scale ⅓ at +100%, run the rest. Flat profit-targets tested NEGATIVE-EV; "
+            "letting winners run kept ~75% of expectancy + the full right tail "
+            "(cross-regime confirmed, Jan–Jun '26). Size each as a lotto.</i>"
+        )
+        caution, reason = open_alerts.get("tape_caution", (False, ""))
+        if caution:
+            lines.append(
+                f"⚠️ <b>Down/chop tape</b> ({reason}) — lotto calls LOST in down months "
+                f"(Feb −37%, Jun −18%). Trim size / be quicker to cut. "
+                f"<i>Discipline, not a signal.</i>"
+            )
 
     return "\n".join(lines)
 
