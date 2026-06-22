@@ -320,14 +320,21 @@ def _discipline_footer(open_alerts: dict[str, Any]) -> list[str]:
                 f"<i>Discipline, not a signal.</i>"
             )
 
-    # Phase-1 sizing MONITOR — the regime-scaled concurrent-exposure cap (env MIR_LOTTO_MONITOR=0).
+    # Phase-1/2a sizing MONITOR — regime-scaled cap + (Phase 2a) manual exposure compare.
+    # env MIR_LOTTO_MONITOR=0 to disable.
     if _lotto_monitor_on():
         lc = open_alerts.get("lotto_cap") or {}
+        exp = None
+        try:
+            from .lotto_exposure import get_exposure
+            exp = get_exposure()
+        except Exception:
+            exp = None
+        capital = _lotto_capital() or (exp.get("capital") if exp else None)
         out.append("")
         out.append("💰 <b>LOTTO EXPOSURE CAP</b> <i>(size the book, not the trade)</i>")
         cap = lc.get("cap_pct")
         if cap is not None:
-            capital = _lotto_capital()
             dollar = f" (~${cap / 100 * capital:,.0f})" if capital else ""
             out.append(
                 f"Tape <b>{lc.get('regime')}</b> ({lc.get('reason')}) → keep total concurrent "
@@ -339,11 +346,41 @@ def _discipline_footer(open_alerts: dict[str, Any]) -> list[str]:
                 f"{LOTTO_CAP_RISK_ON:g}% / chop {LOTTO_CAP_CHOP:g}% / downtrend "
                 f"{LOTTO_CAP_DOWN:g}% of capital."
             )
+        out.extend(_lotto_exposure_lines(exp, capital, cap))
         out.append(
             "<i>Backtest: an uncapped book bankrupted in Q1 '26 (−138% MTM drawdown); this cap "
             "held max DD ~26%. Check your open lotto premium vs this number.</i>"
         )
     return out
+
+
+def _lotto_exposure_lines(exp: dict[str, Any] | None, capital: float | None,
+                          cap_pct: float | None) -> list[str]:
+    """Phase-2a manual-exposure compare: your current lotto premium vs the regime cap,
+    with a staleness warning (a stale figure misleads). `exp` is the get_exposure() dict."""
+    if not exp:
+        return ["<i>Your book: not set — "
+                "<code>python scripts/set_lotto_exposure.py &lt;premium&gt; --capital N</code></i>"]
+    try:
+        from .lotto_exposure import staleness_hours, age_str
+    except Exception:
+        return []
+    prem = exp["premium_at_risk"]
+    lines: list[str] = []
+    if capital and cap_pct is not None:
+        pct = prem / capital * 100.0
+        delta = pct - cap_pct
+        status = (f"⚠️ <b>OVER by {delta:.1f} pp</b> — trim" if delta > 0
+                  else f"✅ under (<b>{-delta:.1f} pp</b> room)")
+        lines.append(f"Your book: <b>${prem:,.0f}</b> = <b>{pct:.1f}%</b> of capital "
+                     f"vs ~{cap_pct:g}% cap → {status}")
+    else:
+        lines.append(f"Your book: <b>${prem:,.0f}</b> "
+                     f"<i>(set --capital or MIR_LOTTO_CAPITAL for %)</i>")
+    hrs = staleness_hours(exp)
+    if hrs is not None and hrs > 24:
+        lines.append(f"<i>⏳ figure set {age_str(hrs)} — update it if your book changed</i>")
+    return lines
 
 
 def _format_telegram(open_alerts: dict[str, list[dict]]) -> str:

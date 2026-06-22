@@ -140,3 +140,17 @@ It reuses the regime signal already in place; the only new piece is the exposure
   (the "lotto classifier + exposure aggregator", step 1, deferred until a real positions source exists).
 - **Recommended ruleset going forward:** concurrent-exposure cap + regime scaling (S2). Equal-weight
   within the cap, 3% single-name ceiling. No breaker.
+
+## Update 2026-06-21 — Phase 2a exposure feed (hybrid: manual now, broker later)
+- **SHIPPED Phase 2a (manual exposure feed):** `server/lotto_exposure.py` (JSON store at
+  `data/lotto_exposure.json`, gitignored) + `scripts/set_lotto_exposure.py` CLI. The Mir TP monitor
+  now compares your **current lotto premium-at-risk** to the regime-scaled cap and flags
+  **OVER/under** with the pp gap. **Staleness is first-class** — a figure older than 24h is flagged
+  (`⏳ set Nd ago`) so a stale number can't silently mislead. Set it:
+  `python scripts/set_lotto_exposure.py 18500 --capital 150000`.
+- **Phase 2b (deferred): broker pull.** Replace the manual figure with an automatic E*Trade/Tradier
+  positions read + lotto classifier (single-name call, ≥+5% OTM, ≤45 DTE → sum premium). Gate on
+  first verifying a real funded account's positions endpoint returns live holdings (the dev sandbox
+  was mocked / paper is delayed — those were execution/quote limits, position-read is a separate call).
+- **Gating (soft/hard) stays parked** until 2b gives real exposure data AND an out-of-sample window
+  (e.g. add 2025) confirms the regime-scaling magnitude beyond this one bull-heavy half-year.
