@@ -40,7 +40,7 @@ load_dotenv(".env")
 
 # ── Configuration ─────────────────────────────────────────────────────
 
-MODEL = "claude-opus-4-7"          # Per claude-api skill — adaptive thinking supported
+MODEL = "claude-opus-4-8"          # Per claude-api skill — adaptive thinking supported
 MAX_TOKENS = 16000                 # Plenty for a weekend synthesis; streaming handles latency
 CACHE_DIR = Path("data/weekend_research_cache")
 OUTPUT_DIR = Path("docs/research")
@@ -54,9 +54,39 @@ MAX_HTML_CHARS = 6000              # Per page — token bloat guard
 # Gemini's original included JSP/JS-rendered pages that return mostly nav
 # markup; we've dropped those or replaced with working equivalents.
 SOURCES: dict[str, dict[str, str]] = {
-    "TrendForce News": {
+    # ── Asian / primary trade press (added 2026-06-22 from the semi source audit) ──
+    "DigiTimes": {  # Taiwan supply-chain primary — CoWoS/CoPoS, foundry, OSAT
+        "type": "rss",
+        "url": "https://www.digitimes.com/rss/daily.xml",
+    },
+    "SK Hynix Newsroom": {  # Korea memory primary (HBM4/HBM4E, NVIDIA deals)
+        "type": "rss",
+        "url": "https://news.skhynix.com/feed/",
+    },
+    "KED Global": {  # Korea Economic Daily (EN) — Samsung/SK foundry & memory
+        "type": "rss",
+        "url": "https://www.kedglobal.com/rss/news.xml",
+    },
+    "TrendForce News": {  # memory spot/contract pricing, packaging, foundry
         "type": "rss",
         "url": "https://www.trendforce.com/news/feed",
+    },
+    # ── Analysis / trade ──
+    "SemiAnalysis": {
+        "type": "rss",
+        "url": "https://www.semianalysis.com/feed",
+    },
+    "EE Times": {
+        "type": "rss",
+        "url": "https://www.eetimes.com/feed/",
+    },
+    "SemiWiki": {
+        "type": "rss",
+        "url": "https://semiwiki.com/feed/",
+    },
+    "Tom's Hardware Semis": {
+        "type": "rss",
+        "url": "https://www.tomshardware.com/feeds/tag/semiconductors",
     },
     "Global Semi Research": {
         "type": "rss",
@@ -66,10 +96,10 @@ SOURCES: dict[str, dict[str, str]] = {
         "type": "rss",
         "url": "https://thediligencestack.com/feed",
     },
-    # JPM Market Insights removed Apr 27 — page is fully React-rendered, 0 <p>
-    # tags reachable via httpx. Replaced by Finnhub macro/earnings (--macro flag).
-    # Mirae Asset removed earlier — same JS-rendered issue.
-    # User can add Substack / Kakao / specific research PDFs manually.
+    # NOT auto-fetchable (no clean RSS / paywalled) — pull via Perplexity instead:
+    #   ETNews, ChosunBiz, Seoul Economic Daily (return HTML/invalid XML),
+    #   Bloomberg, Nikkei Asia (paywalled). See docs/research/semiconductor_sources.md.
+    # JPM Market Insights removed Apr 27 (React-rendered, 0 reachable <p> tags).
 }
 
 
