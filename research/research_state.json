@@ -513,7 +513,8 @@
     "Category D pre-FOMC drift: REJECTED. Faithful replication of POST-PUBLICATION DECAY -- Lucca-Moench strong 2011-2015, faded post-2015, 2022 resurgence (hiking cycle when FOMC was THE driver). Market-wide (breadth 0.85) but not significant on the modern sample. The best non-earnings/no-IV-crush event candidate decayed; Category D looks thin (PEAD=IV crush, ToM=dead, CPI=direction-set-by-10am).",
     "King-migration runner FAILS OOS: the n=174 +4.14% 'validation' was single-window April 2026; Jan-Jun re-validation shows non-April lift = +0.01% (zero), Feb/Mar/Jun negative. It's trend beta (April return = 5.16% beta + 0.62% signal), same family as B1. The user's own telegram mute (failed OOS 64.5->36.4%) was the tell. Execution optimization correctly NOT built on it. LESSON: a single-window 'validation' (even n=174) is not OOS validation; cluster the CI (naive perm over-rejected here because events cluster in one strong-beta month).",
     "EXIT-POLICY = first actionable POSITIVE finding. On fat-tailed OTM-call lottos, MANAGING winners destroys expectancy: hold-to-expiry +57% (CI [19,96] excludes 0, max +966%, 25%>+100%) vs fixed TP+50/+100% NEGATIVE (-12%/-11%, cap the tail). Matches user's real wins (let runners run) + losses (greedy TPs/overleverage). Caveat: April single-window -> magnitude beta-inflated, RANKING robust. Phase 2: cross-regime confirm + SIZING layer (median -100% demands tiny fixed-fraction). doc: docs/research/EXIT_POLICY_FINDINGS.md",
-    "EXIT-POLICY PHASE 2 (cross-regime CONFIRMED): 'don't cap winners' holds Jan-Jun (CIs exclude 0), retiring the April single-window caveat. PARTIAL SCALING (sell 1/3 @+100-150%, run rest) is the tradeable rule: keeps ~75% expectancy + full tail, cuts median -58%->-17%. REGIME GATE is the biggest lever (Mar/Apr/May +112/+235/+134 vs Feb/Jun -37/-18; no exit saves down months). This + the engine = the session's durable, positive deliverables. Telegram: refine TP-window alert to scale-1/3 + regime-caution flag."
+    "EXIT-POLICY PHASE 2 (cross-regime CONFIRMED): 'don't cap winners' holds Jan-Jun (CIs exclude 0), retiring the April single-window caveat. PARTIAL SCALING (sell 1/3 @+100-150%, run rest) is the tradeable rule: keeps ~75% expectancy + full tail, cuts median -58%->-17%. REGIME GATE is the biggest lever (Mar/Apr/May +112/+235/+134 vs Feb/Jun -37/-18; no exit saves down months). This + the engine = the session's durable, positive deliverables. Telegram: refine TP-window alert to scale-1/3 + regime-caution flag.",
+    "2026-06-21 cap backtest: no-discipline 100%-deployed lotto book BANKRUPTS in Q1 2026 (MTM DD -137.8%); cap+regime (S2) converts ruin->survivable (26% maxDD, Calmar 1.41 beats no-discipline 1.19); drawdown breaker REJECTED (sells the V-recovery bottom, return -5.6%). Ruin-avoidance is mostly deploy-less (scale-invariant); regime scaling is the only structural add."
   ],
   "next_priorities": [
     "HARDEN Layer-2 (bootstrap CI + monthly-expiry skip fix) -- still the gating bottleneck; no economic verdict is trustworthy until done.",
@@ -577,5 +578,49 @@
       "telegram": "EARNED: refine Mir TP-Window alert -> suggest scale-1/3-at-+100% (not flat TP) for lotto positions; add regime-caution flag in downtrends. Inform discipline, don't hard-gate auto-trade.",
       "phase3": "Sizing layer: median still -17% w/ partial-scale + correlated (all fire in up months) -> correlation-capped fractional Kelly + concurrent-exposure cap."
     }
+  },
+  "sizing_cap_backtest": {
+    "status": "DONE 2026-06-21",
+    "harness": "research/sizing_cap_backtest.py (tape cached: research/results/sizing_trade_tape.json)",
+    "findings_doc": "docs/research/SIZING_CAP_BACKTEST_FINDINGS.md",
+    "design": "1,523 reconstructed king-up lotto-call trades Jan-Jun 2026, real daily option paths (ThetaData EOD, ask-in/bid-out); exit held constant (scale 1/3 @ +100%, run rest); only the SIZING rule varies. S0=100% cash-constrained pile-in (52-position blowup proxy). All values % of total capital. Headline metric Calmar (scale-invariant) + ruin flag.",
+    "results": {
+      "S0_nodisc": {
+        "ret_pct": 163.9,
+        "maxdd_pct": 137.8,
+        "ruin": true,
+        "calmar": 1.19,
+        "avg_expo_pct": 92.9
+      },
+      "S1_cap12": {
+        "ret_pct": 6.5,
+        "maxdd_pct": 33.1,
+        "ruin": false,
+        "calmar": 0.2,
+        "avg_expo_pct": 11.3
+      },
+      "S2_regime": {
+        "ret_pct": 36.9,
+        "maxdd_pct": 26.1,
+        "ruin": false,
+        "calmar": 1.41,
+        "avg_expo_pct": 10.5
+      },
+      "S3_regime_brk": {
+        "ret_pct": -5.6,
+        "maxdd_pct": 19.6,
+        "ruin": false,
+        "calmar": -0.28,
+        "avg_expo_pct": 7.5
+      }
+    },
+    "verdict": [
+      "No-discipline book RUINED in Q1 (MTM DD -137.8% crosses -100% in March); +164% terminal is a survivorship mirage.",
+      "Ruin-avoidance is first-order deploy-less: scale-invariance control shows uniformly shrinking S0 to cap size survives at same Calmar 1.19 -> the cap ENFORCES deploy-less, does not conjure alpha.",
+      "REGIME overlay is the marginal structural value: Calmar S2 1.41 > S0 1.19 > S1 0.20 (blind fixed cap = pure/unlucky deleverage).",
+      "DRAWDOWN BREAKER net-HARMFUL as specced: de-risked into March/June lows, missed V-recovery -> return -5.6%, Calmar -0.28. DO NOT SHIP."
+    ],
+    "ship": "concurrent-exposure cap WITH regime scaling (S2) + Phase-1 monitor. DROP the drawdown breaker.",
+    "caveats": "single 6mo bull-dominated sample (Apr/May +141/+168); king-up entries are a proxy; ruin/DD finding robust, return-giveup + regime Calmar gain sample-specific."
   }
 }

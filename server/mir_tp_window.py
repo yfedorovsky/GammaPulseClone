@@ -39,9 +39,35 @@ from typing import Any
 # See docs/research/EXIT_POLICY_FINDINGS.md.
 SPY_DOWNTREND_PCT = -1.5   # SPY <= this over ~1wk -> down/chop caution
 
+# Phase-1 sizing MONITOR (2026-06-21 cap backtest — docs/research/SIZING_CAP_BACKTEST_FINDINGS.md):
+# an uncapped 100%-deployed lotto book BANKRUPTED in Q1 2026 (−138% mark-to-market drawdown,
+# crossed −100% in March); a regime-scaled CONCURRENT-EXPOSURE cap kept max DD ~26% and
+# survived. This block displays the cap that applies RIGHT NOW so the user can self-check
+# their open book against it. MONITOR ONLY — it never gates an alert. Reversible: env
+# MIR_LOTTO_MONITOR=0. Showing the user's ACTUAL premium-at-risk needs a live broker position
+# feed (future phase); here we surface the binding NUMBER (the regime-scaled cap) + a prompt.
+SPY_RISK_ON_PCT = 1.0      # SPY >= this over ~1wk -> risk-on (full cap); between = chop
+LOTTO_CAP_RISK_ON = 12.0   # % of capital — concurrent far-OTM single-name call premium
+LOTTO_CAP_CHOP = 6.0
+LOTTO_CAP_DOWN = 3.0
+
 
 def _discipline_on() -> bool:
     return os.getenv("MIR_TP_DISCIPLINE", "1").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _lotto_monitor_on() -> bool:
+    return os.getenv("MIR_LOTTO_MONITOR", "1").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _lotto_capital() -> float | None:
+    """Optional capital base (env MIR_LOTTO_CAPITAL) to render the cap in $ as well as %."""
+    raw = os.getenv("MIR_LOTTO_CAPITAL", "").strip().replace(",", "").replace("$", "")
+    try:
+        v = float(raw)
+        return v if v > 0 else None
+    except ValueError:
+        return None
 
 
 # Once-per-day dedup state (in-memory; resets on restart)
@@ -79,22 +105,43 @@ def _spot_at(conn, ticker: str, target_ts: int, window: int = 900) -> float | No
     return float(r[0]) if r and r[0] else None
 
 
-def _tape_caution(conn) -> tuple[bool, str]:
-    """True if the broad tape looks like a down/chop regime — where the lotto-call
-    payoff bled (Feb -37% / Jun -18% in the 2026 study). Uses SPY's ~1-week trend
-    from snapshots. Fail-open: any missing data / error -> (False, '') so a flaky
-    read never adds a false caution. DISCIPLINE context, not a signal."""
+def _spy_week_change(conn) -> float | None:
+    """SPY ~1-week % change from snapshots. None on any missing data / error (fail-open)."""
     try:
         now_ts = int(time.time())
         spy_now = _spot_at(conn, "SPY", now_ts, window=1800)
         spy_past = _spot_at(conn, "SPY", now_ts - 6 * 86400, window=2 * 86400)
         if spy_now and spy_past:
-            chg = (spy_now / spy_past - 1) * 100
-            if chg <= SPY_DOWNTREND_PCT:
-                return True, f"SPY {chg:+.1f}% / ~1wk"
+            return (spy_now / spy_past - 1) * 100
     except Exception:
         pass
+    return None
+
+
+def _tape_caution(conn) -> tuple[bool, str]:
+    """True if the broad tape looks like a down/chop regime — where the lotto-call
+    payoff bled (Feb -37% / Jun -18% in the 2026 study). Uses SPY's ~1-week trend.
+    Fail-open: missing data -> (False, '') so a flaky read never adds a false caution."""
+    chg = _spy_week_change(conn)
+    if chg is not None and chg <= SPY_DOWNTREND_PCT:
+        return True, f"SPY {chg:+.1f}% / ~1wk"
     return False, ""
+
+
+def _lotto_regime(conn) -> dict[str, Any]:
+    """3-state regime + the regime-scaled concurrent-exposure cap (% of capital) for the
+    lotto book. Display-only (Phase-1 monitor). Regime read unavailable -> cap_pct None
+    (the caller shows the full ladder instead of a single number)."""
+    chg = _spy_week_change(conn)
+    if chg is None:
+        return {"regime": "unknown", "reason": "SPY read unavailable", "cap_pct": None}
+    if chg <= SPY_DOWNTREND_PCT:
+        reg, cap = "downtrend", LOTTO_CAP_DOWN
+    elif chg >= SPY_RISK_ON_PCT:
+        reg, cap = "risk-on", LOTTO_CAP_RISK_ON
+    else:
+        reg, cap = "chop", LOTTO_CAP_CHOP
+    return {"regime": reg, "reason": f"SPY {chg:+.1f}% / ~1wk", "cap_pct": cap}
 
 
 def _direction(opt_type: str | None, sentiment: str | None) -> str:
@@ -244,8 +291,59 @@ def _collect_open_alerts() -> dict[str, list[dict[str, Any]]]:
     flow_open = list(flow_by_key.values())
 
     tape_caution = _tape_caution(conn)
+    lotto_cap = _lotto_regime(conn)
     conn.close()
-    return {"flow": flow_open, "soe": soe_open, "tape_caution": tape_caution}
+    return {"flow": flow_open, "soe": soe_open, "tape_caution": tape_caution,
+            "lotto_cap": lotto_cap}
+
+
+def _discipline_footer(open_alerts: dict[str, Any]) -> list[str]:
+    """Exit-discipline + Phase-1 sizing-cap MONITOR footer. Both are flag-gated guidance
+    (never auto-trade / never gate an alert) and render on every Mir TP fire incl no-alert
+    days. See docs/research/EXIT_POLICY_FINDINGS.md + SIZING_CAP_BACKTEST_FINDINGS.md."""
+    out: list[str] = []
+
+    # Data-backed exit discipline for OTM/lotto single-name calls (env MIR_TP_DISCIPLINE=0).
+    if _discipline_on():
+        out.append("")
+        out.append("📊 <b>DATA-BACKED DISCIPLINE</b> <i>(far-OTM / lotto single-name calls)</i>")
+        out.append(
+            "<i>Scale ⅓ at +100%, run the rest. Flat profit-targets tested NEGATIVE-EV; "
+            "letting winners run kept ~75% of expectancy + the full right tail "
+            "(cross-regime confirmed, Jan–Jun '26). Size each as a lotto.</i>"
+        )
+        caution, reason = open_alerts.get("tape_caution", (False, ""))
+        if caution:
+            out.append(
+                f"⚠️ <b>Down/chop tape</b> ({reason}) — lotto calls LOST in down months "
+                f"(Feb −37%, Jun −18%). Trim size / be quicker to cut. "
+                f"<i>Discipline, not a signal.</i>"
+            )
+
+    # Phase-1 sizing MONITOR — the regime-scaled concurrent-exposure cap (env MIR_LOTTO_MONITOR=0).
+    if _lotto_monitor_on():
+        lc = open_alerts.get("lotto_cap") or {}
+        out.append("")
+        out.append("💰 <b>LOTTO EXPOSURE CAP</b> <i>(size the book, not the trade)</i>")
+        cap = lc.get("cap_pct")
+        if cap is not None:
+            capital = _lotto_capital()
+            dollar = f" (~${cap / 100 * capital:,.0f})" if capital else ""
+            out.append(
+                f"Tape <b>{lc.get('regime')}</b> ({lc.get('reason')}) → keep total concurrent "
+                f"far-OTM single-name call premium under <b>~{cap:g}% of capital</b>{dollar}."
+            )
+        else:
+            out.append(
+                f"<i>{lc.get('reason', 'regime read unavailable')}</i> — ladder: risk-on "
+                f"{LOTTO_CAP_RISK_ON:g}% / chop {LOTTO_CAP_CHOP:g}% / downtrend "
+                f"{LOTTO_CAP_DOWN:g}% of capital."
+            )
+        out.append(
+            "<i>Backtest: an uncapped book bankrupted in Q1 '26 (−138% MTM drawdown); this cap "
+            "held max DD ~26%. Check your open lotto premium vs this number.</i>"
+        )
+    return out
 
 
 def _format_telegram(open_alerts: dict[str, list[dict]]) -> str:
@@ -265,6 +363,7 @@ def _format_telegram(open_alerts: dict[str, list[dict]]) -> str:
             "<i>Reminder: this window historically captures the day's peak. "
             "If you have broker positions open, consider taking partial profits.</i>"
         )
+        lines.extend(_discipline_footer(open_alerts))
         return "\n".join(lines)
 
     # INFORMED FLOW winners sorted by P/L descending
@@ -318,24 +417,7 @@ def _format_telegram(open_alerts: dict[str, list[dict]]) -> str:
         "Re-enter at power hour (3-4 PM ET) or tomorrow morning if setup intact.</i>"
     )
 
-    # Data-backed exit/sizing discipline for OTM/lotto single-name calls (reversible:
-    # env MIR_TP_DISCIPLINE=0). Guidance only — never an auto-trade rule.
-    if _discipline_on():
-        lines.append("")
-        lines.append("📊 <b>DATA-BACKED DISCIPLINE</b> <i>(far-OTM / lotto single-name calls)</i>")
-        lines.append(
-            "<i>Scale ⅓ at +100%, run the rest. Flat profit-targets tested NEGATIVE-EV; "
-            "letting winners run kept ~75% of expectancy + the full right tail "
-            "(cross-regime confirmed, Jan–Jun '26). Size each as a lotto.</i>"
-        )
-        caution, reason = open_alerts.get("tape_caution", (False, ""))
-        if caution:
-            lines.append(
-                f"⚠️ <b>Down/chop tape</b> ({reason}) — lotto calls LOST in down months "
-                f"(Feb −37%, Jun −18%). Trim size / be quicker to cut. "
-                f"<i>Discipline, not a signal.</i>"
-            )
-
+    lines.extend(_discipline_footer(open_alerts))
     return "\n".join(lines)
 
 
