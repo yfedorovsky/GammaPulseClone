@@ -1195,6 +1195,21 @@ async def run_worker(stop_event: asyncio.Event) -> None:
                     await maybe_fire_mir_tp_alert()
                 except Exception as mir_err:
                     print(f"[worker] mir_tp_window failed: {mir_err}")
+                # Semis pre-open briefing (2026-06-22) — one 🔬 SEMIS map ~9:10 ET,
+                # once per market day. Flag SEMIS_BRIEFING (default on).
+                try:
+                    from .semis_briefing import maybe_fire_semis_briefing
+                    await maybe_fire_semis_briefing()
+                except Exception as sb_err:
+                    print(f"[worker] semis_briefing failed: {sb_err}")
+                # Semis high-conviction live tier (2026-06-22) — proven composites only
+                # (INFORMED CLUSTER 3+ / WHALE $3M+) scoped to the semis watch legs,
+                # self-contained off flow_alerts. Flag SEMIS_SIGNALS (default on).
+                try:
+                    from .semis_signals import maybe_fire_semis_signals
+                    await maybe_fire_semis_signals()
+                except Exception as ss_err:
+                    print(f"[worker] semis_signals failed: {ss_err}")
                 # Triple Confluence alert (2026-06-02) — fires when
                 # INFORMED FLOW + king migration + SOE A/A+ all converge
                 # on a ticker in same direction within a 4-hour rolling

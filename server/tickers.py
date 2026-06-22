@@ -146,7 +146,7 @@ TIER_3 = [
     "BABA", "PDD", "JD", "BIDU", "NIO", "XPEV", "LI", "BILI", "TME",
     # Photonics / Fiber / AI Infra (Mir's top themes 2026)
     # ANET promoted to TIER_1 Apr 21.
-    "AAOI", "COHR", "GLW", "CIEN", "VRT", "AXTI", "LITE",
+    "AAOI", "COHR", "GLW", "CIEN", "VRT", "AXTI", "LITE", "FN",  # FN (Fabrinet) added 6/22 — optics/CPO
     "POET",  # POET Technologies — photonics integration. Added 5/19 after
              # UW flagged POET $17C 7/17 as the #1 contract by volume
              # across the entire UW universe today (131K vol, OI 62K, V/OI 2.09).
