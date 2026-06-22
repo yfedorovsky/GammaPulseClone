@@ -8,6 +8,13 @@ grounding: "1,523 reconstructed king-up lotto-call trades, Jan-Jun 2026, real da
 
 # Cap backtest: drawdown WITH vs WITHOUT the concurrent-exposure cap
 
+> **⚠️ 2026-06-21 OOS correction (docs/research/SIZING_OOS_FINDINGS.md):** this doc is the *in-sample*
+> (2026-H1, king-up entries) result. The **CAP / ruin finding holds out of sample.** But finding #3
+> below ("regime overlay is the only piece that beats deleveraging") was **in-sample, single-ordering,
+> entry-specific** — OOS shows it is **ordering-sensitive and underpowered**: regime-scaling *leans*
+> helpful (76% of fair admit-orderings) but is **unproven, not a confirmed edge.** Read #3 as
+> "plausibly-helpful," not "demonstrated." The flat cap is the demonstrated edge.
+
 ## TL;DR
 - **The no-discipline book goes BANKRUPT in Q1 2026** (mark-to-market drawdown −137.8% → through −100%). Its
   headline "+164% return" is a **survivorship mirage** — you're wiped out in March before the April/May rally.

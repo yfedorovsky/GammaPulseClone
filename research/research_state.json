@@ -514,7 +514,8 @@
     "King-migration runner FAILS OOS: the n=174 +4.14% 'validation' was single-window April 2026; Jan-Jun re-validation shows non-April lift = +0.01% (zero), Feb/Mar/Jun negative. It's trend beta (April return = 5.16% beta + 0.62% signal), same family as B1. The user's own telegram mute (failed OOS 64.5->36.4%) was the tell. Execution optimization correctly NOT built on it. LESSON: a single-window 'validation' (even n=174) is not OOS validation; cluster the CI (naive perm over-rejected here because events cluster in one strong-beta month).",
     "EXIT-POLICY = first actionable POSITIVE finding. On fat-tailed OTM-call lottos, MANAGING winners destroys expectancy: hold-to-expiry +57% (CI [19,96] excludes 0, max +966%, 25%>+100%) vs fixed TP+50/+100% NEGATIVE (-12%/-11%, cap the tail). Matches user's real wins (let runners run) + losses (greedy TPs/overleverage). Caveat: April single-window -> magnitude beta-inflated, RANKING robust. Phase 2: cross-regime confirm + SIZING layer (median -100% demands tiny fixed-fraction). doc: docs/research/EXIT_POLICY_FINDINGS.md",
     "EXIT-POLICY PHASE 2 (cross-regime CONFIRMED): 'don't cap winners' holds Jan-Jun (CIs exclude 0), retiring the April single-window caveat. PARTIAL SCALING (sell 1/3 @+100-150%, run rest) is the tradeable rule: keeps ~75% expectancy + full tail, cuts median -58%->-17%. REGIME GATE is the biggest lever (Mar/Apr/May +112/+235/+134 vs Feb/Jun -37/-18; no exit saves down months). This + the engine = the session's durable, positive deliverables. Telegram: refine TP-window alert to scale-1/3 + regime-caution flag.",
-    "2026-06-21 cap backtest: no-discipline 100%-deployed lotto book BANKRUPTS in Q1 2026 (MTM DD -137.8%); cap+regime (S2) converts ruin->survivable (26% maxDD, Calmar 1.41 beats no-discipline 1.19); drawdown breaker REJECTED (sells the V-recovery bottom, return -5.6%). Ruin-avoidance is mostly deploy-less (scale-invariant); regime scaling is the only structural add."
+    "2026-06-21 cap backtest: no-discipline 100%-deployed lotto book BANKRUPTS in Q1 2026 (MTM DD -137.8%); cap+regime (S2) converts ruin->survivable (26% maxDD, Calmar 1.41 beats no-discipline 1.19); drawdown breaker REJECTED (sells the V-recovery bottom, return -5.6%). Ruin-avoidance is mostly deploy-less (scale-invariant); regime scaling is the only structural add.",
+    "2026-06-21 OOS sizing test (2024-2026, 5 periods, momentum entries, real fills) + 3-lens adversarial verify: CAP robustly prevents ruin in 5/5 (94-155% S0 maxDD -> 15-29%). Regime overlay NOT refuted but UNPROVEN: my first 2/5 read was a non-predictive admit-ordering artifact; random-ordering -> S2 beats flat cap in 76% of runs, but n=5 underpowered. Adversarial verification caught the ordering bug I shipped \u2014 lesson: report S2-vs-S1 via random-ordering band, not a single king_up run."
   ],
   "next_priorities": [
     "HARDEN Layer-2 (bootstrap CI + monthly-expiry skip fix) -- still the gating bottleneck; no economic verdict is trustworthy until done.",
@@ -621,6 +622,18 @@
       "DRAWDOWN BREAKER net-HARMFUL as specced: de-risked into March/June lows, missed V-recovery -> return -5.6%, Calmar -0.28. DO NOT SHIP."
     ],
     "ship": "concurrent-exposure cap WITH regime scaling (S2) + Phase-1 monitor. DROP the drawdown breaker.",
-    "caveats": "single 6mo bull-dominated sample (Apr/May +141/+168); king-up entries are a proxy; ruin/DD finding robust, return-giveup + regime Calmar gain sample-specific."
+    "caveats": "single 6mo bull-dominated sample (Apr/May +141/+168); king-up entries are a proxy; ruin/DD finding robust, return-giveup + regime Calmar gain sample-specific.",
+    "oos_correction": "OOS (2024-2026, momentum entries) shows the CAP is robust but the REGIME-overlay Calmar advantage is ordering-sensitive + underpowered -> downgrade from \"the proven edge\" to \"leans-helpful/unproven\". See sizing_oos_robustness + docs/research/SIZING_OOS_FINDINGS.md."
+  },
+  "sizing_oos_robustness": {
+    "status": "DONE + adversarially verified 2026-06-21",
+    "findings_doc": "docs/research/SIZING_OOS_FINDINGS.md",
+    "harness": "research/sizing_cap_backtest_oos.py + research/sizing_oos_ordering_check.py",
+    "design": "5 half-year periods 2024-01..2026-06, momentum-breakout entries (single-name long-call PROXY; king-up is 2026-only), REAL ThetaData EOD fills, exit held constant; double robustness test (entry signal AND regime). 3-lens adversarial workflow + own reproduction.",
+    "cap_verdict": "ROBUST -> SHIP. S0 maxDD 94-155% every period (ruin 2/5) -> flat 12% cap 15-29% maxDD, 0/5 ruin, 77-84% DD cut, 5/5 consistent, ordering-invariant.",
+    "regime_verdict": "LEANS HELPFUL but UNPROVEN (NOT refuted). Earlier 2/5 was an artifact of the non-predictive order=king_up admit tiebreaker; under RANDOM ordering S2 beats flat-cap S1 in 76% of 100 runs (mean edge +0.98). But n=5 underpowered (CI straddles 0). Only 2024H2 carry-unwind whipsaw consistently negative (15%).",
+    "breaker_verdict": "inconsistent (best trending, worst 2024H2 whipsaw) -> stays parked.",
+    "verification": "3 adversarial lenses (methodology found the ordering artifact; statistics caught n=5 underpower; fairness flagged SPY-MA20 as weak single-name proxy) + my own ordering-sensitivity reproduction (oos_ordering_sensitivity.json).",
+    "correction": "REVISES the in-sample claim that the regime overlay is the proven edge. In-sample (king-up) S2 1.41 >> S1 0.20 was sample-AND-entry-specific + single-ordering. Verified stance: CAP is the demonstrated edge; regime scaling is optional/plausibly-helpful/unproven; gating parked (flat cap as hard gate is the supportable step)."
   }
 }

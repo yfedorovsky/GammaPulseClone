@@ -219,6 +219,11 @@ def simulate(trades, cal, regime, base_pct, cap, *, use_regime, use_breaker,
     if order == "king_up":
         for k in by_day:
             by_day[k].sort(key=lambda t: -t["king_up"])
+    elif order.startswith("shuffle:"):                # robustness: random admit-order
+        rng = np.random.default_rng(int(order.split(":")[1]))
+        for k in by_day:
+            rng.shuffle(by_day[k])
+    # else "none": keep insertion order (entry-dataframe order)
 
     taken = []                       # trades actually opened
     eq = np.zeros(len(cal))          # book equity (% capital), cumulative P&L

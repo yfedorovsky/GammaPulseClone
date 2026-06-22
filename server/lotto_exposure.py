@@ -54,9 +54,14 @@ def get_exposure() -> dict[str, Any] | None:
 
 def set_exposure(premium_at_risk: float, capital: float | None = None,
                  note: str = "") -> dict[str, Any]:
-    """Write the exposure state (stamps updated_ts=now). Returns the written dict."""
+    """Write the exposure state (stamps updated_ts=now). Returns the written dict.
+    Capital PERSISTS: if not passed, the prior file's capital is carried forward, so
+    daily updates only need the premium (pass --capital again to change it)."""
     if premium_at_risk < 0:
         raise ValueError("premium_at_risk must be >= 0")
+    if not (capital and capital > 0):                 # carry forward prior capital
+        prev = get_exposure()
+        capital = prev.get("capital") if prev else None
     d: dict[str, Any] = {"premium_at_risk": float(premium_at_risk),
                          "updated_ts": int(time.time()), "note": note}
     if capital and capital > 0:

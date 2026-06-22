@@ -154,3 +154,19 @@ It reuses the regime signal already in place; the only new piece is the exposure
   was mocked / paper is delayed — those were execution/quote limits, position-read is a separate call).
 - **Gating (soft/hard) stays parked** until 2b gives real exposure data AND an out-of-sample window
   (e.g. add 2025) confirms the regime-scaling magnitude beyond this one bull-heavy half-year.
+
+## Update 2026-06-21 — OOS test done + adversarially verified (docs/research/SIZING_OOS_FINDINGS.md)
+Ran the broader-window test (2024-01..2026-06, 5 half-years, momentum-breakout entries, real fills)
+and put it through a 3-lens adversarial-verification workflow. **This REVISES the in-sample regime
+claim above.**
+- **CAP = robust, confirmed.** S0 ran 94–155% maxDD in every period (ruin 2/5); the flat 12% cap cut
+  it to 15–29% (0/5 ruin), 5/5 consistent, ordering-invariant. The flat cap is **the demonstrated edge.**
+- **Regime overlay = leans-helpful but UNPROVEN — not refuted.** The earlier "regime is the only piece
+  that beats deleverage" (§3) was in-sample, single-ordering, and king-up-entry specific. OOS: a
+  non-predictive admit-order tiebreaker swung the result; under fair random ordering S2 beats the flat
+  cap in 76% of runs (mean edge +0.98), but n=5 is underpowered (CI straddles 0). Treat regime-scaling
+  as **optional/conservative/plausibly-helpful, not a confirmed Calmar edge.** (§3's "regime is the
+  biggest lever" is downgraded accordingly.)
+- **Action:** the shipped monitor's regime-scaled cap is a reasonable conservative default (mildly
+  supported, not proven). If gating is ever wired, the **flat 12% cap as a hard gate** is the
+  supportable core; the regime multiplier is optional. Breaker stays out.
