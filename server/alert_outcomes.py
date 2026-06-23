@@ -29,6 +29,7 @@ import asyncio
 import datetime as _dt
 import hashlib
 import json
+import os
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -720,6 +721,233 @@ def get_oi_confirmation_report(days: int = 30, db_path: str = DB_PATH) -> list[d
     return out
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# #92 — option-level MFE/MAE backfill (the validation KEYSTONE)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The spot backfill above fills spot_mfe/mae, but the book trades OPTIONS, and
+# every "validated on spot" claim — INFORMED CLUSTER 89% WR especially (cross-LLM
+# audit finding C10, 2026-06-23) — is unproven until measured on realized option
+# P&L *after the bid/ask haircut*. This pass populates the opt_* columns
+# (opt_high_after / opt_low_after / opt_mfe_pct / opt_mae_pct / opt_close_eod /
+# opt_close_next_day) on every contract-bearing alert from REAL ThetaData OPRA
+# NBBO 1-min bars — the same source/endpoint as the proven
+# scripts/backfill_alert_outcomes_nbbo.py and research/option_translate.py.
+#
+# Convention: ASK-IN / BID-OUT — the conservative, tradable round-trip the
+# discipline rule demands. Entry cost basis = NBBO ASK at the first bar at/after
+# fire; every excursion is measured on the BID (what you could actually sell at).
+# This is intentionally pessimistic vs the logged-mid `entry_price`: it answers
+# "is the spot-return edge real once you pay the real spread?"
+#
+# Idempotent + self-limiting (only touches rows with opt_mfe_pct IS NULL), so it
+# is safe to run every loop AND re-runnable over the historical backlog via
+# scripts/backfill_option_pnl.py. Pure compute (compute_option_outcome) and the
+# fetcher are separated so the loop is unit-testable without a live Terminal.
+
+THETA_URL = os.environ.get("THETA_BASE_URL", "http://127.0.0.1:25503")
+_OPT_NEXTDAY_LOOKAHEAD_DAYS = 5
+
+# ThetaData v3 returns NAIVE exchange-time (ET) timestamps. We localize them to
+# ET explicitly rather than rely on the host clock: pandas 3.0's
+# Timestamp.timestamp() treats a naive Timestamp as UTC, which would shift every
+# bar ~4-5h earlier and make the fire-time filter reject the whole intraday path.
+try:
+    from zoneinfo import ZoneInfo
+    _ET = ZoneInfo("America/New_York")
+except Exception:  # pragma: no cover - zoneinfo always present on 3.9+
+    _ET = None
+
+
+def _option_root_for_theta(ticker: str) -> str:
+    t = (ticker or "").upper()
+    return "SPXW" if t in ("SPX", "SPXW") else t
+
+
+def _right_from_option_type(option_type: str | None) -> str:
+    return "C" if str(option_type or "").lower().startswith("c") else "P"
+
+
+def fetch_option_nbbo_bars(
+    symbol: str, expiration: str, strike: float, right: str,
+    start_date: str, end_date: str, theta_url: str = THETA_URL,
+) -> list[dict[str, Any]]:
+    """1-min OPRA NBBO bars for one contract over [start_date, end_date].
+    Returns [{ts, date, bid, ask, mid}] sorted ascending; [] on miss/empty.
+    Lazy-imports requests/pandas (the proven parser from the NBBO backfill
+    script) so the server module stays light and the dep is optional in tests."""
+    try:
+        import io
+        import pandas as pd
+        import requests
+    except Exception:
+        return []
+    params = {
+        "symbol": symbol, "expiration": expiration,
+        "strike": f"{float(strike):.3f}", "right": right,
+        "start_date": start_date, "end_date": end_date, "interval": "1m",
+    }
+    try:
+        r = requests.get(f"{theta_url}/v3/option/history/quote",
+                         params=params, timeout=30)
+        if r.status_code != 200:
+            return []
+        df = pd.read_csv(io.StringIO(r.text))
+    except Exception:
+        return []
+    if df.empty or "timestamp" not in df.columns:
+        return []
+    try:
+        df = df[(df["bid"] > 0) & (df["ask"] > 0)].copy()
+        if df.empty:
+            return []
+        t = pd.to_datetime(df["timestamp"])
+        out = []
+        for ts, bid, ask in zip(t, df["bid"], df["ask"]):
+            pdt = ts.to_pydatetime()
+            if pdt.tzinfo is None and _ET is not None:
+                pdt = pdt.replace(tzinfo=_ET)  # exchange-time -> aware ET
+            out.append({
+                "ts": pdt.timestamp(),
+                "date": pdt.strftime("%Y-%m-%d"),
+                "bid": float(bid), "ask": float(ask),
+                "mid": (float(bid) + float(ask)) / 2.0,
+            })
+        out.sort(key=lambda b: b["ts"])
+        return out
+    except Exception:
+        return []
+
+
+def compute_option_outcome(
+    bars: list[dict[str, Any]], fire_ts: float, fire_date: str,
+) -> dict[str, Any] | None:
+    """ASK-IN / BID-OUT realized option outcome from NBBO bars.
+    Returns the 6 opt_* columns (+ diagnostic _entry_ask), or None if there are
+    no usable bars at/after fire on the fire day."""
+    after = [b for b in bars if b["ts"] >= fire_ts and b["date"] == fire_date]
+    if not after:
+        return None
+    entry_ask = after[0].get("ask")
+    if not entry_ask or entry_ask <= 0:
+        return None
+    bids = [b["bid"] for b in after if b.get("bid")]
+    if not bids:
+        return None
+    opt_high = max(bids)
+    opt_low = min(bids)
+    opt_close_eod = after[-1]["bid"]
+    # next-day close = last bid of the earliest trading date strictly after fire
+    next_dates = sorted({b["date"] for b in bars if b["date"] > fire_date})
+    opt_close_next = None
+    if next_dates:
+        nd_bars = [b for b in bars if b["date"] == next_dates[0] and b.get("bid")]
+        if nd_bars:
+            opt_close_next = nd_bars[-1]["bid"]
+    return {
+        "opt_high_after": round(opt_high, 4),
+        "opt_low_after": round(opt_low, 4),
+        "opt_mfe_pct": round((opt_high - entry_ask) / entry_ask * 100, 2),
+        "opt_mae_pct": round((opt_low - entry_ask) / entry_ask * 100, 2),
+        "opt_close_eod": round(opt_close_eod, 4),
+        "opt_close_next_day": round(opt_close_next, 4) if opt_close_next is not None else None,
+        "_entry_ask": round(entry_ask, 4),
+    }
+
+
+def _select_option_pnl_pending(db_path: str, now: float, max_age_days: int,
+                               limit: int | None = None) -> list:
+    """Contract-bearing rows that still have no option-P&L, fired in window and
+    at least 1h old. Idempotent gate: opt_mfe_pct IS NULL. `limit` bounds the
+    batch (newest first) — used for smoke tests and gentle backlog draining."""
+    _ensure_schema(db_path)
+    cutoff_min = now - max_age_days * 86400
+    sql = (
+        """SELECT alert_id, ticker, expiration, strike, option_type,
+                  entry_price, fired_at
+           FROM alert_outcomes
+           WHERE opt_mfe_pct IS NULL
+             AND strike IS NOT NULL AND expiration IS NOT NULL
+             AND option_type IS NOT NULL
+             AND fired_at > ? AND fired_at < ?
+           ORDER BY fired_at DESC"""
+    )
+    params: list = [cutoff_min, now - 3600]
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    conn = sqlite3.connect(db_path)
+    try:
+        return conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+
+
+def _write_option_pnl(db_path: str, alert_id: str, o: dict[str, Any]) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """UPDATE alert_outcomes SET
+                opt_high_after = ?, opt_low_after = ?,
+                opt_mfe_pct = ?, opt_mae_pct = ?,
+                opt_close_eod = ?, opt_close_next_day = ?
+               WHERE alert_id = ?""",
+            (o["opt_high_after"], o["opt_low_after"], o["opt_mfe_pct"],
+             o["opt_mae_pct"], o["opt_close_eod"], o["opt_close_next_day"],
+             alert_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def run_option_pnl_backfill(
+    db_path: str = DB_PATH, max_age_days: int = 14,
+    now: float | None = None, fetcher=None, limit: int | None = None,
+) -> dict:
+    """Populate the opt_* columns for contract-bearing alerts via ThetaData NBBO
+    (ask-in / bid-out). Idempotent — only touches rows where opt_mfe_pct IS NULL.
+    `fetcher(sym, exp, strike, right, start, end) -> list[bar]` is injectable for
+    tests; the default runs the live ThetaData lookup off-thread so it never
+    blocks the event loop. `limit` bounds the batch (newest first)."""
+    now = now if now is not None else time.time()
+    rows = _select_option_pnl_pending(db_path, now, max_age_days, limit=limit)
+    stats = {"processed": 0, "updated": 0, "no_data": 0, "errors": 0}
+    if not rows:
+        return stats
+
+    if fetcher is None:
+        async def fetcher(sym, exp, strike, right, start, end):  # noqa: ANN001
+            return await asyncio.to_thread(
+                fetch_option_nbbo_bars, sym, exp, strike, right, start, end)
+
+    print(f"[alert_outcomes] option-P&L backfill: {len(rows)} contract rows")
+    for (alert_id, ticker, exp, strike, otype, _entry_price, fired_at) in rows:
+        stats["processed"] += 1
+        try:
+            fired_dt = _dt.datetime.fromtimestamp(fired_at, _ET) if _ET \
+                else _dt.datetime.fromtimestamp(fired_at)
+            fire_date = fired_dt.date().isoformat()
+            end_date = (fired_dt.date()
+                        + _dt.timedelta(days=_OPT_NEXTDAY_LOOKAHEAD_DAYS)).isoformat()
+            sym = _option_root_for_theta(ticker)
+            right = _right_from_option_type(otype)
+            bars = await fetcher(sym, exp, float(strike), right, fire_date, end_date)
+            if not bars:
+                stats["no_data"] += 1
+                continue
+            o = compute_option_outcome(bars, float(fired_at), fire_date)
+            if o is None:
+                stats["no_data"] += 1
+                continue
+            _write_option_pnl(db_path, alert_id, o)
+            stats["updated"] += 1
+        except Exception as e:
+            print(f"[alert_outcomes] option-P&L row {alert_id} failed: {e!r}")
+            stats["errors"] += 1
+    return stats
+
+
 async def run_outcome_backfill_loop(stop_event: asyncio.Event,
                                      interval_s: int = 1800) -> None:
     """Background task: backfill outcomes every 30 min during RTH + once
@@ -746,6 +974,15 @@ async def run_outcome_backfill_loop(stop_event: asyncio.Event,
                 print(f"[alert_outcomes] OI confirmation: {oi_stats}")
         except Exception as e:
             print(f"[alert_outcomes] OI confirmation error: {e}")
+        # #92: realized option P&L (ask-in/bid-out) on contract-bearing alerts —
+        # the keystone that unblocks INFORMED CLUSTER option-P&L validation and
+        # the #95 conviction-v2 activation. Idempotent + self-limiting.
+        try:
+            opt_stats = await run_option_pnl_backfill()
+            if opt_stats["processed"] > 0:
+                print(f"[alert_outcomes] option-P&L: {opt_stats}")
+        except Exception as e:
+            print(f"[alert_outcomes] option-P&L backfill error: {e}")
     print("[alert_outcomes] backfill loop stopped")
 
 
