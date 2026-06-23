@@ -948,6 +948,83 @@ async def run_option_pnl_backfill(
     return stats
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# #119 (partial) — VIX regime backfill: fill vix_at_alert from daily VIX close
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# vix_at_alert was 100% NULL (the cross-LLM harness exposed it), which killed the
+# regime-conditional win-rate slice Perplexity explicitly asked for ("separate
+# win rates for VIX<15 / 15-25 / >25"). We can't capture live VIX at past fire
+# times, but the DAILY VIX close is a fine regime proxy (VIX doesn't swing across
+# buckets intraday). This backfills it from one Tradier history call. Idempotent
+# (only NULL rows). The fire-time *live* capture + IVR + earnings remain #119.
+
+
+async def run_vix_backfill(db_path: str = DB_PATH, max_age_days: int = 45,
+                           now: float | None = None, fetcher=None) -> dict:
+    """Fill vix_at_alert (NULL) from the daily VIX close for each alert's date.
+    `fetcher(start_date, end_date) -> {date_iso: vix_close}` injectable for tests;
+    default pulls Tradier VIX daily history once for the whole window."""
+    now = now if now is not None else time.time()
+    cutoff = now - max_age_days * 86400
+    _ensure_schema(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT alert_id, fired_at FROM alert_outcomes "
+            "WHERE vix_at_alert IS NULL AND fired_at > ?",
+            (cutoff,),
+        ).fetchall()
+    finally:
+        conn.close()
+    stats = {"processed": len(rows), "updated": 0, "no_data": 0}
+    if not rows:
+        return stats
+
+    dates = sorted({_dt.date.fromtimestamp(r[1]).isoformat() for r in rows})
+    start, end = dates[0], dates[-1]
+    if fetcher is None:
+        async def fetcher(s, e):  # noqa: ANN001
+            from server.tradier import TradierClient
+            t = TradierClient()
+            try:
+                hist = await t.history("VIX", interval="daily", start=s, end=e)
+            finally:
+                await t.close()
+            out = {}
+            for b in hist or []:
+                d = b.get("time") or b.get("date")
+                c = b.get("close")
+                if d and c is not None:
+                    out[str(d)[:10]] = float(c)
+            return out
+
+    try:
+        vix_by_date = await fetcher(start, end)
+    except Exception as e:
+        print(f"[alert_outcomes] VIX history fetch failed: {e!r}")
+        return stats
+    if not vix_by_date:
+        stats["no_data"] = len(rows)
+        return stats
+
+    conn = sqlite3.connect(db_path)
+    try:
+        for alert_id, fired_at in rows:
+            d = _dt.date.fromtimestamp(fired_at).isoformat()
+            v = vix_by_date.get(d)
+            if v is None:
+                stats["no_data"] += 1
+                continue
+            conn.execute("UPDATE alert_outcomes SET vix_at_alert = ? WHERE alert_id = ?",
+                         (v, alert_id))
+            stats["updated"] += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return stats
+
+
 async def run_outcome_backfill_loop(stop_event: asyncio.Event,
                                      interval_s: int = 1800) -> None:
     """Background task: backfill outcomes every 30 min during RTH + once
@@ -983,6 +1060,14 @@ async def run_outcome_backfill_loop(stop_event: asyncio.Event,
                 print(f"[alert_outcomes] option-P&L: {opt_stats}")
         except Exception as e:
             print(f"[alert_outcomes] option-P&L backfill error: {e}")
+        # #119 (partial): VIX regime backfill (cheap — one fetch/window). Fills
+        # vix_at_alert for regime-conditional win-rate analysis. Idempotent.
+        try:
+            vix_stats = await run_vix_backfill()
+            if vix_stats["updated"] > 0:
+                print(f"[alert_outcomes] VIX backfill: {vix_stats}")
+        except Exception as e:
+            print(f"[alert_outcomes] VIX backfill error: {e}")
     print("[alert_outcomes] backfill loop stopped")
 
 

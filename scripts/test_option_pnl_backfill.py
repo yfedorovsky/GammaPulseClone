@@ -145,6 +145,29 @@ def test_spx_root_mapping():
     check("call option_type -> C", ao._right_from_option_type("call") == "C")
 
 
+def test_vix_backfill():
+    tmp = tempfile.mkdtemp()
+    db = os.path.join(tmp, "ao_vix.db")
+    now = time.time()
+    fired_at = float(int(now) - 7200)
+    fire_date = _dt.datetime.fromtimestamp(fired_at).date().isoformat()
+    aid = ao.log_alert(alert_type="SOE_A", ticker="NVDA", fired_at=fired_at, db_path=db)
+
+    async def fake_vix(start, end):
+        return {fire_date: 18.5}
+
+    s = asyncio.run(ao.run_vix_backfill(db_path=db, max_age_days=30, now=now, fetcher=fake_vix))
+    check("vix backfill updated 1", s["updated"] == 1, str(s))
+    import sqlite3
+    conn = sqlite3.connect(db)
+    v = conn.execute("SELECT vix_at_alert FROM alert_outcomes WHERE alert_id=?", (aid,)).fetchone()[0]
+    conn.close()
+    check("vix_at_alert filled = 18.5", v and abs(v - 18.5) < 1e-9, str(v))
+    # idempotent: second run touches 0 (no NULL vix rows left)
+    s2 = asyncio.run(ao.run_vix_backfill(db_path=db, max_age_days=30, now=now, fetcher=fake_vix))
+    check("vix backfill idempotent (0 left)", s2["processed"] == 0, str(s2))
+
+
 if __name__ == "__main__":
     print("test_option_pnl_backfill")
     test_compute_ask_in_bid_out()
@@ -152,5 +175,6 @@ if __name__ == "__main__":
     test_no_bars_after_fire()
     test_backfill_end_to_end_and_idempotent()
     test_spx_root_mapping()
+    test_vix_backfill()
     print(f"\n{_PASS} passed, {_FAIL} failed")
     sys.exit(1 if _FAIL else 0)
