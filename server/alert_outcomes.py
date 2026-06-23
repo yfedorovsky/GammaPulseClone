@@ -1025,6 +1025,86 @@ async def run_vix_backfill(db_path: str = DB_PATH, max_age_days: int = 45,
     return stats
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# #119 (partial) — earnings-in-window backfill (the De Silva test)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# earnings_in_window was 100% NULL. The cross-LLM audit cited De Silva (2022):
+# tracking flow INTO binary catalysts = following losing retail behavior; CLUSTER
+# flow ahead of earnings may be NEGATIVE-EV by design. We can't test that without
+# knowing which alerts spanned an earnings date. This fills earnings_in_window
+# (1/0) + earnings_days_to for contract-bearing alerts from Tradier's
+# corporate_calendars (which carries past 'Confirmed' + future 'Estimated' dates).
+# Idempotent (only NULL rows); one fetch per distinct ticker.
+
+
+async def run_earnings_backfill(db_path: str = DB_PATH, max_age_days: int = 45,
+                                now: float | None = None, fetcher=None) -> dict:
+    """Fill earnings_in_window (1 if a scheduled earnings date falls in
+    [fire_date, expiration], else 0) + earnings_days_to for contract-bearing
+    alerts. `fetcher(ticker) -> list[date] | None` injectable for tests; default
+    = Tradier all-earnings-dates. None from the fetcher = defer (leave NULL)."""
+    now = now if now is not None else time.time()
+    cutoff = now - max_age_days * 86400
+    _ensure_schema(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            """SELECT alert_id, ticker, expiration, fired_at FROM alert_outcomes
+               WHERE earnings_in_window IS NULL AND ticker IS NOT NULL
+                 AND expiration IS NOT NULL AND fired_at > ?""",
+            (cutoff,),
+        ).fetchall()
+    finally:
+        conn.close()
+    stats = {"processed": len(rows), "in_window": 0, "not_in_window": 0,
+             "deferred": 0, "bad_exp": 0}
+    if not rows:
+        return stats
+
+    if fetcher is None:
+        async def fetcher(tk):  # noqa: ANN001
+            from server.earnings_calendar import get_all_er_dates
+            return await get_all_er_dates(tk)
+
+    from collections import defaultdict
+    by_ticker: dict[str, list] = defaultdict(list)
+    for r in rows:
+        by_ticker[(r[1] or "").upper()].append(r)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        for tk, grp in by_ticker.items():
+            er_dates = await fetcher(tk)
+            if er_dates is None:           # fetch failure → defer this ticker
+                stats["deferred"] += len(grp)
+                continue
+            for alert_id, _t, exp, fired_at in grp:
+                try:
+                    exp_d = _dt.date.fromisoformat(str(exp)[:10])
+                except (ValueError, TypeError):
+                    stats["bad_exp"] += 1
+                    continue
+                fire_d = (_dt.datetime.fromtimestamp(fired_at, _ET).date() if _ET
+                          else _dt.datetime.fromtimestamp(fired_at).date())
+                in_win = [d for d in er_dates if fire_d <= d <= exp_d]
+                if in_win:
+                    days_to = (min(in_win) - fire_d).days
+                    conn.execute(
+                        "UPDATE alert_outcomes SET earnings_in_window=1, earnings_days_to=? "
+                        "WHERE alert_id=?", (days_to, alert_id))
+                    stats["in_window"] += 1
+                else:
+                    conn.execute(
+                        "UPDATE alert_outcomes SET earnings_in_window=0 WHERE alert_id=?",
+                        (alert_id,))
+                    stats["not_in_window"] += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return stats
+
+
 async def run_outcome_backfill_loop(stop_event: asyncio.Event,
                                      interval_s: int = 1800) -> None:
     """Background task: backfill outcomes every 30 min during RTH + once
@@ -1068,6 +1148,14 @@ async def run_outcome_backfill_loop(stop_event: asyncio.Event,
                 print(f"[alert_outcomes] VIX backfill: {vix_stats}")
         except Exception as e:
             print(f"[alert_outcomes] VIX backfill error: {e}")
+        # #119 (partial): earnings-in-window backfill (De Silva catalyst test).
+        # Self-limiting (NULL rows only), one fetch/ticker. Idempotent.
+        try:
+            er_stats = await run_earnings_backfill()
+            if er_stats["in_window"] + er_stats["not_in_window"] > 0:
+                print(f"[alert_outcomes] earnings backfill: {er_stats}")
+        except Exception as e:
+            print(f"[alert_outcomes] earnings backfill error: {e}")
     print("[alert_outcomes] backfill loop stopped")
 
 

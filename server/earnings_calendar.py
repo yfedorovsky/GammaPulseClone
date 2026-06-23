@@ -101,6 +101,50 @@ async def get_next_er(ticker: str) -> _dt.date | None:
     return er
 
 
+async def get_all_er_dates(ticker: str) -> list[_dt.date] | None:
+    """ALL earnings dates (past 'Confirmed' + future 'Estimated') from the Tradier
+    corporate_calendars table — used to backfill earnings_in_window on PAST alerts
+    (#119). Returns a sorted list, or None on fetch failure (so callers can defer
+    and retry, vs. an empty list = genuinely no earnings). No today-filter."""
+    s = get_settings()
+    tok = s.tradier_token
+    if not tok:
+        return None
+    base = s.tradier_base_url.rstrip("/")
+    host = base[: -len("/v1")] if base.endswith("/v1") else base
+    url = f"{host}/beta/markets/fundamentals/calendars"
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                url,
+                params={"symbols": ticker.upper()},
+                headers={"Authorization": f"Bearer {tok}", "Accept": "application/json"},
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            items = data if isinstance(data, list) else [data]
+            dates: set[_dt.date] = set()
+            for item in items:
+                for res in (item.get("results") or []):
+                    if res.get("type") != "Company":
+                        continue
+                    cc = (res.get("tables") or {}).get("corporate_calendars") or []
+                    for ev in cc:
+                        if "earnings" not in (ev.get("event") or "").lower():
+                            continue
+                        ds = (ev.get("begin_date_time") or "")[:10]
+                        try:
+                            dates.add(_dt.date.fromisoformat(ds))
+                        except ValueError:
+                            continue
+            return sorted(dates)
+    except Exception as e:
+        print(f"[EARNINGS] all-dates fetch failed for {ticker}: {e}", flush=True)
+        return None
+
+
 async def earnings_badge(ticker: str) -> str | None:
     """Return a one-line earnings badge for Telegram, or None.
 
