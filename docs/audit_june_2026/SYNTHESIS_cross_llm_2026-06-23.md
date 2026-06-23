@@ -206,4 +206,17 @@ The work from here is not more analysis. It's shipping the four open tasks the a
 
 ---
 
+## 10. Implementation status — shipped overnight 2026-06-23 (branch `feature/audit-june-2026-followups`)
+
+All additive, flag-gated/shadow or display-only, fully tested (49 new tests), **not pushed**. No live behavior change until a restart + flag flip + opt-in.
+
+- ✅ **#92 keystone — option-P&L backfill (DONE, live-validated).** `run_option_pnl_backfill` fills `opt_mfe_pct`/`opt_mae_pct`/… from real ThetaData OPRA NBBO (ask-in/bid-out), wired into the 30-min loop + a re-runnable CLP. Found+fixed a pandas-3.0 naive-ET-as-UTC tz bug (the audit's "add zoneinfo" rec, concretely). 18 tests; live smoke 56/60; historical 40-day backfill running (840+ rows and climbing). **This unblocks C10 (cluster option-P&L) and the #95 activation gate.**
+- ✅ **Per-theme sub-cap (Tier-2 rec #4 / blow-up risk #1) — DONE, display-only.** `server/themes.py` + `set_lotto_exposure.py --position` + Mir monitor render; flag `MIR_THEME_SUBCAP`, silent without per-position data. 20 tests. *Thresholds are labeled priors — calibrate.*
+- ✅ **Stale-data circuit-breaker (Tier-1 rec #3) — DONE, shadow.** `server/stale_guard.py` tags/demotes alerts built on a frozen spot; flag `STALE_GUARD_ACTIVE`, shadow by default. 11 tests.
+- 🔓 **#95 conviction fix — UNBLOCKED.** Draft exists (`alert_filter_v2_proposed.py`, shadow); its activation gate now has the option-P&L data it needed. Cherry-pick + re-validate, then flip — not before.
+- ⏳ **#91 watchdog — user action.** Built/tested; run `register_watchdog_task.ps1` + opt into `--auto-restart` (persistent system config).
+- ⬜ **Still open:** broker position sync (Tier-2 #5, E-Trade blocked → manual positions for now), OPRA tick-side (#77, large), detector-family merge (#9), `#119` ivr/earnings fire-time capture.
+
+---
+
 *Synthesis by Claude (Opus 4.8, 1M-context), 2026-06-23. Code-grounding via a 12-agent verification workflow against `C:/Dev/GammaPulse/server/*`. Four source audits archived alongside this file in `docs/audit_june_2026/`.*
