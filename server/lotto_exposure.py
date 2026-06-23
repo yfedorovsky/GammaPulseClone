@@ -44,21 +44,47 @@ def get_exposure() -> dict[str, Any] | None:
         if prem < 0:
             return None
         cap = d.get("capital")
+        # Optional per-position breakdown (enables the per-theme concentration
+        # sub-cap in the Mir monitor). Absent for the simple single-total feed →
+        # the theme block stays silent (no regression). Each entry: {ticker, premium}.
+        positions = None
+        raw_pos = d.get("positions")
+        if isinstance(raw_pos, list):
+            positions = []
+            for p in raw_pos:
+                try:
+                    tk = str(p.get("ticker") or "").upper()
+                    pr = float(p.get("premium") or 0)
+                except (TypeError, ValueError, AttributeError):
+                    continue
+                if tk and pr > 0:
+                    positions.append({"ticker": tk, "premium": pr})
         return {"premium_at_risk": prem,
                 "capital": float(cap) if cap not in (None, "", 0) else None,
                 "updated_ts": int(d.get("updated_ts") or 0),
-                "note": str(d.get("note") or "")}
+                "note": str(d.get("note") or ""),
+                "positions": positions or None}
     except Exception:
         return None
 
 
-def set_exposure(premium_at_risk: float, capital: float | None = None,
-                 note: str = "") -> dict[str, Any]:
+def set_exposure(premium_at_risk: float | None, capital: float | None = None,
+                 note: str = "",
+                 positions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Write the exposure state (stamps updated_ts=now). Returns the written dict.
     Capital PERSISTS: if not passed, the prior file's capital is carried forward, so
-    daily updates only need the premium (pass --capital again to change it)."""
-    if premium_at_risk < 0:
-        raise ValueError("premium_at_risk must be >= 0")
+    daily updates only need the premium (pass --capital again to change it).
+
+    `positions` (optional) is a per-name breakdown [{ticker, premium}] that enables
+    the per-theme concentration sub-cap. If positions are given and premium_at_risk
+    is None, the total is auto-summed from them."""
+    if positions:
+        positions = [{"ticker": str(p["ticker"]).upper(), "premium": float(p["premium"])}
+                     for p in positions if p.get("ticker") and float(p.get("premium") or 0) > 0]
+        if premium_at_risk is None:
+            premium_at_risk = sum(p["premium"] for p in positions)
+    if premium_at_risk is None or premium_at_risk < 0:
+        raise ValueError("premium_at_risk must be >= 0 (or pass positions to auto-sum)")
     if not (capital and capital > 0):                 # carry forward prior capital
         prev = get_exposure()
         capital = prev.get("capital") if prev else None
@@ -66,6 +92,8 @@ def set_exposure(premium_at_risk: float, capital: float | None = None,
                          "updated_ts": int(time.time()), "note": note}
     if capital and capital > 0:
         d["capital"] = float(capital)
+    if positions:
+        d["positions"] = positions
     p = _path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(d, indent=2), encoding="utf-8")

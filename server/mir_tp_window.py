@@ -60,6 +60,12 @@ def _lotto_monitor_on() -> bool:
     return os.getenv("MIR_LOTTO_MONITOR", "1").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _theme_subcap_on() -> bool:
+    # Default ON, but the block renders NOTHING unless per-position data is
+    # present in the exposure feed — so it's a no-op for single-total users.
+    return os.getenv("MIR_THEME_SUBCAP", "1").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _lotto_capital() -> float | None:
     """Optional capital base (env MIR_LOTTO_CAPITAL) to render the cap in $ as well as %."""
     raw = os.getenv("MIR_LOTTO_CAPITAL", "").strip().replace(",", "").replace("$", "")
@@ -347,11 +353,55 @@ def _discipline_footer(open_alerts: dict[str, Any]) -> list[str]:
                 f"{LOTTO_CAP_DOWN:g}% of capital."
             )
         out.extend(_lotto_exposure_lines(exp, capital, cap))
+        if _theme_subcap_on():
+            out.extend(_theme_subcap_lines(exp, capital, cap))
         out.append(
             "<i>Backtest: an uncapped book bankrupted in Q1 '26 (−138% MTM drawdown); this cap "
             "held max DD ~26%. Check your open lotto premium vs this number.</i>"
         )
     return out
+
+
+def _theme_subcap_lines(exp: dict[str, Any] | None, capital: float | None,
+                        cap_pct: float | None) -> list[str]:
+    """Per-theme concentration sub-cap (cross-LLM audit rec #1). Renders only when
+    the exposure feed carries per-position data — otherwise silent (no regression).
+    Display-only: the single-name cap and book cap don't catch 20 semis names
+    collapsing into one bet into the MU print; this surfaces that."""
+    if not exp:
+        return []
+    positions = exp.get("positions")
+    if not positions:
+        return []  # single-total feed → stay silent
+    try:
+        from .themes import theme_breakdown
+    except Exception:
+        return []
+    rows = theme_breakdown(positions, capital, cap_pct)
+    if not rows:
+        return []
+    lines = ["<i>Per-theme concentration (N_eff≈1 within a theme — the real ruin path):</i>"]
+    shown = 0
+    for r in rows:
+        if shown >= 5:
+            break
+        theme = r["theme"].replace("_", " ")
+        prem = r["premium"]
+        if r.get("pct") is not None and r.get("subcap_pct") is not None:
+            if r.get("over"):
+                tag = f"⚠️ <b>OVER by {r['delta_pp']:.1f} pp</b>"
+            else:
+                tag = f"✅ ok ({abs(r['delta_pp']):.1f} pp room)"
+            if r.get("has_catalyst"):
+                tag += " <i>·catalyst-tightened</i>"
+            lines.append(f"• <b>{theme}</b> ${prem:,.0f} = {r['pct']:.1f}% "
+                         f"(sub-cap ~{r['subcap_pct']:.1f}%) → {tag}")
+        else:
+            lines.append(f"• <b>{theme}</b> ${prem:,.0f}")
+        shown += 1
+    lines.append("<i>Sub-cap = 0.5× the book cap (a theme is ~2× as concentrated). "
+                 "Prior, not backtested — tune MIR_THEME_SUBCAP_FRACTION.</i>")
+    return lines
 
 
 def _lotto_exposure_lines(exp: dict[str, Any] | None, capital: float | None,
