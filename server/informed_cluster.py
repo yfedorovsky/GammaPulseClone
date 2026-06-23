@@ -19,6 +19,7 @@ This module is INFORMED FLOW v2 Batch 2.
 """
 from __future__ import annotations
 
+import os
 import time
 from collections import defaultdict
 from typing import Any
@@ -132,7 +133,7 @@ def record_and_check(alert: dict[str, Any]) -> dict[str, Any] | None:
     # Cluster fire payload
     first_ts = min(f["ts"] for f in roster)
     last_ts = max(f["ts"] for f in roster)
-    return {
+    cluster = {
         "ticker": ticker,
         "expiration": exp,
         "direction": direction,
@@ -149,6 +150,51 @@ def record_and_check(alert: dict[str, Any]) -> dict[str, Any] | None:
         "avg_vol_oi": sum(f["vol_oi"] for f in roster) / max(len(roster), 1),
         "duration_min": (last_ts - first_ts) / 60.0,
     }
+    # Log Telegram-firing clusters to alert_outcomes so their REALIZED option
+    # P&L can be backfilled (#92) and the audit's C10 claim — "INFORMED CLUSTER
+    # 89% WR is forward-spot, not option P&L, unproven" — finally tested. The
+    # dedup above guarantees one log per (ticker,exp,direction) per 30 min.
+    if len(distinct_strikes) >= MIN_CLUSTER_TELEGRAM_STRIKES:
+        log_cluster_outcomes(cluster)
+    return cluster
+
+
+def log_cluster_outcomes(cluster: dict[str, Any], db_path: str | None = None) -> int:
+    """Log each distinct leg of a fired INFORMED CLUSTER to alert_outcomes as
+    alert_type='CLUSTER', grade='{n}strike' (so the validation harness can
+    segment 3- vs 4-strike — the actual C10 question). Best-effort, never raises;
+    env CLUSTER_OUTCOME_LOG=0 disables (tests). Returns rows logged."""
+    if os.getenv("CLUSTER_OUTCOME_LOG", "1").strip().lower() not in ("1", "true", "yes", "on"):
+        return 0
+    try:
+        from .alert_outcomes import log_alert
+    except Exception:
+        return 0
+    n = cluster.get("n_strikes", 0)
+    otype = (cluster.get("option_type") or "").lower() or None
+    fired = float(cluster.get("last_ts") or time.time())
+    logged, seen = 0, set()
+    for leg in cluster.get("strikes", []):
+        strike = leg[0]
+        if strike in seen:
+            continue
+        seen.add(strike)
+        kw: dict[str, Any] = dict(
+            alert_type="CLUSTER", ticker=cluster.get("ticker", ""),
+            direction=cluster.get("direction"), grade=f"{n}strike",
+            score=cluster.get("max_score"), strike=float(strike),
+            expiration=cluster.get("expiration"), option_type=otype, fired_at=fired,
+            raw_alert={"n_strikes": n, "total_notional": cluster.get("total_notional"),
+                       "avg_vol_oi": cluster.get("avg_vol_oi")},
+        )
+        if db_path:
+            kw["db_path"] = db_path
+        try:
+            if log_alert(**kw):
+                logged += 1
+        except Exception:
+            pass
+    return logged
 
 
 def gc_old_entries() -> int:
