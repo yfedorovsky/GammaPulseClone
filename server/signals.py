@@ -2446,6 +2446,20 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
         except Exception:
             pass
 
+        # SOE_A demote to UI-only (#121, cross-LLM audit follow-through). The 6/23
+        # realized-option-P&L analysis found grade-A SOE is directionally WEAK
+        # (37.7% spot EOD WR over 25 days, n=783); no exit policy flips it positive,
+        # and the 57.6% option touch-green WR was a convexity artifact. Demoted like
+        # WHALE #94 — still persisted + shown in UI, just muted from Telegram. A+
+        # is NOT affected. SINGLE-REGIME bull caveat → reversible: env SOE_A_TELEGRAM=1.
+        try:
+            from .telegram import soe_a_demoted
+            if soe_a_demoted(sig.get("grade")):
+                should_push = False
+                sig["_soe_a_demoted"] = True
+        except Exception:
+            pass
+
         if should_push and not sig.get("_suppress_telegram"):
             try:
                 from .telegram import send, format_soe_signal

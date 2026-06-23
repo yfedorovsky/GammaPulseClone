@@ -344,6 +344,23 @@ def other_telegram_on() -> bool:
     return os.getenv("OTHER_TELEGRAM", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def soe_a_telegram_on() -> bool:
+    """Grade-A SOE demoted to UI-only (#121, 6/23 cross-LLM audit follow-through).
+    The realized-option-P&L analysis (docs/research/SOE_A_EXIT_ANALYSIS_2026-06-23.md,
+    detector_scorecard) found SOE_A is directionally WEAK: 37.7% spot EOD win rate over
+    25 days (n=783), and NO take-profit/stop policy flips it positive. The 57.6% option
+    touch-green WR that briefly spared it was a convexity artifact, not skill. Demoted
+    like WHALE #94. A+ (grade 'A+') is NOT affected (untested, n=13). SINGLE-REGIME bull
+    caveat → reversible: set env SOE_A_TELEGRAM=1 to restore."""
+    return os.getenv("SOE_A_TELEGRAM", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def soe_a_demoted(grade: str | None) -> bool:
+    """True if this SOE signal should be muted from Telegram (grade exactly 'A' and
+    the SOE_A_TELEGRAM gate is off). Pure → unit-testable. A+ never demoted here."""
+    return (grade or "").strip().upper() == "A" and not soe_a_telegram_on()
+
+
 def is_demoted_other(text: str) -> bool:
     """A residual 'OTHER'-category telegram message — demoted to UI-only.
 
