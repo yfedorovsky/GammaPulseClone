@@ -896,6 +896,34 @@ def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) 
     except Exception as _se:
         print(f"[flow] structure guardrail error: {_se!r}", flush=True)
 
+    # ── Stale-spot circuit-breaker (cross-LLM audit rec, shadow by default) ──
+    # If this ticker's latest spot snapshot is FROZEN (DIA-stuck-6h class), the
+    # alert's distance/GEX-alignment is built on a dead price. Tag it; when
+    # STALE_GUARD_ACTIVE=1, demote one conviction notch. SHADOW BY DEFAULT
+    # (notch_delta=0) → changes nothing until validated. Not whale/insider-exempt:
+    # frozen data misleads every alert equally.
+    try:
+        from .stale_guard import evaluate_stale as _stale_eval, _active as _stale_on
+        _sg = _stale_eval(alert.get("ticker", ""))
+        if _sg.get("tag"):
+            alert["_stale_tag"] = _sg["tag"]
+            alert["_stale_reason"] = _sg.get("reason", "")
+            _sdelta = _sg.get("notch_delta", 0)
+            if _sdelta:
+                from .structure_regime import apply_notch as _struct_notch2
+                _nc = _struct_notch2(conviction, _sdelta)
+                if _nc != conviction:
+                    alert["_pre_stale_conviction"] = conviction
+                    conviction = _nc
+                    alert["conviction"] = _nc
+            print(
+                f"[STALE] {alert.get('ticker')} stale-spot notch={_sdelta} "
+                f"active={_stale_on()}",
+                flush=True,
+            )
+    except Exception as _sge:
+        print(f"[flow] stale guard error: {_sge!r}", flush=True)
+
     # ── Analogue confluence tag (task #55 follow-up) ─────────────────────
     # Tag the alert with whether its direction ALIGNS with the index base-rate
     # bias (SPX/NDX active-pattern forward returns). Reads a pre-warmed cache
