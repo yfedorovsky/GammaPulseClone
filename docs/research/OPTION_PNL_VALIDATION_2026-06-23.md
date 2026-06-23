@@ -24,7 +24,7 @@ _Live scorer was inverted on spot: FLOW_HIGH 41.1% < FLOW_MEDIUM 47.0%. Does it 
 - **⚠️ KEEP/DROP verdict withheld — KEEP set spans only 1 day(s) (FLOW-dominated, backfill incomplete). Re-run after full backfill.**
 
 ## VIX regime (Perplexity ask)
-- **VIX UNK**: n=2634 (25d)  win≥0%=75.4% [74,77]  win≥100%=13.9%  medMFE=+11%  medMAE=-26%  policy(day-wt)=-7.5%  eod(day-wt)=-5.3%
+- **VIX MED15-25**: n=2634 (25d)  win≥0%=75.4% [74,77]  win≥100%=13.9%  medMFE=+11%  medMAE=-26%  policy(day-wt)=-7.5%  eod(day-wt)=-5.3%
 
 ## Honest caveats
 - Single bull-regime window (May–Jun 2026); no sustained bear. Magnitudes are regime-inflated.
