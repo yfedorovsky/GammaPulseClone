@@ -938,6 +938,30 @@ def insert_alert(alert: dict[str, Any], gex_info: dict[str, Any] | None = None) 
     except Exception as _ae:
         print(f"[flow] analogue confluence error: {_ae!r}", flush=True)
 
+    # Aggregate bearish-flow escalator (#122-C). Feed EVERY alert (no
+    # insider/whale gate — that gate is exactly why the MU 6/25 put ladder
+    # never escalated). Sync record+check here; ACTIVE dispatch is drained by
+    # the async flow loop. Shadow by default (env BEAR_ESCALATOR_ACTIVE=1).
+    try:
+        from . import bearish_flow_escalator as _bfe
+        _esc = _bfe.record_and_check({
+            "ticker": alert.get("ticker"),
+            "ts": int(time.time()),
+            "option_type": alert.get("option_type"),
+            "side": alert.get("side"),
+            "notional": alert.get("notional", 0) or 0,
+            "spot": alert.get("spot"),
+        })
+        if _esc:
+            _mode = "DISPATCH" if _bfe.ESCALATOR_ACTIVE else "SHADOW"
+            print(f"[BEAR-ESC] {_mode} {_esc['ticker']} @ {_esc.get('spot')} "
+                  f"put-ASK ${_esc['put_ask_m']}M vs call-ASK ${_esc['call_ask_m']}M "
+                  f"({_esc['ratio']}x, {_esc['put_prints']} prints)", flush=True)
+            if _bfe.ESCALATOR_ACTIVE:
+                _bfe.enqueue(_esc)
+    except Exception as _be:
+        print(f"[BEAR-ESC] error: {_be!r}", flush=True)
+
     with _conn() as c:
         c.execute(
             """INSERT INTO flow_alerts
@@ -1730,6 +1754,17 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                             priority=_priority_force,
                             force=_priority_force,
                         )
+                        # Drain any queued bearish-flow escalations (#122-C).
+                        try:
+                            from . import bearish_flow_escalator as _bfe
+                            for _e in _bfe.drain_pending():
+                                await send(
+                                    _bfe.format_telegram(_e),
+                                    ticker=_e.get("ticker", ""),
+                                    priority=True, force=True,
+                                )
+                        except Exception:
+                            pass
                         # Cluster check on the OFF/legacy path too
                         if a.get("is_insider"):
                             try:

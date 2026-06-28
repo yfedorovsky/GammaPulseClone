@@ -1454,7 +1454,7 @@ def _select_contract(
     }
 
 
-def _determine_direction(state: dict[str, Any]) -> str | None:
+def _determine_direction(state: dict[str, Any], ticker: str | None = None) -> str | None:
     """Determine trade direction from GEX structure.
 
     Patch A (2026-04-22) — three-layer cascade:
@@ -1499,6 +1499,32 @@ def _determine_direction(state: dict[str, Any]) -> str | None:
         if vs_open >= MOM_OVERRIDE_PCT:
             state["_last_direction_source"] = "momentum_override_bull"
             return "BULL"
+
+    # Layer 1c: Blow-off exhaustion bear (#122-D, 2026-06-27 post-mortem).
+    # A name stretched >=2 ATR / +18% above its 20d mean that prints a LOWER
+    # HIGH into a binary catalyst (post-print IV crush) is the highest-quality
+    # short — the MU/SNDK 6/25 sell-the-news the long-only engine could only
+    # ever fire calls into. Gated hard on extension AND tape-rolled AND
+    # IV-crush (the binary already fired) — the catalyst requirement keeps it
+    # OFF healthy uptrend pullbacks (analytical-lean: don't lean bearish on an
+    # intact trend). Routes to a STRUCTURAL bear; only DISPATCHES when
+    # SOE_STRUCTURAL_BEAR_ENABLED=true (else shadow-logged via ab_decisions).
+    try:
+        from .euphoria_brake import (
+            extension as _ext, tape_rolled as _rolled, iv_crush as _crush,
+        )
+        _bo_rts = state.get("_rts") or {}
+        _bo_ma20 = (_bo_rts.get("mas") or {}).get("ma20")
+        _bo_spot = state.get("actual_spot") or state.get("_spot") or 0
+        if (
+            _ext(_bo_spot, _bo_ma20)["suppress"]
+            and _rolled(state.get("_intraday_momentum") or {})
+            and ticker and _crush(ticker)
+        ):
+            state["_last_direction_source"] = "blowoff_exhaustion_bear"
+            return "BEAR"
+    except Exception:
+        pass
 
     # Only skip DANGER when there's NO clear directional momentum to lean on
     if signal == "DANGER":
@@ -1808,7 +1834,7 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
         # Fetch Mir signal early — needed for both books
         mir_sig = await cache.get_mir_signal(ticker)
 
-        direction = _determine_direction(state)
+        direction = _determine_direction(state, ticker)
         # If no GEX direction but Mir exists, infer from Mir option_type
         if direction is None and mir_sig:
             ot = (mir_sig.get("option_type") or "").upper()
@@ -1866,7 +1892,7 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
             direction == "BEAR"
             and direction_source in (
                 "gex_dominance_bear", "momentum_override_bear",
-                "multi_day_fade_bear",
+                "multi_day_fade_bear", "blowoff_exhaustion_bear",
             )
         )
         if (
@@ -2457,6 +2483,73 @@ async def generate_signals(confluence: dict | None = None) -> list[dict[str, Any
             if soe_a_demoted(sig.get("grade")):
                 should_push = False
                 sig["_soe_a_demoted"] = True
+        except Exception:
+            pass
+
+        # SOE chop/whipsaw gate (#122, 2026-06-27 semis-selloff post-mortem).
+        # Fri 6/26 sprayed 169 directional-long bull fires (resolved WR ~2%);
+        # the same tickers re-fired 3-5x with contradictory signal types (UBER
+        # fired 4). Contradiction-lock demotes a directional-EXPANSION bull type
+        # once the name has flip-flopped types / re-fired / pinned today, unless
+        # it's an RTS trend-leader (LLY guard). PINNING PREMIUM SELL + all BEAR
+        # are exempt by construction. Runs AFTER the conviction_booster override
+        # so a high boost can't un-suppress a whipsawed long. Shadow by default;
+        # env SOE_CHOP_GATE_ACTIVE=1 enforces (else: tag-only for audit).
+        try:
+            from .soe_chop_gate import evaluate_and_record, CHOP_GATE_ACTIVE
+            _chop_bull = sig.get("direction") in ("▲", "BULL")
+            _rts = state.get("_rts") if isinstance(state.get("_rts"), dict) else {}
+            _chop_demote, _chop_reason = evaluate_and_record(
+                ticker, sig.get("signal_type", ""), _chop_bull,
+                (_rts or {}).get("score", 0),
+            )
+            if _chop_demote:
+                sig["_chop_would_demote"] = True
+                sig["_chop_reason"] = _chop_reason
+                _mode = "DEMOTE" if CHOP_GATE_ACTIVE else "SHADOW"
+                print(
+                    f"[CHOP] {_mode} {ticker} {sig.get('grade')} "
+                    f"{sig.get('signal_type','')} — {_chop_reason}",
+                    flush=True,
+                )
+                if CHOP_GATE_ACTIVE:
+                    should_push = False
+                    sig["_chop_demoted"] = True
+        except Exception:
+            pass
+
+        # Euphoria / exhaustion brake (#122-B, 2026-06-27 post-mortem). Suppress
+        # a BULL directional-long when the name is stretched >=18% over MA20 AND
+        # inside a binary-catalyst window (forward ER bounded, or post-print IV
+        # crush) AND the tape has ROLLED (lower high / below open). An
+        # up-continuing tape is never braked (ARM-runner guard). The MU 1240C @
+        # the +18% blow-off open and 1280C @ the 1:43pm lower high would brake.
+        # Shadow by default; env EUPHORIA_BRAKE_ACTIVE=1 enforces.
+        try:
+            from .soe_chop_gate import SUPPRESS_TYPES as _DIRLONG
+            if (sig.get("direction") in ("▲", "BULL")
+                    and sig.get("signal_type") in _DIRLONG):
+                from .euphoria_brake import euphoria_state, BRAKE_ACTIVE
+                _rtsd = state.get("_rts") if isinstance(state.get("_rts"), dict) else {}
+                _ma20 = ((_rtsd or {}).get("mas") or {}).get("ma20")
+                _eb = euphoria_state(
+                    ticker,
+                    state.get("actual_spot") or state.get("_spot") or 0,
+                    ma20=_ma20,
+                    dte=sig.get("dte"),
+                    intraday=_intraday_momentum_stats(ticker),
+                )
+                if _eb["verdict"] in ("SUPPRESS", "INVERT"):
+                    sig["_euphoria_verdict"] = _eb["verdict"]
+                    sig["_euphoria_reason"] = _eb["reason"]
+                    _emode = "BRAKE" if BRAKE_ACTIVE else "SHADOW"
+                    print(f"[EUPHORIA] {_emode} {_eb['verdict']} {ticker} "
+                          f"{sig.get('signal_type','')} — {_eb['reason']}", flush=True)
+                    if BRAKE_ACTIVE:
+                        should_push = False
+                        sig["_euphoria_demoted"] = True
+                        if _eb["verdict"] == "INVERT":
+                            sig["_euphoria_fade_watch"] = True
         except Exception:
             pass
 
