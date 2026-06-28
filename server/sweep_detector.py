@@ -1239,6 +1239,25 @@ class SweepDetector:
                 priority=True,
                 force=True,
             )
+            # P0 outcome tracking (#123): realtime WHALE was untracked.
+            try:
+                from .alert_outcomes import log_alert
+                _spot = None
+                try:
+                    _spot = alert.get("spot") if isinstance(alert, dict) else None
+                except Exception:
+                    pass
+                _ot = (rollup.option_type or "").lower()
+                log_alert(
+                    alert_type="WHALE_RT", ticker=rollup.ticker,
+                    direction="BULL" if _ot.startswith("c") else "BEAR",
+                    strike=float(rollup.strike), expiration=rollup.expiration,
+                    option_type=rollup.option_type, spot_at_alert=_spot,
+                    raw_alert={"notional": notional, "vol": vol,
+                               "venues": rollup.venue_count, "side": "ASK"},
+                )
+            except Exception:
+                pass
         except Exception as e:
             print(f"[WHALE-RT] telegram send failed: {e!r}", flush=True)
 

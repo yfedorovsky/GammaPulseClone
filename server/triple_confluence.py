@@ -431,6 +431,22 @@ async def maybe_fire_triple_confluence() -> int:
             if ok:
                 _fired_today.add(key)
                 fired += 1
+                # P0 outcome tracking (#123): TRIPLE was previously untracked
+                # (only logs when TRIPLE_TELEGRAM=1 actually dispatches it).
+                try:
+                    from .alert_outcomes import log_alert
+                    log_alert(
+                        alert_type="TRIPLE", ticker=conf["ticker"],
+                        direction=conf.get("direction"),
+                        score=conf.get("score") or conf.get("total_score"),
+                        spot_at_alert=conf.get("spot"),
+                        raw_alert={"flow_strikes": conf.get("flow_strike_count"),
+                                   "soe_aplus": conf.get("soe_aplus_count"),
+                                   "soe_a": conf.get("soe_a_count"),
+                                   "kingmig": len(conf.get("kingmig_events") or [])},
+                    )
+                except Exception:
+                    pass
                 print(
                     f"[TRIPLE] fired {conf['ticker']} {conf['direction']} "
                     f"(flow_strikes={conf['flow_strike_count']} "

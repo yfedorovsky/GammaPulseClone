@@ -1770,7 +1770,7 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                             try:
                                 from .informed_cluster import (
                                     record_and_check, format_cluster_telegram,
-                                    MIN_CLUSTER_TELEGRAM_STRIKES,
+                                    MIN_CLUSTER_TELEGRAM_STRIKES, log_cluster_outcomes,
                                 )
                                 cluster = record_and_check(a)
                                 if cluster and cluster["n_strikes"] >= MIN_CLUSTER_TELEGRAM_STRIKES:
@@ -1779,6 +1779,7 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                                         ticker=cluster["ticker"],
                                         priority=True, force=True,
                                     )
+                                    log_cluster_outcomes(cluster)  # P0 #123: track dispatched CLUSTER
                             except Exception as ce:
                                 print(f"[INFORMED_CLUSTER] error: {ce!r}", flush=True)
                         # WHALE CLUSTER check (overnight Phase 3, 2026-06-04 PM).
@@ -1859,6 +1860,7 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                                             record_and_check,
                                             format_cluster_telegram,
                                             MIN_CLUSTER_TELEGRAM_STRIKES,
+                                            log_cluster_outcomes,
                                         )
                                         cluster = record_and_check(payload)
                                         # Backtest finding 2026-05-27 PM:
@@ -1874,6 +1876,7 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                                                 priority=True,
                                                 force=True,
                                             )
+                                            log_cluster_outcomes(cluster)  # P0 #123
                                     except Exception as ce:
                                         print(f"[INFORMED_CLUSTER] error: {ce!r}", flush=True)
                                 # WHALE CLUSTER detector (overnight Phase 3,
@@ -1996,7 +1999,7 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                             try:
                                 from .informed_cluster import (
                                     record_and_check, format_cluster_telegram,
-                                    MIN_CLUSTER_TELEGRAM_STRIKES,
+                                    MIN_CLUSTER_TELEGRAM_STRIKES, log_cluster_outcomes,
                                 )
                                 cluster = record_and_check(payload)
                                 if cluster and cluster["n_strikes"] >= MIN_CLUSTER_TELEGRAM_STRIKES:
@@ -2005,6 +2008,7 @@ async def run_flow_scanner(stop_event: asyncio.Event) -> None:
                                         ticker=cluster["ticker"],
                                         priority=True, force=True,
                                     )
+                                    log_cluster_outcomes(cluster)  # P0 #123
                             except Exception as ce:
                                 print(f"[INFORMED_CLUSTER] error: {ce!r}", flush=True)
                     elif decision == "FIRE_SUMMARY":

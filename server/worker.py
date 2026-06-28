@@ -1168,6 +1168,18 @@ async def run_worker(stop_event: asyncio.Event) -> None:
                     await maybe_scan_rs_decouples()
                 except Exception as dc_err:
                     print(f"[worker] rs decouple scan failed: {dc_err}")
+                # Cross-sector ROTATION + leading-sector RS leaderboard (#123):
+                # one industry group broadly red while another broadly green
+                # (the 6/26 semis-dump / healthcare-bid case rs_decouple's
+                # SECTOR_MAX gate structurally suppressed). Sends the full sector
+                # RS ranking + standout leaders so the operator can pivot fast.
+                # RTH-gated + 5-min throttled internally. Shadow by default
+                # (env ROTATION_ALERT_ACTIVE=1 to dispatch). CONTEXT, not a buy.
+                try:
+                    from .sector_rotation_alert import maybe_scan_rotation
+                    await maybe_scan_rotation()
+                except Exception as rot_err:
+                    print(f"[worker] sector rotation scan failed: {rot_err}")
                 # EOD RS-acceleration digest (swing complement to the intraday
                 # decouple) — once/day 16:10-16:45 ET, who's climbing/rolling off
                 # the relative-strength leaderboard over days.
