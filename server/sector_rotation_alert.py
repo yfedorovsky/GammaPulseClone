@@ -141,9 +141,11 @@ def find_rotation(
 
 
 # ── Live glue ────────────────────────────────────────────────────────
-def returns_from_prev_close(date: str | None = None) -> dict[str, float]:
+def returns_from_prev_close(date: str | None = None,
+                            db: str | None = None) -> dict[str, float]:
     """Per-ticker pct = today_last_spot / prior-trading-day close - 1 (x100), for
-    the sector universe + SPY. Read-only, fail-open {}."""
+    the sector universe + SPY. Read-only, fail-open {}. `db` overrides the
+    configured snapshot DB (for the offline validation script)."""
     from .industry import INDUSTRY_GROUPS
     s = get_settings()
     universe = {"SPY"}
@@ -151,7 +153,7 @@ def returns_from_prev_close(date: str | None = None) -> dict[str, float]:
         universe.update(ms)
     d = date or time.strftime("%Y-%m-%d")
     try:
-        con = sqlite3.connect(f"file:{s.snapshot_db}?mode=ro", uri=True)
+        con = sqlite3.connect(f"file:{db or s.snapshot_db}?mode=ro", uri=True)
     except Exception:
         return {}
     try:
