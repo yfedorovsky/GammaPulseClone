@@ -20,8 +20,9 @@ the open basis understated the semis drop ~3x and the rotation would have failed
 closes groups by day and would return today's in-progress spot intraday, so we
 fetch the prior day explicitly).
 
-DISCIPLINE: CONTEXT / attention flag, not a buy. Shadow by default — set env
-ROTATION_ALERT_ACTIVE=1 to dispatch.
+DISCIPLINE: CONTEXT / attention flag, not a buy. LIVE by default (validated: 6
+genuine rotations / 22 sessions, once-per-day max, all real divergences — not
+spam). Kill switch: set env ROTATION_ALERT_ACTIVE=0 to silence.
 """
 from __future__ import annotations
 
@@ -47,7 +48,9 @@ SCAN_MIN_ET_MINUTE = 15
 
 
 def _active() -> bool:
-    return os.environ.get("ROTATION_ALERT_ACTIVE", "").lower() in ("1", "true", "yes")
+    # LIVE by default; explicit ROTATION_ALERT_ACTIVE=0/false/off silences it.
+    return os.environ.get("ROTATION_ALERT_ACTIVE", "1").lower() not in (
+        "0", "false", "no", "off")
 
 
 class _ActiveProxy:

@@ -1173,8 +1173,8 @@ async def run_worker(stop_event: asyncio.Event) -> None:
                 # (the 6/26 semis-dump / healthcare-bid case rs_decouple's
                 # SECTOR_MAX gate structurally suppressed). Sends the full sector
                 # RS ranking + standout leaders so the operator can pivot fast.
-                # RTH-gated + 5-min throttled internally. Shadow by default
-                # (env ROTATION_ALERT_ACTIVE=1 to dispatch). CONTEXT, not a buy.
+                # RTH-gated + 5-min throttled internally. LIVE by default
+                # (env ROTATION_ALERT_ACTIVE=0 to silence). CONTEXT, not a buy.
                 try:
                     from .sector_rotation_alert import maybe_scan_rotation
                     await maybe_scan_rotation()
