@@ -40,6 +40,19 @@ INDUSTRY_GROUPS = {
     "Financials": ["JPM", "BAC", "GS", "MS", "V", "MA"],
 }
 
+# Cap-weighted sector-ETF benchmark per group, where a single clean ETF exists.
+# Used as the "official" RS anchor in the #123 rotation leaderboard alongside the
+# equal-weight basket breadth: the basket drives the rotation GATE (breadth =
+# proof the move is broad, not 2 mega-caps), the ETF is the benchmark a trader
+# actually watches. Thematic baskets with no clean 1:1 ETF (AI/DC Infra,
+# Photonics, Space, Crypto) are intentionally unmapped — they show basket RS only.
+SECTOR_ETF = {
+    "Semis / Chips": "SMH",
+    "Energy": "XLE",
+    "Biotech / Health": "XLV",
+    "Financials": "XLF",
+}
+
 # Reverse lookup: ticker -> industry
 _ticker_to_industry: dict[str, str] = {}
 for _ind, _tickers in INDUSTRY_GROUPS.items():

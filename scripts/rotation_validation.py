@@ -76,7 +76,7 @@ def main() -> int:
               f"{ev['red']} {ev['red_mean']:+.1f}%  gap {ev['gap']:+.1f}  "
               f"SPY {ev['spy']:+.1f}  leader={ld}")
         if args.leaderboard:
-            ev["leaderboard"] = R.leaderboard(stats, spy)
+            ev["leaderboard"] = R.leaderboard(stats, spy, etf_ret=rets)
             for line in R.format_rotation(ev).splitlines():
                 print("        " + line)
 

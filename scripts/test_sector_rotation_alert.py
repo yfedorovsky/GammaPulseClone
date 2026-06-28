@@ -92,5 +92,22 @@ check("format has ROTATION banner", "SECTOR ROTATION" in txt, True)
 check("format has leaderboard", "RS leaderboard" in txt, True)
 check("format names LLY leader", "LLY" in txt, True)
 
+# 9. ETF RS anchor: leaderboard attaches the cap-weighted sector-ETF return + RS
+lb_etf = R.leaderboard(R.sector_table(scene(), INDUSTRY_GROUPS), SPY_626,
+                       etf_ret={"XLV": 3.0, "SMH": -4.0, "XLE": 0.2})
+health = next(r for r in lb_etf if r["sector"] == "Biotech / Health")
+semis = next(r for r in lb_etf if r["sector"] == "Semis / Chips")
+mag7 = next(r for r in lb_etf if r["sector"] == "Mag 7")
+check("ETF anchor: XLV return on Health", health["etf_ret"], 3.0)
+check("ETF anchor: XLV RS vs SPY", round(health["etf_rs"], 2), round(3.0 - SPY_626, 2))
+check("ETF anchor: SMH return on Semis", semis["etf_ret"], -4.0)
+check("ETF anchor: unmapped group (Mag 7) has no ETF", mag7["etf_ret"], None)
+check("ETF anchor: basket RS unaffected", health["rs_vs_spy"] is not None, True)
+
+# 10. format renders the ETF anchor in the leaderboard line
+ev_etf = R.find_rotation(R.sector_table(scene(), INDUSTRY_GROUPS), SPY_626)
+ev_etf["leaderboard"] = lb_etf
+check("format shows XLV ETF anchor", "[XLV" in R.format_rotation(ev_etf), True)
+
 print(f"\n{_p} passed, {_f} failed")
 sys.exit(1 if _f else 0)

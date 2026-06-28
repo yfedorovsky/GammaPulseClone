@@ -82,13 +82,25 @@ def sector_table(ret_by_ticker: dict[str, float],
     return out
 
 
-def leaderboard(stats: dict[str, dict], spy_ret: float | None = None) -> list[dict]:
-    """All sectors ranked by mean % desc, with RS vs SPY."""
+def leaderboard(stats: dict[str, dict], spy_ret: float | None = None,
+                etf_ret: dict[str, float] | None = None) -> list[dict]:
+    """All sectors ranked by mean % desc, with RS vs SPY (equal-weight basket).
+
+    When etf_ret (per-ticker returns) is supplied, also attach the cap-weighted
+    sector-ETF return + its RS vs SPY for groups that map to a clean benchmark
+    ETF (Biotech/Health -> XLV, Semis -> SMH, ...). Unmapped thematic groups
+    carry etf_ret=None and render basket RS only."""
+    from .industry import SECTOR_ETF
     rows = []
     for s, d in stats.items():
+        etf = SECTOR_ETF.get(s)
+        er = etf_ret.get(etf) if (etf_ret and etf) else None
         rows.append({
             "sector": s, "mean": d["mean"], "n": d["n"],
             "rs_vs_spy": (d["mean"] - spy_ret) if spy_ret is not None else None,
+            "etf": etf if er is not None else None,
+            "etf_ret": er,
+            "etf_rs": (er - spy_ret) if (er is not None and spy_ret is not None) else None,
         })
     rows.sort(key=lambda r: -r["mean"])
     return rows
@@ -146,11 +158,12 @@ def returns_from_prev_close(date: str | None = None,
     """Per-ticker pct = today_last_spot / prior-trading-day close - 1 (x100), for
     the sector universe + SPY. Read-only, fail-open {}. `db` overrides the
     configured snapshot DB (for the offline validation script)."""
-    from .industry import INDUSTRY_GROUPS
+    from .industry import INDUSTRY_GROUPS, SECTOR_ETF
     s = get_settings()
     universe = {"SPY"}
     for ms in INDUSTRY_GROUPS.values():
         universe.update(ms)
+    universe.update(SECTOR_ETF.values())   # cap-weighted ETF RS anchors (XLV, SMH, ...)
     d = date or time.strftime("%Y-%m-%d")
     try:
         con = sqlite3.connect(f"file:{db or s.snapshot_db}?mode=ro", uri=True)
@@ -213,7 +226,7 @@ def scan_rotation(ret_by_ticker: dict[str, float] | None = None,
     ev = find_rotation(stats, spy)
     if not ev:
         return None
-    ev["leaderboard"] = leaderboard(stats, spy)
+    ev["leaderboard"] = leaderboard(stats, spy, etf_ret=rets)
     if not _is_new(ev, d):
         return None
     return ev
@@ -233,10 +246,13 @@ def format_rotation(ev: dict) -> str:
             ld = ev["leader"]
             lines.append(f"   {ld['ticker']} is decoupling — leading its group by +{ld['spread']:.1f}%")
     lines.append("")
-    lines.append("Sector RS leaderboard (vs prev close):")
+    lines.append("Sector RS leaderboard — basket mean | [ETF] (vs prev close):")
     for r in ev.get("leaderboard", []):
         rs = f"  RS {r['rs_vs_spy']:+.1f}" if r.get("rs_vs_spy") is not None else ""
-        lines.append(f"  {r['mean']:+5.1f}%  {r['sector']:<20s}{rs}")
+        etf = ""
+        if r.get("etf_ret") is not None:
+            etf = f"  [{r['etf']} {r['etf_ret']:+.1f}% RS {r['etf_rs']:+.1f}]"
+        lines.append(f"  {r['mean']:+5.1f}%  {r['sector']:<20s}{rs}{etf}")
     lines.append("")
     lines.append("CONTEXT — rotation/leadership flag, not a buy. Pivot toward the bid sector.")
     return "\n".join(lines)
