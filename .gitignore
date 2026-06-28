@@ -67,6 +67,8 @@ gex_backtest/
 /walk_forward_results.json
 /spy_intraday_results.json
 /king_compression_*.csv
+# archived screenshots (were _screenshots/, now under archive/) — keep images out of git
+archive/screenshots/
 gex_backtest.db
 
 # Thread infographics — rendered PNGs regenerate from the committed SVGs
