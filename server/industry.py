@@ -34,7 +34,7 @@ INDUSTRY_GROUPS = {
     "Consumer": ["COST", "WMT", "TGT", "NKE", "SBUX", "MCD", "DIS"],
     "Space / Defense": ["BA", "LMT", "RTX", "NOC", "GD"],
     "Energy": ["XOM", "CVX", "COP", "SLB", "OXY"],
-    "Biotech / Health": ["LLY", "UNH", "PFE", "MRK", "ABBV", "MRNA"],
+    "Biotech / Health": ["LLY", "UNH", "JNJ", "PFE", "MRK", "ABBV", "MRNA"],
     "Financials": ["JPM", "BAC", "GS", "MS", "V", "MA"],
 }
 
