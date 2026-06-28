@@ -106,6 +106,23 @@ def leaderboard(stats: dict[str, dict], spy_ret: float | None = None,
     return rows
 
 
+def etf_board(etf_ret: dict[str, float], spy_ret: float | None = None) -> list[dict]:
+    """Cap-weighted GICS sector-ETF RS board: every SPDR (+SMH) vs SPY, ranked by
+    return desc. The canonical sector-rotation landscape independent of the
+    thematic baskets — so the operator sees where EVERY sector stands and what to
+    rotate into. Skips any ETF with no data (fail-open)."""
+    from .industry import SECTOR_ETF_BOARD
+    rows = []
+    for etf, name in SECTOR_ETF_BOARD:
+        r = etf_ret.get(etf)
+        if r is None:
+            continue
+        rows.append({"etf": etf, "name": name, "ret": r,
+                     "rs_vs_spy": (r - spy_ret) if spy_ret is not None else None})
+    rows.sort(key=lambda x: -x["ret"])
+    return rows
+
+
 def find_rotation(
     stats: dict[str, dict], spy_ret: float = 0.0, *,
     green_min: float = GREEN_MIN_PCT, red_max: float = RED_MAX_PCT,
@@ -158,12 +175,13 @@ def returns_from_prev_close(date: str | None = None,
     """Per-ticker pct = today_last_spot / prior-trading-day close - 1 (x100), for
     the sector universe + SPY. Read-only, fail-open {}. `db` overrides the
     configured snapshot DB (for the offline validation script)."""
-    from .industry import INDUSTRY_GROUPS, SECTOR_ETF
+    from .industry import INDUSTRY_GROUPS, SECTOR_ETF, SECTOR_ETF_BOARD
     s = get_settings()
     universe = {"SPY"}
     for ms in INDUSTRY_GROUPS.values():
         universe.update(ms)
-    universe.update(SECTOR_ETF.values())   # cap-weighted ETF RS anchors (XLV, SMH, ...)
+    universe.update(SECTOR_ETF.values())              # inline per-group anchors
+    universe.update(e for e, _ in SECTOR_ETF_BOARD)   # full SPDR RS board (XLK, ...)
     d = date or time.strftime("%Y-%m-%d")
     try:
         con = sqlite3.connect(f"file:{db or s.snapshot_db}?mode=ro", uri=True)
@@ -227,6 +245,7 @@ def scan_rotation(ret_by_ticker: dict[str, float] | None = None,
     if not ev:
         return None
     ev["leaderboard"] = leaderboard(stats, spy, etf_ret=rets)
+    ev["etf_board"] = etf_board(rets, spy)
     if not _is_new(ev, d):
         return None
     return ev
@@ -253,6 +272,13 @@ def format_rotation(ev: dict) -> str:
         if r.get("etf_ret") is not None:
             etf = f"  [{r['etf']} {r['etf_ret']:+.1f}% RS {r['etf_rs']:+.1f}]"
         lines.append(f"  {r['mean']:+5.1f}%  {r['sector']:<20s}{rs}{etf}")
+    board = ev.get("etf_board") or []
+    if board:
+        lines.append("")
+        lines.append("Sector ETF RS (SPDRs vs SPY, cap-weighted — pivot target on top):")
+        for r in board:
+            rs = f"  RS {r['rs_vs_spy']:+.1f}" if r.get("rs_vs_spy") is not None else ""
+            lines.append(f"  {r['ret']:+5.1f}%  {r['etf']:<5s}{r['name']:<13s}{rs}")
     lines.append("")
     lines.append("CONTEXT — rotation/leadership flag, not a buy. Pivot toward the bid sector.")
     return "\n".join(lines)

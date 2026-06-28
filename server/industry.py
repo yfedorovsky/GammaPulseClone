@@ -53,6 +53,20 @@ SECTOR_ETF = {
     "Financials": "XLF",
 }
 
+# Full canonical GICS sector-ETF set (the 11 SPDRs a trader rotates between) +
+# SMH for semis. Rendered as a standalone cap-weighted RS board in the #123 alert
+# so you see where EVERY sector stands vs SPY — the macro backdrop behind the
+# thematic-basket rotation, and exactly what to pivot INTO. Many of these (XLK,
+# XLU, XLB, XLRE, XLI, XLP, XLY, XLC) have no thematic INDUSTRY_GROUP, so the
+# board is the only place they appear. List order is display-only (the board
+# re-sorts by return); all are in the scanned universe (tickers.py TIER_1/2).
+SECTOR_ETF_BOARD = [
+    ("XLK", "Technology"), ("SMH", "Semis"), ("XLC", "Comm Svcs"),
+    ("XLY", "Cons Disc"), ("XLP", "Cons Staples"), ("XLV", "Health Care"),
+    ("XLF", "Financials"), ("XLI", "Industrials"), ("XLE", "Energy"),
+    ("XLU", "Utilities"), ("XLB", "Materials"), ("XLRE", "Real Estate"),
+]
+
 # Reverse lookup: ticker -> industry
 _ticker_to_industry: dict[str, str] = {}
 for _ind, _tickers in INDUSTRY_GROUPS.items():

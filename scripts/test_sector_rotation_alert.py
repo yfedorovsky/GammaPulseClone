@@ -109,5 +109,25 @@ ev_etf = R.find_rotation(R.sector_table(scene(), INDUSTRY_GROUPS), SPY_626)
 ev_etf["leaderboard"] = lb_etf
 check("format shows XLV ETF anchor", "[XLV" in R.format_rotation(ev_etf), True)
 
+# 11. Full SPDR RS board: every sector ETF vs SPY, ranked, missing-data skipped
+board = R.etf_board({"XLK": 2.0, "XLV": 3.0, "SMH": -4.0, "XLE": -0.5,
+                     "XLU": 0.1, "XLF": 0.2}, SPY_626)  # XLB/XLRE/etc. absent
+check("etf_board ranks by return desc (XLV top)", board[0]["etf"], "XLV")
+check("etf_board ranks semis last (SMH)", board[-1]["etf"], "SMH")
+check("etf_board RS vs SPY computed", round(board[0]["rs_vs_spy"], 2),
+      round(3.0 - SPY_626, 2))
+check("etf_board includes XLK (no thematic group)",
+      any(r["etf"] == "XLK" for r in board), True)
+check("etf_board skips ETFs with no data (XLB)",
+      all(r["etf"] != "XLB" for r in board), True)
+
+# 12. format renders the SPDR board with every X present
+ev_board = R.find_rotation(R.sector_table(scene(), INDUSTRY_GROUPS), SPY_626)
+ev_board["leaderboard"] = lb_etf
+ev_board["etf_board"] = board
+_fmt = R.format_rotation(ev_board)
+check("format shows SPDR board header", "Sector ETF RS" in _fmt, True)
+check("format board names XLK", "XLK" in _fmt, True)
+
 print(f"\n{_p} passed, {_f} failed")
 sys.exit(1 if _f else 0)
