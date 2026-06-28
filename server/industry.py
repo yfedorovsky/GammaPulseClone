@@ -34,7 +34,11 @@ INDUSTRY_GROUPS = {
     # broad, XLV-confirmed Healthcare move. Stays a leaderboard/watch row, NOT a
     # rotation-gate sector. PL/LUNR still fire single-name signals via the universe.
     "Space": ["RKLB", "ASTS"],
-    "AI / DC Infra": ["ANET", "VRT", "NET", "SNOW", "PLTR", "CRWD", "PANW", "ZS", "NBIS", "OKLO", "IREN"],
+    # Cyber pulled OUT into its own "Cyber Security" group (6/28, operator: "cyber
+    # is cyber, a separate category") — was conflated here. NET stays (edge/network
+    # infra, dual-use). One name lives in ONE group to avoid double-counting breadth.
+    "AI / DC Infra": ["ANET", "VRT", "NET", "SNOW", "PLTR", "NBIS", "OKLO", "IREN"],
+    "Cyber Security": ["PANW", "CRWD", "ZS", "FTNT", "OKTA"],
     "Crypto / Fintech": ["COIN", "MSTR", "MARA", "RIOT", "XYZ", "HOOD", "SOFI"],
     "Consumer": ["COST", "WMT", "TGT", "NKE", "SBUX", "MCD", "DIS"],
     "Space / Defense": ["BA", "LMT", "RTX", "NOC", "GD"],
