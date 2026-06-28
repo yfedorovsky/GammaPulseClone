@@ -1,113 +1,101 @@
-# GammaPulse Clone — Build Status
+# STATUS — GammaPulse
 
-**Last updated:** April 11, 2026  
-**Commits:** 5 on `master`  
-**Stack:** FastAPI + Vite/React + zustand + lightweight-charts + SQLite
+_Last updated: 2026-06-28. This replaces the Apr 11 "Build Status" framing. For the repo map see [`PROJECT_STRUCTURE.md`](PROJECT_STRUCTURE.md); for the full doc index see [`docs/README.md`](docs/README.md)._
 
----
+## Contents
 
-## What's Built (Production-Ready)
-
-### Core Engine
-- **GEX/VEX Math Engine** (`server/gex.py`) — gamma × OI × 100 × spot² × 0.01, verified within 2-17% of original (data provider gap, not algo)
-- **300+ Ticker Scanner** (`server/worker.py`) — tiered scanning with aggressive chain caching (expirations 1hr, chains 2min)
-- **Real-time Streaming** — WebSocket primary → SSE fallback → 5s polling. Price updates tick-by-tick during market hours
-- **Tradier Adapter** (`server/tradier.py`) — quotes, expirations, chains with greeks, history, intraday bars
-
-### 11 Tabs
-
-| Tab | Status | Description |
-|-----|--------|-------------|
-| HEATMAPS | ✅ Complete | MULTI/FOCUS modes, BARS/PROFILE views, 0DTE toggle, Expected Move badge, per-expiration signals, hover tooltips, watchlist tabs |
-| OVERLAY | ✅ Complete | Real Tradier candles, GEX levels on chart, VISION mode (aura bands + confidence cone + VEX arrows), mini sidebar, volume, sessions filter, trade ideas |
-| SCANNER | ✅ Complete | 300+ tickers, signal filter pills with counts, MTF side panel, custom ticker input, King%/GEX MAG/AGE columns |
-| FLOW | ✅ Complete | 3 modes: ALERTS (conviction scoring + lifecycle), SCAN (300+ tickers), DETAIL (per-ticker flow analysis with P/C ratio, sentiment, side detection) |
-| SIGNALS | ✅ Complete | SOE engine — 8-factor GEX scoring (A+/A/B+/B/C), specific contract selection, Entry/Target/Stop with R:R, reasoning checklist, win rate tracking |
-| SECTORS | ✅ Complete | Treemap of 11 SPDR ETFs, RRG rotation graph, top-10 holdings with GEX data, weighted aggregate GEX walls |
-| HISTORY | ✅ Complete | Timeline scrubber, GEX snapshots every 5 min during market hours |
-| MTF | ✅ Complete | Multi-ticker king/floor/ceiling across all expirations, green gradient separators |
-| EARNINGS | ✅ Complete | Weekly calendar with real Finnhub earnings (beat/miss), economic events (FOMC/CPI/PPI/NFP/OPEX), Prev/Next navigation |
-| NEWS | ✅ Complete | Finnhub company news with bullish/bearish/neutral sentiment tagging, left sidebar watchlist, category filters |
-| GUIDE | ✅ Complete | Full documentation of all features |
-
-### Alert System
-- **Flow Alerts** — scans all 300+ cached tickers every 30s for unusual volume (V/OI ≥ 3×, notional ≥ $500K)
-- **Conviction Scoring** — HIGH/MEDIUM/LOW based on volume, notional, GEX alignment
-- **Trade Tracker** — entry + 8 exit signal types (KING_HIT, FLOOR_BREAK, REGIME_FLIP, IV_CRUSH, THETA_WARNING, etc.)
-- **Telegram Push** — instant notifications for flow alerts + exit signals
-- **Zero API Cost** — flow scanner piggybacks on GEX worker cache, no extra Tradier calls
-
-### SOE Signals Engine (`server/signals.py`)
-AI trade recommendation pipeline scoring 8 factors:
-1. Regime alignment (POS/NEG gamma)
-2. King polarity (matches direction)
-3. King distance (0.5-3% sweet spot)
-4. Floor/ceiling confirmation
-5. ZGL position
-6. IV level
-7. Confluence (SPY/QQQ/IWM)
-8. Call/put wall alignment
-
-Generates specific contracts with grade (A+ through C), entry/target/stop, R:R ratio, and reasoning.
-
-### Discipline Layer (`server/discipline.py`)
-MirBot strategy integration — additive, never overrides GEX scoring:
-- **Base Rate Tiering** — PROVEN (≥50% WR, ≥10 trades) / DEVELOPING / UNPROVEN / BELOW_FLOOR per ticker
-- **Quarter-Kelly Sizing** — f* × 0.25 with hard caps (15% single, 5% 0DTE, 30% sector)
-- **Exit Ladder** — +50/+100/+150/+200% systematic profit taking, 0DTE -50% hard stop
-- **Circuit Breaker** — 3 losses → min score, 5 → half size, 7 → full stop until next week
-- **0DTE Time Gates** — morning momentum (9:45-11:30), chop zone warning (11:30-1:30), afternoon (1:30-3:00), power hour allowed (3:00-4:15)
+- [Edge Verdict (read this first)](#edge-verdict-read-this-first)
+- [What's LIVE vs SHADOW vs RESEARCH](#whats-live-vs-shadow-vs-research)
+- [Detector Stack (live)](#detector-stack-live)
+- [#122 Semis-Fix Stack (shadow-gated)](#122-semis-fix-stack-shadow-gated)
+- [Validation Tooling](#validation-tooling)
+- [Stack & Cost](#stack--cost)
+- [Recent Changes](#recent-changes)
 
 ---
 
-## What's Remaining / Nice-to-Have
+## Edge Verdict (read this first)
 
-| Feature | Priority | Effort | Notes |
-|---------|----------|--------|-------|
-| Display discipline fields in Signals tab UI | High | Easy | Kelly size, tier badge, exit ladder visualization |
-| Exit ladder Telegram alerts | High | Easy | Push at +50/+100/+150% levels |
-| GEX Time Machine on History tab | Medium | Medium | Spot vs king mini chart with playback |
-| Drag-to-reorder panels | Medium | Medium | Edit mode works, just no drag |
-| Signal accuracy tracker (real runtime data) | Medium | Needs data | Requires several days of snapshots |
-| Earnings badge on heatmap tickers | Low | Easy | Orange badge for earnings this week |
-| Session hour shading on overlay | Low | Easy | Green bars for RTH |
-| Discord webhook (morning report) | Low | Easy | Already have Telegram |
-| Forward projection curve in VISION | Low | Hard | Custom lightweight-charts plugin |
-| Pulsing king animation | Low | Easy | CSS keyframe on king price line |
+GammaPulse has **no proven standalone directional alpha net of cost.** Its validated edge is **risk-management discipline (exposure caps, don't-cap-winners exits) + latency**, wrapped in a **measurement-first validation engine**. It is a **context/awareness engine**, not a standalone-alpha signal engine.
+
+Empirical self-skepticism receipts:
+- **Phase 6 score-vs-outcome inversion:** 5.0+ SOE score = ~9% hit; 3.75–4.1 = ~67% hit → **score ≥4.8 auto-trade BLOCKED** with FADE WATCH.
+- **2022 bear replay PASSED** — the system stayed flat.
+- Every mechanical structural trigger (GEX/DEX/gamma-flip/JPM-collar/dark-pool S/R) was **falsified** by the project's own slippage-honest backtests. See [`docs/research/PRODUCT_DIRECTION.md`](docs/research/PRODUCT_DIRECTION.md) and [`docs/research/DETECTOR_SCORECARD_2026-06-23.md`](docs/research/DETECTOR_SCORECARD_2026-06-23.md).
 
 ---
 
-## Environment Setup
+## What's LIVE vs SHADOW vs RESEARCH
 
-```bash
-# Backend
-cd C:/Dev/GammaPulse
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r server/requirements.txt
-uvicorn server.main:app --reload --port 8000
-
-# Frontend (separate terminal)
-cd C:/Dev/GammaPulse/web
-npm install
-npm run dev
-```
-
-### .env Required Keys
-```
-TRADIER_TOKEN=xxx              # Required — production API
-TRADIER_BASE_URL=https://api.tradier.com/v1
-TELEGRAM_BOT_TOKEN=xxx         # Optional — push alerts
-TELEGRAM_CHAT_ID=xxx
-FINNHUB_API_KEY=xxx            # Optional — news + earnings
-```
+| Tier | Components |
+|------|-----------|
+| **LIVE** | GEX/SOE/flow detectors, Telegram dispatch (grade-tiered, per-ticker daily caps, suppression), paper trading ($20K, ask-in/bid-out slippage), `alert_outcomes` backfill loop. |
+| **SHADOW** (logs "what it would do", no dispatch change) | Macro regime tagger + convergence flag (info-only — score boost REMOVED per 4-LLM critique), all four #122 gates. |
+| **RESEARCH-ONLY** (offline, never auto-trades) | `backtest/` harnesses, `paired_trades.db` intrinsic-only validation, `discord/` parsers. |
 
 ---
 
-## Key Architecture Decisions
+## Detector Stack (live)
 
-1. **SPY-only GEX** — no SPX aggregation. Industry standard (SpotGamma, Barchart). SPX/NDX/RUT mapping available as future toggle.
-2. **Vanna approximated** as vega/spot — Tradier doesn't provide vanna directly.
-3. **Rate limiting** handled via tiered scanning + aggressive caching. First cycle expensive (~750 calls), subsequent cycles near-free from cache.
-4. **Discipline layer is additive** — never overrides or reduces SOE GEX scoring. It wraps around with sizing + risk management.
-5. **0DTE stays open until 4:15** — power hour gamma squeezes are tradeable on E-Trade.
+**Chain / GEX:** `gex.py` — king/floor/ceiling/gatekeeper nodes, ZGL, POS/NEG regime, VEX.
+
+**Signals:** `signals.py` — SOE 8-factor GEX quality scorer (A+/A/B+/B/C); Phase-6 rule baked in (score ≥4.8 BLOCKED, inverse-correlated with 1d outcome); now also hosts `_determine_direction` + #122 structural-bear logic.
+
+**Flow tick-path:** `sweep_detector.py` (ISO + realtime WHALE $3M+ ASK dispatch, sub-30s), `live_flow_aggregator.py` (Golden/Tail), `flow_alerts.py` (V/OI), `net_flow_signals.py` + `net_flow_fast.py` (NCP/NPP regime).
+
+**Collapsers:** `informed_cluster.py` (N-strikes same-expiration, Telegram at 3+), `whale_cluster.py` (cross-expiration multi-tenor ladder, Telegram at 2+), `triple_confluence.py` (INFORMED + king-migration + SOE aligned).
+
+**Structural:** `structural_turn.py` (5-condition bounce), `king_migration.py`, `king_breakout.py`, `floor_migration.py`.
+
+**Plus:** `zero_dte_engine`/loop, `gex_magnet_entry`, `scalp_alerts`, `runner_tracker`, `swing_scanner`, `discord_listener` (Mir), `conviction_booster`, `directional_flow_event` (normalizer).
+
+**Validation backbone:** `alert_outcomes.py` — logs every fire with full fire-time context (spot, king/floor, GEX regime, VIX, IVR, earnings_in_window, dte) and backfills 1h/EOD/next-day verdict + MFE/MAE every 30 min.
+
+Full code-grounded detail: [`docs/research/GAMMAPULSE_SYSTEM_REPORT_2026-06-22.md`](docs/research/GAMMAPULSE_SYSTEM_REPORT_2026-06-22.md).
+
+---
+
+## #122 Semis-Fix Stack (shadow-gated)
+
+All five default OFF / log-only until their env flag is set. Born from the 6/25–6/26 semis blow-off post-mortem (the system was structurally long-biased with no short-capable aggregator). Runbook: [`docs/research/SEMIS_FIXES_IMPLEMENTATION.md`](docs/research/SEMIS_FIXES_IMPLEMENTATION.md).
+
+| Fix | File | Env flag |
+|-----|------|----------|
+| A — Chop/whipsaw gate | `server/soe_chop_gate.py` | `SOE_CHOP_GATE_ACTIVE` |
+| B — Euphoria/exhaustion brake | `server/euphoria_brake.py` | `EUPHORIA_BRAKE_ACTIVE` |
+| C — Bearish-flow escalator | `server/bearish_flow_escalator.py` | `BEAR_ESCALATOR_ACTIVE` |
+| D — Blow-off / structural bear | `server/signals.py` | `SOE_STRUCTURAL_BEAR_ENABLED` (last/riskiest) |
+| E — Regime-failure monitor | `scripts/soe_regime_monitor.py` | n/a (standing monitor: `--days` history, `--today` live) |
+
+**Suggested activation order:** bear-escalator → chop-gate → euphoria-brake → structural-bear. 54 tests pass.
+
+---
+
+## Validation Tooling
+
+| Tool | Role |
+|------|------|
+| `backtest/regime_convergence_audit.py` | **Keystone** — WR by regime × score band. |
+| `scripts/backfill_outcomes.py` + `weekly_digest.py` | Outcome backfill + Friday EOD WR digest. |
+| `backtest/replay_2022.py` | 2022 bear-regime replay (PASSED — system stayed flat). |
+| `paired_trades.py` → `paired_trades.db` | **Canonical intrinsic-only validation.** Both broker paper systems are UNUSABLE for 0DTE (E-Trade sandbox mocked, Tradier 15-min delay), so this is the real validation path. |
+
+---
+
+## Stack & Cost
+
+- **Backend:** Python 3.11, FastAPI (REST + SSE + WebSocket), ~20 asyncio detector loops, single-writer SQLite Actor (WAL).
+- **Frontend:** React/Vite dashboard — HEATMAPS · OVERLAY · SCANNER · SWINGS · FLOW · SWEEPS · BIGFLOW · SIGNALS · PORTFOLIO · SECTORS · HISTORY · MTF · EARNINGS · NEWS · GUIDE.
+- **Data:** ThetaData Terminal (Options **Pro** tier, ~$160/mo as of Jun 2 — confirm current subscription; ports 25503 REST / 25520 WS) + Tradier (spot/candles) + optional Finnhub (earnings/news) + FRED (macro).
+- **Primary store:** `snapshots.db` (~5.4GB) + per-detector sidecar DBs. See [`PROJECT_STRUCTURE.md`](PROJECT_STRUCTURE.md) for the DO-NOT-MOVE runtime-state list.
+
+---
+
+## Recent Changes
+
+- **#122 semis-fix stack** (shadow-gated A–E) shipped after the 6/26 semis selloff post-mortem — see [`docs/research/SEMIS_SELLOFF_POSTMORTEM_2026-06-26.md`](docs/research/SEMIS_SELLOFF_POSTMORTEM_2026-06-26.md).
+- **June 2026 4-LLM external audit** completed — verdict reconciled in [`docs/audit_june_2026/SYNTHESIS_cross_llm_2026-06-23.md`](docs/audit_june_2026/SYNTHESIS_cross_llm_2026-06-23.md) ("brake pedal, not steering wheel"; confirms backlog #77/#95/#92/#93).
+- **Detection-stack wave (Jun 2–5):** whale/whale-cluster, informed-cluster, triple-confluence, king-breakout, floor-migration, conviction-booster, directional-flow-event normalizer, dividend-arb parity filter, side-detection v2.
+- **`directional_flow_event.py`** normalizer added (ChatGPT audit rec #9) — additive, no dispatch change yet.
+
+> For session-by-session history see the SESSION_*_INDEX / *_RESUME docs in [`docs/README.md` §9](docs/README.md#9-session-history).

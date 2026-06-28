@@ -4,6 +4,33 @@ A real-time options analytics platform with **OPRA-level flow detection**, **gam
 
 Originally reverse-engineered from [GammaPulse Pro](https://gammapulse.rstechnology.org/), now substantially beyond it in signal coverage AND in the rigor of the meta-system that decides which signals to trust.
 
+## Contents
+
+- [Documentation](#documentation)
+- [Stack](#stack)
+- [Features](#features)
+- [Project layout](#project-layout)
+- [Setup](#setup)
+- [How it works](#how-it-works)
+- [Validation harness](#validation-harness)
+- [Session documentation](#session-documentation)
+- [Philosophy](#philosophy)
+- [Known limitations](#known-limitations)
+
+## Documentation
+
+> ⚠️ Some sections below are a May 2026 snapshot and predate the June detector wave (structural-turn, whale/cluster, triple-confluence, and the shadow-gated `#122` stack). For the **current** detector stack and what's LIVE vs shadow-gated, see **[STATUS.md](STATUS.md)**.
+
+Full, navigable documentation lives in **[`docs/README.md`](docs/README.md)** — the curated master index (Start Here, architecture + detector lineup, runbooks, the research corpus by theme, cross-LLM audits, case studies, session history). GitHub renders it automatically when you open the `docs/` folder.
+
+| Doc | What it is |
+|-----|-----------|
+| [`docs/README.md`](docs/README.md) | **Master documentation index** with table of contents — find anything in <30s. |
+| [`PROJECT_STRUCTURE.md`](PROJECT_STRUCTURE.md) | Repo map + the DO-NOT-MOVE live-runtime-state list (where files *live*). |
+| [`STATUS.md`](STATUS.md) | Current system status: LIVE vs SHADOW-gated vs RESEARCH, detector stack, edge verdict. |
+| [`STRATEGY.md`](STRATEGY.md) | SOE strategy/backtest reference (point-in-time; STATUS.md has current live behavior). |
+| [`docs/research/PRODUCT_DIRECTION.md`](docs/research/PRODUCT_DIRECTION.md) | The thesis doc — *why* this is a context engine, not an alpha engine. Read first. |
+
 > **What's new (May 20 2026 — Perplexity audit response):**
 > Cross-LLM critique (Perplexity Sonar Reasoning Pro) flagged that filter
 > decisions were being made on statistically-meaningless samples (n=16
@@ -32,7 +59,7 @@ Originally reverse-engineered from [GammaPulse Pro](https://gammapulse.rstechnol
 >   collapses at high VIX, p=0.44).
 >
 > See [docs/research/perplexity_alert_evaluation_prompt.md](docs/research/perplexity_alert_evaluation_prompt.md)
-> for the full evaluation prompt and [Perplexity report](https://example.com/perplexity-report)
+> for the full evaluation prompt and the [Perplexity audit follow-up](docs/research/cross_llm_followup_2026-05-20.md)
 > for the brutal critique that drove these changes.
 
 > **Earlier (May 19 2026 — first wave of Perplexity-driven filters):**
@@ -65,7 +92,7 @@ Originally reverse-engineered from [GammaPulse Pro](https://gammapulse.rstechnol
 | Mir momentum swing signals | ✅ | ❌ | ❌ |
 | Paper trading with slippage + MFE/MAE | ✅ | ❌ | ❌ |
 | Telegram push with confidence grade | ✅ | API only | ❌ |
-| **Monthly cost** | **$80/mo** (ThetaData Options Standard) | $250+/mo | $50-100/mo |
+| **Monthly cost** | **$160/mo** (ThetaData Options Pro) | $250+/mo | $50-100/mo |
 
 ---
 
@@ -74,7 +101,7 @@ Originally reverse-engineered from [GammaPulse Pro](https://gammapulse.rstechnol
 - **Backend**: Python 3.11+, FastAPI, httpx, SSE, asyncio, SQLite (WAL mode)
 - **Frontend**: React 18, Vite, Zustand, lightweight-charts
 - **Data sources**:
-  - **ThetaData** (Options Standard $80/mo) — real-time OPRA trades/quotes, Greeks via BSM synthesis, 8yr history. Local Terminal on ports 25503 (REST) + 25520 (WebSocket).
+  - **ThetaData** (Options Pro $160/mo) — real-time OPRA trades/quotes, Greeks via BSM synthesis, 8yr history. Local Terminal on ports 25503 (REST) + 25520 (WebSocket).
   - **Tradier** — underlying spot + candles + historical stock bars
   - **Finnhub** (optional) — earnings calendar, news sentiment
   - **FRED** (free) — macro data (HY spreads, VIX, yield curve)
@@ -107,7 +134,7 @@ Full architecture: [docs/research/SESSION_APR18_UW_PARITY.md](docs/research/SESS
 
 ### Signal pathways
 
-- **SOE engine** — 5-factor signal generator (Structure, King distance, S/R, IV environment, Macro) with A/A+/B+ grading, discipline layer (Kelly sizing, circuit breaker), contract quality gates. **Phase 6 finding: score is inversely correlated with 1d outcome at the high end** — auto-trade now blocked for score ≥ 4.8 with ⚠ FADE WATCH banner.
+- **SOE engine** — 8-factor GEX quality scorer (structure, king-distance, S/R, IV environment, relative-strength, sector, breadth, macro) with A/A+/B+ grading, discipline layer (Kelly sizing, circuit breaker), contract quality gates. **Phase 6 finding: score is inversely correlated with 1d outcome at the high end** — auto-trade now blocked for score ≥ 4.8 with ⚠ FADE WATCH banner.
 - **SETUP FORMING scanner** — Mir-style proactive scoring (0-10) for POS-regime + king-magnet + RTS leader + Mir sector basket + cheap IVP. Parallel rubric to SOE; persisted Apr 27 for outcome tracking.
 - **NET FLOW alerts** — NCP/NPP rate-of-change regime (FLOW_LEADS_UP/DOWN, divergences, stalls). Persisted Apr 27 for outcome tracking.
 - **0DTE confluence engine** — combines GEX + NetFlow + Sweep + Golden into 0-20 score, A+/A/B+/B/C grading. ⚠ MANAGE banner per Apr 27 audit (avg MFE +90% but avg end-of-90min -38% on n=5).
@@ -212,7 +239,7 @@ GammaPulse/
 │   ├── root_config.py         # per-root overrides (SPX div/strike-step, SPXW routing)
 │   │
 │   ├── gex.py                 # GEX/VEX math, ZGL solve, BSM gamma
-│   ├── signals.py             # SOE 5-factor signal engine
+│   ├── signals.py             # SOE 8-factor signal engine
 │   ├── discipline.py          # Kelly, circuit breaker, base-rate tiers
 │   ├── flow_alerts.py         # V/OI-inference flow scanner + sweep DB writes
 │   ├── sweep_detector.py      # live ISO sweep stream consumer
@@ -282,7 +309,7 @@ GammaPulse/
 
 ### 1. ThetaData Terminal (primary data source)
 
-1. Sign up at [thetadata.net](https://www.thetadata.net/) — **Options Standard tier ($80/mo)**
+1. Sign up at [thetadata.net](https://www.thetadata.net/) — **Options Pro tier ($160/mo)**
 2. Download Theta Terminal JAR, place at `C:\Dev\ThetaData\ThetaTerminalv3.jar`
 3. Create `C:\Dev\ThetaData\creds.txt` with your email + password
 4. Launch:
@@ -290,7 +317,7 @@ GammaPulse/
    cd C:\Dev\ThetaData
    java -jar ThetaTerminalv3.jar
    ```
-5. Confirm startup log shows `Subscriptions: Options: STANDARD`
+5. Confirm startup log shows `Subscriptions: Options: PRO`
 6. Terminal must run whenever GammaPulse server is running (or set Task Scheduler auto-start on boot)
 
 ### 2. Tradier (secondary — underlying data)
@@ -391,7 +418,7 @@ ThetaStream.trades() async iterator
    - ZGL (zero-gamma line), regime (POS/NEG), signal
 5. Store in in-memory cache + SQLite snapshot (HISTORY tab + forward-return baseline)
 6. Discipline layer checks (Kelly sizing, circuit breaker, base-rate tier)
-7. Signal engine evaluates SOE 5-factor, Mir momentum, runner state
+7. Signal engine evaluates SOE 8-factor, Mir momentum, runner state
 
 ### API endpoints (highlights)
 
@@ -443,9 +470,9 @@ Cross-LLM critique cycle docs (paste-ready prompts + 4 LLM responses):
 
 ## Session documentation
 
-Every major work session documented in `docs/research/`. Recent:
+Every major work session is documented in `docs/research/`; the full themed index + complete session history lives in **[`docs/README.md` §9](docs/README.md#9-session-history)**. A few entry points:
 
-- **[memory/phase6_critical_findings.md](memory/phase6_critical_findings.md)** *(in user's Claude memory dir)* — Apr 26-27 weekend that stripped phantom alpha. Cohort tier restructure (16 → 7 auto-trade names), score-PnL inversion finding, 2022 replay PASS, structural risk-factor guard. Required reading.
+- **`memory/phase6_critical_findings.md`** *(in the operator's Claude memory dir — not the repo)* — Apr 26-27 weekend that stripped phantom alpha. Cohort tier restructure (16 → 7 auto-trade names), score-PnL inversion finding, 2022 replay PASS, structural risk-factor guard. Required reading.
 - **[docs/SCRIPTS_CHEAT_SHEET.md](docs/SCRIPTS_CHEAT_SHEET.md)** — when to run each of the ~30 scripts (daily/weekly/monthly cadences + ad-hoc)
 - **[SESSION_APR18_INDEX.md](docs/research/SESSION_APR18_INDEX.md)** — Weekly cohort analysis + 4 discipline rules shipped + 3-week OOS Theta replay validation
 - **[SESSION_APR18_UW_PARITY.md](docs/research/SESSION_APR18_UW_PARITY.md)** — Golden/Tail flow detectors + A+/A/B/C/D grading + SPX coverage
