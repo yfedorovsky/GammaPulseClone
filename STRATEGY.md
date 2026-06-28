@@ -4,6 +4,8 @@
 **Last Updated:** April 12, 2026
 **Status:** BREAKDOWN_ACCELERATOR + RESISTANCE_FADE only. Parameters frozen. Live expectations calibrated by ChatGPT quant review.
 
+> ⚠️ **Point-in-time reference (Apr 12 2026 v3.1).** This is the canonical SOE strategy/backtest reference, but it predates the **Phase-6 score-inversion finding** (score ≥4.8 is now BLOCKED, not promoted), the macro-regime layer, and the **`#122` structural-bear / chop-gate / euphoria work**. For the **current** live behavior and detector stack see **[STATUS.md](STATUS.md)**; for the full doc map see **[docs/README.md](docs/README.md)**.
+
 ---
 
 ## What Changed in v3.0
