@@ -28,6 +28,11 @@ INDUSTRY_GROUPS = {
     "Semis / Chips": ["AMD", "AVGO", "INTC", "MU", "MRVL", "TSM", "QCOM", "TXN", "AMAT", "LRCX", "KLAC", "ASML", "ARM", "SMCI"],
     "Photonics / Fiber": ["LITE", "COHR", "AAOI", "GLW", "CIEN", "AXTI"],
     "Semi Equipment": ["AEHR", "TER", "AMAT", "LRCX", "KLAC"],
+    # Kept at 2 names (< MIN_MEMBERS=4) ON PURPOSE: Space is a high-beta
+    # speculative basket (RKLB/ASTS/PL/LUNR swing ±5-10%/day) — letting it compete
+    # in the single-winner rotation gate let one ripper (ASTS) hijack 6/26 from the
+    # broad, XLV-confirmed Healthcare move. Stays a leaderboard/watch row, NOT a
+    # rotation-gate sector. PL/LUNR still fire single-name signals via the universe.
     "Space": ["RKLB", "ASTS"],
     "AI / DC Infra": ["ANET", "VRT", "NET", "SNOW", "PLTR", "CRWD", "PANW", "ZS", "NBIS", "OKLO", "IREN"],
     "Crypto / Fintech": ["COIN", "MSTR", "MARA", "RIOT", "XYZ", "HOOD", "SOFI"],
@@ -37,7 +42,18 @@ INDUSTRY_GROUPS = {
     # XLV top-10 holdings + MRNA (biotech sleeve) — tracks the full healthcare
     # complex for the #123 rotation breadth signal, not just the mega-cap 3.
     "Biotech / Health": ["LLY", "UNH", "JNJ", "ABBV", "MRK", "PFE", "TMO", "ABT", "AMGN", "DHR", "MRNA"],
+    # Managed care / HMOs — distinct driver set (MLR, CMS/Medicare-Advantage rates)
+    # vs pharma pipeline/FDA. Added 6/28 (Ariel recap: "Healthcare plan stocks $HUM
+    # $CNC $UNH"). All 4 already scanned. UNH intentionally stays in Biotech/Health
+    # (it's XLV's top weight) — leaving it out here avoids double-counting breadth.
+    "Managed Care": ["HUM", "CNC", "ELV", "CI"],
     "Financials": ["JPM", "BAC", "GS", "MS", "V", "MA"],
+    # Airlines — crude/jet-fuel-sensitive cohort. All 4 carriers already scanned
+    # (TIER_2); this group entry is what lets #123 see airline rotation. Added 6/28.
+    "Airlines": ["LUV", "DAL", "UAL", "AAL"],
+    # Homebuilders — rate/mortgage-sensitive cohort. Single-names added to TIER_2
+    # this commit. Added 6/28 (Ariel recap: "Homebuilders coming to life").
+    "Homebuilders": ["DHI", "LEN", "PHM", "TOL"],
 }
 
 # Cap-weighted sector-ETF benchmark per group, where a single clean ETF exists.
@@ -51,6 +67,8 @@ SECTOR_ETF = {
     "Energy": "XLE",
     "Biotech / Health": "XLV",
     "Financials": "XLF",
+    "Airlines": "JETS",        # added 6/28 — clean 1:1 airline anchor
+    "Homebuilders": "XHB",     # added 6/28 — XHB only (ITB redundant, thinner options)
 }
 
 # Full canonical GICS sector-ETF set (the 11 SPDRs a trader rotates between) +

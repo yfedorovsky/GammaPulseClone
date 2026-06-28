@@ -16,6 +16,9 @@ TIER_1 = [
              # Added 5/19: UW flagged TLT $84C 6/26 (4,499 contracts on
              # the ASK, $405K premium, 94% chain bid/ask). Major macro-flow
              # gap before now — institutions hedge rate cuts via TLT calls.
+    "UUP",   # Invesco DB US Dollar Bullish — the only USD/FX exposure in the
+             # universe. Added 6/28 (Ariel recap: "US Dollar incredibly crowded
+             # long" => a market pullback is buyable). Macro-hedge sibling of TLT/GLD.
     # Leveraged ETFs — institutional front-run vehicles (added 5/13).
     # Buddy's hypothesis: NVDL flow yesterday signaled today's Trump-China-
     # NVDA-CEO news before it broke. Levered ETFs let funds front-run a
@@ -112,6 +115,14 @@ TIER_2 = [
     "MCD", "SBUX", "NKE", "LOW", "TGT", "TJX", "BKNG", "MAR", "F", "GM",
     "RIVN", "LCID", "CMG", "CAT", "DE", "BA", "LMT", "RTX", "NOC", "GD",
     "HON", "GE", "UPS", "FDX", "UNP", "CSX", "NSC", "LUV", "DAL", "UAL", "AAL",
+    # Homebuilders — rate/mortgage-sensitive cohort (added 6/28, Ariel recap:
+    # "Homebuilders coming to life"). Populate the new "Homebuilders" INDUSTRY_GROUP.
+    "DHI", "LEN", "PHM", "TOL",
+    # Theme ETFs for the new rotation groups — per-group SECTOR_ETF anchors (NOT on
+    # the GICS SECTOR_ETF_BOARD by design). Added 6/28.
+    "XHB",   # SPDR S&P Homebuilders ETF — Homebuilders group anchor
+    "JETS",  # US Global Jets ETF — Airlines group anchor (carriers already scanned)
+    "MAGS",  # Roundhill Magnificent Seven ETF — Mag7-concentration proxy (vs XMAG inverse)
     # Retail / consumer
     # JWN removed 5/13 (P1 audit): Nordstrom taken private Dec 2024, only LEAP
     # remaining — effectively no options coverage.
@@ -234,6 +245,9 @@ TIER_3 = [
                             # FCEL wasn't in scanner universe at all)
     # Biotech / pharma
     "XBI", "MRNA", "BNTX", "NVAX", "BIIB", "ILMN", "ZTS", "SYK", "EW", "BSX", "BDX",
+    "GH",    # Guardant Health — liquid-biopsy cancer genomics (added 6/28, Ariel
+             # recap: month-long genomics rotation). Closes single-name coverage; a
+             # full Genomics group (GH/TWST/TXG/ILMN) is deferred until it recurs.
     "BAX", "RMD", "DXCM", "IDXX", "A",
     # Crypto-related (MSTR = BTC proxy, Qullamaggie + Stockbee momentum leader)
     "MARA", "RIOT", "MSTR", "CLSK", "HUT", "BITF",
