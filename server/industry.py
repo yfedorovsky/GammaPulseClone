@@ -34,7 +34,9 @@ INDUSTRY_GROUPS = {
     "Consumer": ["COST", "WMT", "TGT", "NKE", "SBUX", "MCD", "DIS"],
     "Space / Defense": ["BA", "LMT", "RTX", "NOC", "GD"],
     "Energy": ["XOM", "CVX", "COP", "SLB", "OXY"],
-    "Biotech / Health": ["LLY", "UNH", "JNJ", "PFE", "MRK", "ABBV", "MRNA"],
+    # XLV top-10 holdings + MRNA (biotech sleeve) — tracks the full healthcare
+    # complex for the #123 rotation breadth signal, not just the mega-cap 3.
+    "Biotech / Health": ["LLY", "UNH", "JNJ", "ABBV", "MRK", "PFE", "TMO", "ABT", "AMGN", "DHR", "MRNA"],
     "Financials": ["JPM", "BAC", "GS", "MS", "V", "MA"],
 }
 
