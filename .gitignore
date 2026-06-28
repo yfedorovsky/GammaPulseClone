@@ -59,6 +59,14 @@ thetav3-greeks.txt
 
 # Direction A GEX-spine backtest working artifacts (regenerate from scripts)
 gex_backtest/
+
+# Jun 28 housekeeping — keep ad-hoc dumps out of the repo ROOT (root-anchored
+# so archived/ copies under archive/ are not re-flagged). See PROJECT_STRUCTURE.md.
+/grid_*.json
+/mir_*.json
+/walk_forward_results.json
+/spy_intraday_results.json
+/king_compression_*.csv
 gex_backtest.db
 
 # Thread infographics — rendered PNGs regenerate from the committed SVGs
