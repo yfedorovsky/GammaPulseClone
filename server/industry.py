@@ -73,6 +73,7 @@ SECTOR_ETF = {
     "Financials": "XLF",
     "Airlines": "JETS",        # added 6/28 — clean 1:1 airline anchor
     "Homebuilders": "XHB",     # added 6/28 — XHB only (ITB redundant, thinner options)
+    "Space / Defense": "ITA",  # added 6/28 — cap-weighted prime anchor (a16z atoms thesis)
 }
 
 # Full canonical GICS sector-ETF set (the 11 SPDRs a trader rotates between) +

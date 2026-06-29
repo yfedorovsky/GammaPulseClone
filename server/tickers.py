@@ -123,6 +123,8 @@ TIER_2 = [
     "XHB",   # SPDR S&P Homebuilders ETF — Homebuilders group anchor
     "JETS",  # US Global Jets ETF — Airlines group anchor (carriers already scanned)
     "MAGS",  # Roundhill Magnificent Seven ETF — Mag7-concentration proxy (vs XMAG inverse)
+    "ITA",   # iShares US Aerospace & Defense — Space/Defense group anchor (6/28,
+             # a16z bits→atoms + Perplexity defense sleeve: cap-weighted prime exposure)
     # Retail / consumer
     # JWN removed 5/13 (P1 audit): Nordstrom taken private Dec 2024, only LEAP
     # remaining — effectively no options coverage.
@@ -218,6 +220,10 @@ TIER_3 = [
     "USAR",  # USA Rare Earth — Oklahoma magnet plant, DoD-adjacent (Perplexity Apr 19)
     # Drone defense — Army Program of Record pure-play
     "RCAT",  # Red Cat Holdings — Short Range Reconnaissance PoR, drone pure-play
+    # "Atoms" theme ETFs (a16z bits→atoms + Perplexity 3-sleeve, added 6/28):
+    # scanned for flow/RS; thematic, so NOT on the GICS SECTOR_ETF_BOARD by design.
+    "SHLD",  # Global X Defense Tech — drones/autonomy/modern-warfare (defense-tech sleeve)
+    "BOTZ",  # Global X Robotics & AI — industrial automation / physical-AI (robotics sleeve)
     # ADAS / autonomous silicon (beyond NVDA)
     "MBLY",  # Mobileye — EyeQ6/Chauffeur ramp, dominant global ADAS supplier
     # Stablecoin / crypto infrastructure (beyond MSTR/COIN)
