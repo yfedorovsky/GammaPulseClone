@@ -385,6 +385,19 @@ TIER_3 = [
     "CEG",   # Constellation nuclear baseload — AI power thesis
     "VST",   # Vistra nuclear + coal-to-data-center — AI power thesis
     "FXI",   # China broad ETF — $36M flow 6/4
+    # ── IBD 50 Top 15 (week of 6/29/2026) — coverage gaps (added 6/28) ──
+    # Venu tracks the IBD Top 15 as an institutional-money-flow read; 7/15 were
+    # already covered (MU/ALAB/CRDO/AMD/LRCX/GH/HUT). NOTE: Venu's "$ARGX" is a
+    # typo — IBD #3 is AGX (Argan, power-construction), NOT argenx. The list
+    # corroborates our two structural themes: AI-infra/atoms + healthcare.
+    "AGX",   # Argan — power-generation EPC/construction (AI-datacenter-power), IBD #3
+    "CRS",   # Carpenter Technology — specialty aerospace/defense alloys (atoms), IBD #10
+    "DY",    # Dycom — telecom/AI-datacenter construction services, IBD #15
+    "TGTX",  # TG Therapeutics — MS antibody biotech, IBD #9
+    "TVTX",  # Travere Therapeutics — Filspari/kidney biotech, IBD #4
+    "LQDA",  # Liquidia — inhaled cardiopulmonary biotech, IBD #5
+    "ASTH",  # Astrana Health — physician-centric AI healthcare, IBD #11
+    "MIRM",  # Mirum Pharma — cholestatic liver disease biotech, IBD #13
 ]
 
 
