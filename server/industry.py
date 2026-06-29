@@ -90,6 +90,20 @@ SECTOR_ETF_BOARD = [
     ("XLU", "Utilities"), ("XLB", "Materials"), ("XLRE", "Real Estate"),
 ]
 
+# Thematic (NON-GICS) ETF strips rendered as SEPARATE RS rows in the #123 alert,
+# kept OFF the cap-weighted GICS SECTOR_ETF_BOARD by design. The a16z "bits→atoms"
+# / physical-AI leadership as a listed basket: defense primes, defense-tech,
+# robotics, memory — the public-market approximation of the rotation a16z describes
+# (Perplexity-fact-checked 3-sleeve + memory). Extensible: add {theme: [(etf,label)]}.
+THEME_ETF_BOARD = {
+    "🔭 Atoms / Physical-AI": [
+        ("ITA",  "Defense primes"),
+        ("SHLD", "Defense tech"),
+        ("BOTZ", "Robotics"),
+        ("DRAM", "Memory"),
+    ],
+}
+
 # Reverse lookup: ticker -> industry
 _ticker_to_industry: dict[str, str] = {}
 for _ind, _tickers in INDUSTRY_GROUPS.items():

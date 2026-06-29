@@ -129,5 +129,27 @@ _fmt = R.format_rotation(ev_board)
 check("format shows SPDR board header", "Sector ETF RS" in _fmt, True)
 check("format board names XLK", "XLK" in _fmt, True)
 
+# 13. Thematic strip: atoms/physical-AI ETFs as a separate (non-GICS) RS board
+ATOMS = "\U0001f52d Atoms / Physical-AI"
+tb = R.theme_board({"ITA": 1.5, "SHLD": 3.0, "BOTZ": -0.5, "DRAM": -2.0}, SPY_626)
+atoms = tb.get(ATOMS)
+check("theme_board has the atoms strip", atoms is not None, True)
+check("theme_board ranks by return desc (SHLD top)", atoms[0]["etf"], "SHLD")
+check("theme_board ranks memory last (DRAM)", atoms[-1]["etf"], "DRAM")
+check("theme_board RS vs SPY computed", round(atoms[0]["rs_vs_spy"], 2),
+      round(3.0 - SPY_626, 2))
+check("theme_board skips ETFs with no data",
+      R.theme_board({"ITA": 1.0}, SPY_626)[ATOMS][0]["etf"], "ITA")
+check("theme_board kept OFF the GICS etf_board",
+      all(r["etf"] not in ("SHLD", "BOTZ") for r in
+          R.etf_board({"SHLD": 3.0, "BOTZ": 1.0, "XLK": 0.5}, SPY_626)), True)
+# format renders the strip, labeled distinct from GICS sectors
+ev_tb = R.find_rotation(R.sector_table(scene(), INDUSTRY_GROUPS), SPY_626)
+ev_tb["theme_board"] = tb
+_ftb = R.format_rotation(ev_tb)
+check("format shows the Atoms strip header", "Atoms / Physical-AI" in _ftb, True)
+check("format labels strip as NOT a GICS sector", "NOT a GICS sector" in _ftb, True)
+check("format names SHLD in the strip", "SHLD" in _ftb, True)
+
 print(f"\n{_p} passed, {_f} failed")
 sys.exit(1 if _f else 0)

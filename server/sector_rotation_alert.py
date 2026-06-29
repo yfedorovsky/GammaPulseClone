@@ -123,6 +123,28 @@ def etf_board(etf_ret: dict[str, float], spy_ret: float | None = None) -> list[d
     return rows
 
 
+def theme_board(etf_ret: dict[str, float],
+                spy_ret: float | None = None) -> dict[str, list[dict]]:
+    """Thematic (NON-GICS) ETF RS strips — e.g. the a16z atoms/physical-AI sleeve
+    (defense primes / defense-tech / robotics / memory). Returns {theme: [rows
+    ranked by return desc]} for themes that have data; skips ETFs with no data
+    (fail-open). Kept separate from the cap-weighted GICS etf_board by design."""
+    from .industry import THEME_ETF_BOARD
+    out: dict[str, list[dict]] = {}
+    for theme, etfs in THEME_ETF_BOARD.items():
+        rows = []
+        for etf, label in etfs:
+            r = etf_ret.get(etf)
+            if r is None:
+                continue
+            rows.append({"etf": etf, "label": label, "ret": r,
+                         "rs_vs_spy": (r - spy_ret) if spy_ret is not None else None})
+        if rows:
+            rows.sort(key=lambda x: -x["ret"])
+            out[theme] = rows
+    return out
+
+
 def find_rotation(
     stats: dict[str, dict], spy_ret: float = 0.0, *,
     green_min: float = GREEN_MIN_PCT, red_max: float = RED_MAX_PCT,
@@ -175,13 +197,16 @@ def returns_from_prev_close(date: str | None = None,
     """Per-ticker pct = today_last_spot / prior-trading-day close - 1 (x100), for
     the sector universe + SPY. Read-only, fail-open {}. `db` overrides the
     configured snapshot DB (for the offline validation script)."""
-    from .industry import INDUSTRY_GROUPS, SECTOR_ETF, SECTOR_ETF_BOARD
+    from .industry import (INDUSTRY_GROUPS, SECTOR_ETF, SECTOR_ETF_BOARD,
+                           THEME_ETF_BOARD)
     s = get_settings()
     universe = {"SPY"}
     for ms in INDUSTRY_GROUPS.values():
         universe.update(ms)
     universe.update(SECTOR_ETF.values())              # inline per-group anchors
     universe.update(e for e, _ in SECTOR_ETF_BOARD)   # full SPDR RS board (XLK, ...)
+    for _rows in THEME_ETF_BOARD.values():            # thematic strips (ITA/SHLD/BOTZ/DRAM)
+        universe.update(e for e, _ in _rows)
     d = date or time.strftime("%Y-%m-%d")
     try:
         con = sqlite3.connect(f"file:{db or s.snapshot_db}?mode=ro", uri=True)
@@ -246,6 +271,7 @@ def scan_rotation(ret_by_ticker: dict[str, float] | None = None,
         return None
     ev["leaderboard"] = leaderboard(stats, spy, etf_ret=rets)
     ev["etf_board"] = etf_board(rets, spy)
+    ev["theme_board"] = theme_board(rets, spy)
     if not _is_new(ev, d):
         return None
     return ev
@@ -279,6 +305,12 @@ def format_rotation(ev: dict) -> str:
         for r in board:
             rs = f"  RS {r['rs_vs_spy']:+.1f}" if r.get("rs_vs_spy") is not None else ""
             lines.append(f"  {r['ret']:+5.1f}%  {r['etf']:<5s}{r['name']:<13s}{rs}")
+    for theme, rows in (ev.get("theme_board") or {}).items():
+        lines.append("")
+        lines.append(f"{theme} (thematic RS vs SPY — NOT a GICS sector):")
+        for r in rows:
+            rs = f"  RS {r['rs_vs_spy']:+.1f}" if r.get("rs_vs_spy") is not None else ""
+            lines.append(f"  {r['ret']:+5.1f}%  {r['etf']:<5s}{r['label']:<15s}{rs}")
     lines.append("")
     lines.append("CONTEXT — rotation/leadership flag, not a buy. Pivot toward the bid sector.")
     return "\n".join(lines)

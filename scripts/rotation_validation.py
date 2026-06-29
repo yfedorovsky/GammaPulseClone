@@ -78,6 +78,7 @@ def main() -> int:
         if args.leaderboard:
             ev["leaderboard"] = R.leaderboard(stats, spy, etf_ret=rets)
             ev["etf_board"] = R.etf_board(rets, spy)
+            ev["theme_board"] = R.theme_board(rets, spy)
             for line in R.format_rotation(ev).splitlines():
                 print("        " + line)
 
