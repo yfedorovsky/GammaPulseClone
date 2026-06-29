@@ -640,6 +640,15 @@ async def _compute_one(
     # Compute Greeks freshness
     greeks_age = time.time() - greeks_ts
 
+    # IV-percentile is a heavy DB aggregation (full-year scan, now cached daily in
+    # snapshots.get_iv_history). Run it OFF the event loop — calling it inline here
+    # is what saturated the loop and hung the worker on 6/29. to_thread keeps the
+    # first-of-day cache-miss scan on a worker thread; cache hits are cheap.
+    _ivp_val = (
+        await asyncio.to_thread(compute_ivp, ticker, macro["iv"])
+        if macro.get("iv") else None
+    )
+
     state: dict[str, Any] = {
         "actual_spot": spot,
         "_spot": spot,
@@ -666,7 +675,7 @@ async def _compute_one(
         "_greeks_age_seconds": round(greeks_age, 1),
         "_quote_ts": time.time(),  # spot quote timestamp (Tradier streaming/polling)
         "_ticker": ticker,
-        "_ivp": compute_ivp(ticker, macro["iv"]) if macro.get("iv") else None,
+        "_ivp": _ivp_val,
         "_realized_vol": _compute_rv(ticker),
         "_ivhv_ratio": _compute_ivhv(macro.get("iv"), ticker),
         "_rts": _compute_rts_from_snapshots(ticker, spot),

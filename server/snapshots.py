@@ -239,13 +239,32 @@ def prune(keep_days: int = 14) -> None:
         c.execute("DELETE FROM snapshots WHERE ts < ?", (cutoff,))
 
 
+# Daily IV-history cache. get_iv_history aggregates a YEAR of 5-min snapshots
+# (~20K rows/ticker) and was called every scan cycle per ticker for IVP — that
+# repeated full-year scan saturated the event loop and HUNG the worker (6/29;
+# py-spy caught it stuck in get_iv_history). The result is DAILY resolution so it
+# changes at most once/day: cache it per (ticker, days) keyed on the calendar
+# date and only re-run the scan on the first call of a new day.
+_iv_history_cache: dict[tuple[str, int], tuple[str, list[float]]] = {}
+
+
 def get_iv_history(ticker: str, days: int = 365) -> list[float]:
     """Return list of historical IV values for a ticker over the past N days.
 
     Used for per-ticker IV Percentile (IVP) calculation.
     Returns one IV value per snapshot (5-min resolution), deduplicated to
     daily close values by taking the last snapshot of each day.
+
+    Cached per (ticker, days) for the current calendar day — the underlying DB
+    aggregation is a full-year scan and the daily-resolution result only changes
+    once per day, so recomputing it every scan cycle is pure waste (and is what
+    hung the worker on 6/29).
     """
+    today = _dt.date.today().isoformat()
+    key = (ticker, days)
+    cached = _iv_history_cache.get(key)
+    if cached is not None and cached[0] == today:
+        return cached[1]
     cutoff = int(time.time()) - days * 86400
     with _conn() as c:
         # Get daily max-timestamp IV values to avoid intraday noise
@@ -257,7 +276,9 @@ def get_iv_history(ticker: str, days: int = 365) -> list[float]:
                ORDER BY ts""",
             (ticker, cutoff),
         ).fetchall()
-    return [r["iv"] for r in rows if r["iv"]]
+    history = [r["iv"] for r in rows if r["iv"]]
+    _iv_history_cache[key] = (today, history)
+    return history
 
 
 def get_daily_closes(ticker: str, days: int = 30) -> list[float]:
