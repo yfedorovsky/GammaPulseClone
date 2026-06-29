@@ -183,6 +183,10 @@ TIER_3 = [
     "ENTG",  # Entegris — 63% YTD
     "PLAB",  # Photronics — 45% YTD
     "AEIS",  # Advanced Energy Industries — semi equipment power, Group #3
+    "ACMR",  # ACM Research — wet-process/cleaning + advanced-packaging tools,
+             # heavy China exposure. Added 6/28 (jukan05 weekend thesis: CXMT
+             # IPO frenzy → capital into China-localization semi-equip names;
+             # the US-listed/optionable long to pair vs the CRUS Apple-vendor short).
     "NVTS",  # Navitas Semiconductor — GaN power ICs, AI-DC power infra.
              # Added 5/13: Mir called 18JUN 20C @ $4 entry; buddy flagged
              # it earlier same day. 7-day Mir backfill audit showed NVTS
@@ -308,7 +312,7 @@ TIER_3 = [
     "MOD",   # Modine Manufacturing — thermal mgmt for AI racks, Group #20 HVAC
     "VICR",  # Vicor — power conversion / 800VDC thesis, Group #6 Elec-Parts
     "CLS",   # Celestica — EMS for hyperscalers, Group #13 Contract Mfg
-    "BE",    # Bloom Energy — fuel cells for data center power, Group #22 Alt
+    # (BE / Bloom Energy lives in the fuel-cell trio above — dedup'd 6/28)
     # Mir's focus list Apr 19 — filling gaps
     # ALAB + CRDO promoted to TIER_1 Apr 21.
     "PL",    # Planet Labs — earth observation satellites, space adjacent
