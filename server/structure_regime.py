@@ -27,7 +27,7 @@ from typing import Any
 # Flip to True (or set env STRUCTURE_GATE_ACTIVE=1) only after live validation.
 STRUCTURE_GATE_ACTIVE: bool = os.getenv("STRUCTURE_GATE_ACTIVE", "0") in ("1", "true", "True")
 
-STRUCTURE_INDEX_TICKERS: tuple[str, ...] = ("SPY", "QQQ")
+STRUCTURE_INDEX_TICKERS: tuple[str, ...] = ("SPY", "QQQ", "SPX")
 STRUCTURE_RISK_OFF_SCORE: int = 55     # min structure_score to treat as risk-off gate
 STRUCTURE_STALE_SEC: float = 1800.0    # 30 min — beyond this, don't gate (neutral)
 STRUCTURE_DEMOTE_NOTCHES: int = 1      # conviction tiers to drop a long on a short-gamma tape

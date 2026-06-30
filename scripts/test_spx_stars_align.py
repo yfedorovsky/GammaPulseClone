@@ -87,6 +87,18 @@ def test_gate_vetoes():
         check(f"veto: {label}", sig is None and reason.startswith(expect.split('(')[0]), f"got {reason}")
 
 
+def test_market_risk_off_veto():
+    import server.structure_regime as sr
+    saved = sr.get_market_structure
+    sr.get_market_structure = lambda: {"risk_off": True}
+    try:
+        _reset()
+        _, r = g.evaluate(_state(), now=time.time())  # _state() has no macro risk_off → falls to market read
+        check("market-wide settled-OI risk_off vetoes", r == "market_risk_off", r)
+    finally:
+        sr.get_market_structure = saved
+
+
 def test_daily_throttle():
     _reset()
     r = [g.evaluate(_state(), now=time.time())[1] for _ in range(3)]
@@ -167,6 +179,7 @@ if __name__ == "__main__":
     test_gate_vetoes()
     test_soft_gate_vetoes()
     test_adversarial_controls_logged()
+    test_market_risk_off_veto()
     test_daily_throttle()
     test_shadow_default_no_telegram()
     print(f"\n{_P} passed, {_F} failed")

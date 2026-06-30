@@ -208,11 +208,20 @@ def evaluate(state: dict[str, Any], now: float | None = None) -> tuple[StarsAlig
     if signal in ("DANGER", "MAGNET FADE"):
         return None, f"signal_{signal}"
 
-    # GATE 3 — structure not RISK_OFF (short-gamma bear-day veto). Read from the
-    # macro if present; absent → don't block (SPX structure cache lands next).
+    # GATE 3 — short-gamma RISK_OFF veto (bear-day guardrail; THE key guard for a
+    # long-only scanner). Two reads, EITHER vetoes: (a) SPX's own macro risk_off
+    # (effective-OI), (b) the market-wide settled-OI structure (structure_regime
+    # cache, now incl SPX) — the cleaner cross-index read. Both fail-safe
+    # (absent / stale → no veto).
     macro = _macro(state)
     if macro.get("structure_risk_off") is True:
         return None, "structure_risk_off"
+    try:
+        from .structure_regime import get_market_structure
+        if get_market_structure().get("risk_off") is True:
+            return None, "market_risk_off"
+    except Exception:
+        pass
 
     # GATE 4 — price PULLED INTO a positive-gamma support (the limit location).
     king_pos = state.get("king_pos") or state.get("king")
