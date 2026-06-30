@@ -14,8 +14,13 @@ sys.path.insert(0, str(ROOT))
 from server import spread_regime_gate as srg  # noqa: E402
 from server import spx_stars_align as g  # noqa: E402
 
-# We're testing the gate logic, not the clock — force RTH on.
+# We're testing the gate logic, not the clock or live data sources.
 g._is_rth = lambda: True
+# Soft gates hit live modules (snapshots DB / model training / net-flow) — stub to
+# pass by default so the hard-gate tests are deterministic; veto-tested separately.
+g._opening_drive_ok = lambda now: (True, "drive_up")
+g._directional_ok = lambda: (True, "prior_ok")
+g._flow_not_fighting = lambda: (True, "flow_ok")
 
 _P = _F = 0
 
@@ -89,6 +94,23 @@ def test_daily_throttle():
     check("third blocked by daily_throttle", r[2] == "daily_throttle", str(r))
 
 
+def test_soft_gate_vetoes():
+    saved = (g._opening_drive_ok, g._directional_ok, g._flow_not_fighting)
+    base = (lambda now: (True, "drive_up"), lambda: (True, "prior_ok"), lambda: (True, "flow_ok"))
+    try:
+        _reset(); g._opening_drive_ok, g._directional_ok, g._flow_not_fighting = base
+        g._opening_drive_ok = lambda now: (False, "opening_drive_down")
+        check("soft veto: opening_drive_down", g.evaluate(_state(), now=time.time())[1] == "opening_drive_down")
+        _reset(); g._opening_drive_ok, g._directional_ok, g._flow_not_fighting = base
+        g._directional_ok = lambda: (False, "prior_down(40)")
+        check("soft veto: prior_down", g.evaluate(_state(), now=time.time())[1].startswith("prior_down"))
+        _reset(); g._opening_drive_ok, g._directional_ok, g._flow_not_fighting = base
+        g._flow_not_fighting = lambda: (False, "flow_BEARISH_DIVERGENCE")
+        check("soft veto: flow bearish", g.evaluate(_state(), now=time.time())[1].startswith("flow_"))
+    finally:
+        g._opening_drive_ok, g._directional_ok, g._flow_not_fighting = saved
+
+
 def test_shadow_default_no_telegram():
     check("STARS_ALIGN_ACTIVE defaults off (shadow)", g._active() is False)
     sig, _ = g.evaluate(_state(), now=time.time()) if not g._fires_today else (None, "")
@@ -104,6 +126,7 @@ if __name__ == "__main__":
     print("test_spx_stars_align")
     test_fire_path()
     test_gate_vetoes()
+    test_soft_gate_vetoes()
     test_daily_throttle()
     test_shadow_default_no_telegram()
     print(f"\n{_P} passed, {_F} failed")

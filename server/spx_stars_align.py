@@ -126,6 +126,59 @@ def _macro(state: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+# ── Soft gates (selectivity-only; FAIL-OPEN — a missing data source must never
+#    cause a fire, only relax a veto. Each returns (ok, reason); ok=False vetoes) ──
+
+def _opening_drive_ok(now: float, db_path: str = "./snapshots.db") -> tuple[bool, str]:
+    """After ~10:00 ET, require the day's opening drive (9:30→10:00 SPX) to be UP
+    (we take longs). The one VALIDATED context prior (close-on-drive-side 67-71%).
+    Before 10:00 or on no data → pass."""
+    try:
+        ndt = _dt.datetime.fromtimestamp(now)
+        if (ndt.hour, ndt.minute) < (10, 0):
+            return True, "drive_pending"
+        import sqlite3
+        open_ts = ndt.replace(hour=9, minute=30, second=0, microsecond=0).timestamp()
+        drive_ts = ndt.replace(hour=10, minute=0, second=0, microsecond=0).timestamp()
+        conn = sqlite3.connect(db_path)
+        o = conn.execute("SELECT spot FROM snapshots WHERE ticker='SPX' AND ts>=? ORDER BY ts LIMIT 1", (open_ts,)).fetchone()
+        d = conn.execute("SELECT spot FROM snapshots WHERE ticker='SPX' AND ts>=? ORDER BY ts LIMIT 1", (drive_ts,)).fetchone()
+        conn.close()
+        if not o or not d or not o[0] or not d[0]:
+            return True, "drive_nodata"
+        return (d[0] >= o[0]), ("drive_up" if d[0] >= o[0] else "opening_drive_down")
+    except Exception:
+        return True, "drive_err"
+
+
+def _directional_ok() -> tuple[bool, str]:
+    """Walk-forward P(up) prior tilt-up. prob_up < 50 → veto. Fail-open."""
+    try:
+        from .directional_prior import get_directional
+        pu = (get_directional("SPX") or {}).get("prob_up")
+        if pu is not None and pu < 50:
+            return False, f"prior_down({pu:.0f})"
+        return True, "prior_ok"
+    except Exception:
+        return True, "prior_err"
+
+
+def _flow_not_fighting() -> tuple[bool, str]:
+    """Bearish flow (BEARISH_DIVERGENCE / DOUBLE_STALL) → veto. Flow is VETO-only,
+    never a trigger (the CLUSTER_INDEX EXHAUST lesson). Fail-open."""
+    try:
+        from .net_flow import get_net_flow_aggregator
+        from .net_flow_signals import detect_signals
+        hits = detect_signals(get_net_flow_aggregator().series("SPX"))
+        bad = next((h for h in hits if getattr(h, "signal", "") in
+                    ("BEARISH_DIVERGENCE", "DOUBLE_STALL")), None)
+        if bad:
+            return False, f"flow_{bad.signal}"
+        return True, "flow_ok"
+    except Exception:
+        return True, "flow_err"
+
+
 def evaluate(state: dict[str, Any], now: float | None = None) -> tuple[StarsAlignSignal | None, str]:
     """Run the gate stack in order. Returns (signal | None, block_reason).
     block_reason is logged so a non-fire is never silent (shadow diagnostics)."""
@@ -167,9 +220,16 @@ def evaluate(state: dict[str, Any], now: float | None = None) -> tuple[StarsAlig
     if slvl is None or abs(spot - slvl) / spot > SUPPORT_BAND_PCT:
         return None, "not_at_support"
 
-    # TODO (soft, selectivity-only — never loosen): opening-drive aligned
-    # (opening_drive_persistence), directional-prior tilt-up (directional_prior),
-    # explicit flow-not-fighting veto (net_flow_signals BEARISH_DIVERGENCE/STALL).
+    # SOFT GATES (selectivity-only, fail-open — they only TIGHTEN). Each is a veto.
+    od_ok, od_r = _opening_drive_ok(now)
+    if not od_ok:
+        return None, od_r
+    dp_ok, dp_r = _directional_ok()
+    if not dp_ok:
+        return None, dp_r
+    fl_ok, fl_r = _flow_not_fighting()
+    if not fl_ok:
+        return None, fl_r
 
     # All gates pass → build the resting-limit ticket on a WEEKLY call.
     target = state.get("ceiling") or king_pos
@@ -186,7 +246,7 @@ def evaluate(state: dict[str, Any], now: float | None = None) -> tuple[StarsAlig
         sugg_exp=exp, sugg_dte=dte, regime=regime,
         spread_pct=sr.get("current_spread_pct"),
         gates=["spread_ok", "pos_gamma", f"signal_{signal or 'na'}",
-               "not_risk_off", f"at_{sname}"],
+               "not_risk_off", f"at_{sname}", od_r, dp_r, fl_r],
     )
     _fires_today[_et_day(now)] = _fires_today.get(_et_day(now), 0) + 1
     return sig, "FIRE"
