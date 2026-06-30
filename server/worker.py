@@ -594,12 +594,19 @@ async def _compute_one(
     if not by_exp and contracts:
         print(f"[worker] WARNING: {ticker} has {len(contracts)} contracts but 0 grouped by exp — missing expiration_date field?")
 
+    # GEX compute is pure-Python CPU (BSM gamma over an 80-pt spot grid × all
+    # contracts) — run it OFF the event loop via to_thread, the same proven fix as
+    # the 6/29 IVP hang below. Inline, it serialized every ticker's compute on the
+    # loop (the ~6min cycle + the stale GEX map/spot it caused); off-loading lets
+    # the Semaphore(6) tickers overlap and keeps the OPRA stream + alert dispatch
+    # serviced. compute_exp_data is stateless (contracts+spot in, dict out, no
+    # awaits/shared mutation) so it is thread-safe. cell_history below stays ON-loop.
     exp_data: dict[str, dict[str, Any]] = {}
     for exp, batch in by_exp.items():
-        exp_data[exp] = compute_exp_data(batch, spot)
+        exp_data[exp] = await asyncio.to_thread(compute_exp_data, batch, spot)
 
     # MACRO = all merged
-    exp_data[MACRO_KEY] = compute_exp_data(contracts, spot)
+    exp_data[MACRO_KEY] = await asyncio.to_thread(compute_exp_data, contracts, spot)
 
     # Decorate per-cell strikes with intraday % change vs open. Skylit
     # heatseeker-style: shows "+11%" / "-3%" badges indicating which specific
@@ -632,7 +639,8 @@ async def _compute_one(
     try:
         from .structure_regime import update_index_structure, STRUCTURE_INDEX_TICKERS
         if ticker.upper() in STRUCTURE_INDEX_TICKERS:
-            macro_settled = compute_exp_data(contracts, spot, oi_mode="raw")
+            macro_settled = await asyncio.to_thread(
+                compute_exp_data, contracts, spot, oi_mode="raw")
             update_index_structure(ticker, macro_settled, spot)
     except Exception as e:
         print(f"[worker] structure update failed for {ticker}: {e!r}", flush=True)
