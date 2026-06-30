@@ -20,6 +20,7 @@ king_migrations.db
 zero_dte_alerts.db
 floor_migrations.db
 structural_turns.db
+newsletters.db
 *_dump.json
 live_*.json
 setup_cooldown.json
