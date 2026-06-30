@@ -203,6 +203,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[STARTUP] GEX magnet entry loop NOT started: {e}")
 
+    # SPX STARS-ALIGN scanner (2026-06-30) — anticipatory, defined-risk, SHADOW.
+    # Pre-positions a resting-limit ticket on a 1-5 DTE SPX weekly call at a
+    # positive-gamma support, gated by the one validated filter (spread regime) +
+    # positive-gamma regime + not-risk-off + price-at-support, self-throttled
+    # (max 2/day). SHADOW by default (STARS_ALIGN_ACTIVE=0): logs paper tickets
+    # (alert_type='SPX_STARS') for the 30-day markout shadow test, NO Telegram.
+    # Flip the flag to live ONLY after it beats the CLUSTER_INDEX + random-level +
+    # opposite-direction controls.
+    _spx_stars_task = None
+    try:
+        from .spx_stars_align import run_spx_stars_loop
+        _spx_stars_task = asyncio.create_task(run_spx_stars_loop(_stop))
+        print("[STARTUP] SPX stars-align scanner enabled (shadow)")
+    except Exception as e:
+        print(f"[STARTUP] SPX stars-align scanner NOT started: {e}")
+
     # Snapshot persist watchdog — alarms via Telegram if snapshots table
     # goes >10 min without a write during RTH (the 5/14-5/19 4-day silent
     # bug must never repeat undetected).
