@@ -109,7 +109,7 @@ def test_markout_report_leads_vs_exhaust():
     tmp = tempfile.mkdtemp()
     db = os.path.join(tmp, "ao_markout.db")
     now = time.time()
-    fired_at = float(int(now) - 7200)
+    fired_at = float(int(now) - 3 * 86400)  # past session (today's rows defer)
     fire_date = (_dt.datetime.fromtimestamp(fired_at, ao._ET) if ao._ET
                  else _dt.datetime.fromtimestamp(fired_at)).date().isoformat()
     ft = int(fired_at)
@@ -166,7 +166,7 @@ def test_backfill_end_to_end_and_idempotent():
     now = time.time()
     # integer-valued so int(fired_at) == fired_at (the first minute bar lands
     # exactly at fire_ts; real ThetaData bars are minute-aligned too).
-    fired_at = float(int(now) - 7200)  # 2h ago -> inside window, >1h old
+    fired_at = float(int(now) - 3 * 86400)  # 3 days ago (past session; today's rows defer)
     # ET fire-date, mirroring run_option_pnl_backfill (tz-robust on any host).
     fire_date = (_dt.datetime.fromtimestamp(fired_at, ao._ET) if ao._ET
                  else _dt.datetime.fromtimestamp(fired_at)).date().isoformat()
@@ -217,6 +217,28 @@ def test_backfill_end_to_end_and_idempotent():
           s2["processed"] == 0, str(s2))
 
 
+def test_today_rows_deferred():
+    # Rows fired on the CURRENT day must be DEFERRED (not fetched) so no ThetaData
+    # request ever spans today (which Theta rejects with a 'current day' WARN).
+    tmp = tempfile.mkdtemp()
+    db = os.path.join(tmp, "ao_today.db")
+    now = time.time()
+    fired_today = float(int(now) - 7200)  # ~2h ago = today, >1h old (passes window)
+    ao.log_alert(alert_type="CLUSTER", ticker="MU", direction="BULL",
+                 strike=130.0, expiration="2026-07-18", option_type="call",
+                 fired_at=fired_today, db_path=db)
+    called = {"n": 0}
+
+    async def fetcher(*a):  # must NOT be called for a same-day row
+        called["n"] += 1
+        return []
+
+    s = asyncio.run(ao.run_option_pnl_backfill(db_path=db, max_age_days=30, now=now, fetcher=fetcher))
+    check("today's row deferred -> fetcher never called", called["n"] == 0, str(called))
+    check("deferred counted in stats", s.get("deferred", 0) == 1, str(s))
+    check("today's row left unpriced", s["updated"] == 0, str(s))
+
+
 def test_spx_root_mapping():
     check("SPX -> SPXW root", ao._option_root_for_theta("SPX") == "SPXW")
     check("MU -> MU root", ao._option_root_for_theta("MU") == "MU")
@@ -257,6 +279,7 @@ if __name__ == "__main__":
     test_next_day_close()
     test_no_bars_after_fire()
     test_backfill_end_to_end_and_idempotent()
+    test_today_rows_deferred()
     test_spx_root_mapping()
     test_vix_backfill()
     print(f"\n{_PASS} passed, {_FAIL} failed")

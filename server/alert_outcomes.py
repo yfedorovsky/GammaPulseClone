@@ -979,7 +979,7 @@ async def run_option_pnl_backfill(
     now = now if now is not None else time.time()
     rows = _select_option_pnl_pending(db_path, now, max_age_days, limit=limit,
                                       alert_type=alert_type)
-    stats = {"processed": 0, "updated": 0, "no_data": 0, "errors": 0}
+    stats = {"processed": 0, "updated": 0, "no_data": 0, "errors": 0, "deferred": 0}
     if not rows:
         return stats
 
@@ -988,15 +988,27 @@ async def run_option_pnl_backfill(
             return await asyncio.to_thread(
                 fetch_option_nbbo_bars, sym, exp, strike, right, start, end)
 
+    today = _dt.datetime.now(_ET).date() if _ET else _dt.date.today()
     print(f"[alert_outcomes] option-P&L backfill: {len(rows)} contract rows")
     for (alert_id, ticker, exp, strike, otype, _entry_price, fired_at) in rows:
         stats["processed"] += 1
         try:
             fired_dt = _dt.datetime.fromtimestamp(fired_at, _ET) if _ET \
                 else _dt.datetime.fromtimestamp(fired_at)
-            fire_date = fired_dt.date().isoformat()
-            end_date = (fired_dt.date()
-                        + _dt.timedelta(days=_OPT_NEXTDAY_LOOKAHEAD_DAYS)).isoformat()
+            fire_d = fired_dt.date()
+            # ThetaData's history endpoint REJECTS any request whose range touches
+            # the CURRENT day ("current day requests must have a start time less than
+            # current time"). The fire_date + N-day next-day-close lookahead spans
+            # today for anything fired in the last N days → a slew of those WARNs at
+            # market open. Defer same-day rows (markout is computed post-hoc from
+            # stored bars next session — nothing is lost) and clamp the end_date to
+            # the last completed session so no request ever spans today.
+            if fire_d >= today:
+                stats["deferred"] = stats.get("deferred", 0) + 1
+                continue
+            fire_date = fire_d.isoformat()
+            end_date = min(fire_d + _dt.timedelta(days=_OPT_NEXTDAY_LOOKAHEAD_DAYS),
+                           today - _dt.timedelta(days=1)).isoformat()
             sym = _option_root_for_theta(ticker)
             right = _right_from_option_type(otype)
             bars = await fetcher(sym, exp, float(strike), right, fire_date, end_date)
