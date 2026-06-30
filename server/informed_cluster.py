@@ -179,6 +179,15 @@ def record_and_check(alert: dict[str, Any],
             return None  # already fired the 3+ tier this window — don't spam/double-log
         _cluster_dedup[key] = now
         log_cluster_outcomes(cluster, db_path=db_path)
+        # Index/ETF 0DTE clusters are the noise floor (2026-06-29 markout verdict:
+        # EXHAUST, median option-MAE -80%). They're CAPTURED in data as CLUSTER_INDEX
+        # (routed inside log_cluster_outcomes above) but SUPPRESSED from Telegram:
+        # the flow_alerts callers fire only on a non-None, n_strikes>=3 return, so
+        # returning None here stops the phone ping while keeping the row. Re-enable
+        # with CLUSTER_INDEX_TELEGRAM=1.
+        if _is_index_etf(ticker) and os.getenv(
+                "CLUSTER_INDEX_TELEGRAM", "0").strip().lower() not in ("1", "true", "yes", "on"):
+            return None
 
     return cluster
 

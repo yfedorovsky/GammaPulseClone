@@ -201,6 +201,40 @@ def test_index_etf_routed_to_cluster_index():
     check("_is_index_etf: SPY=True, NVDA=False", ic._is_index_etf("spy") and not ic._is_index_etf("NVDA"))
 
 
+def _spy(strike):
+    return {"ticker": "SPY", "expiration": "2026-07-18", "option_type": "call",
+            "sentiment": "BULLISH", "strike": strike, "insider_score": 6}
+
+
+def test_index_cluster_telegram_suppressed():
+    """Index/ETF 3-strike cluster is CAPTURED as CLUSTER_INDEX but record_and_check
+    returns None (no Telegram ping); CLUSTER_INDEX_TELEGRAM=1 re-enables it."""
+    tmp = tempfile.mkdtemp()
+    os.environ.pop("CLUSTER_OUTCOME_LOG", None)
+    os.environ.pop("CLUSTER_INDEX_TELEGRAM", None)
+    db = os.path.join(tmp, "ao_sup.db")
+    ic._recent_fires.clear(); ic._cluster_dedup.clear()
+    ic.record_and_check(_spy(600.0), db_path=db)
+    ic.record_and_check(_spy(601.0), db_path=db)
+    r = ic.record_and_check(_spy(602.0), db_path=db)
+    check("index 3-strike -> None (Telegram suppressed)", r is None, str(r))
+    conn = sqlite3.connect(db)
+    n_idx = conn.execute("SELECT COUNT(*) FROM alert_outcomes WHERE alert_type='CLUSTER_INDEX'").fetchone()[0]
+    conn.close()
+    check("index cluster still captured as CLUSTER_INDEX (3 legs)", n_idx == 3, f"n={n_idx}")
+    # flag ON -> surfaced again
+    os.environ["CLUSTER_INDEX_TELEGRAM"] = "1"
+    try:
+        ic._recent_fires.clear(); ic._cluster_dedup.clear()
+        db2 = os.path.join(tmp, "ao_sup2.db")
+        ic.record_and_check(_spy(600.0), db_path=db2)
+        ic.record_and_check(_spy(601.0), db_path=db2)
+        r2 = ic.record_and_check(_spy(602.0), db_path=db2)
+        check("CLUSTER_INDEX_TELEGRAM=1 -> index cluster surfaced", r2 and r2["n_strikes"] == 3, str(r2))
+    finally:
+        os.environ.pop("CLUSTER_INDEX_TELEGRAM", None)
+
+
 def test_imports():
     import importlib
     import server.flow_alerts as fa
@@ -218,6 +252,7 @@ if __name__ == "__main__":
     test_record_and_check_time_injection()
     test_semis_shape_and_alert_type()
     test_index_etf_routed_to_cluster_index()
+    test_index_cluster_telegram_suppressed()
     test_imports()
     print(f"\n{_P} passed, {_F} failed")
     sys.exit(1 if _F else 0)

@@ -58,7 +58,7 @@ def main() -> int:
         print(f"[markout] backfill done: {stats}\n", flush=True)
 
     rows = get_markout_by_type(days=args.days, alert_type=args.alert_type)
-    title = f"MARKOUT — last {args.days}d" + (f"  [{args.alert_type}]" if args.alert_type else "")
+    title = f"MARKOUT - last {args.days}d" + (f"  [{args.alert_type}]" if args.alert_type else "")
     print(title)
     print("=" * len(title))
     if not rows:
