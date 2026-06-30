@@ -279,6 +279,52 @@ def _log_paper(sig: StarsAlignSignal) -> None:
         print(f"[spx_stars] log_alert failed: {e}", flush=True)
 
 
+# ── Adversarial CONTROLS (the synthesis falsification plan): SPX_STARS must beat
+#    BOTH an opposite-direction (PUT) control AND a random-MOMENT control, or it's
+#    just leveraged SPX longs. Both are contract-bearing → graded on the SAME
+#    option-P&L / markout harness as SPX_STARS. ──
+import random as _random
+
+RANDOM_CONTROL_P = 0.003   # ~2/day at the 30s RTH cadence (matches MAX_FIRES_PER_DAY)
+_rand_today: dict[str, int] = {}
+
+
+def _log_ctrl(alert_type, fired_at, strike, exp, dte, spot, direction, option_type, raw):
+    try:
+        from .alert_outcomes import log_alert
+        log_alert(alert_type=alert_type, ticker="SPX", fired_at=fired_at,
+                  direction=direction, strike=strike, expiration=exp,
+                  option_type=option_type, dte=dte, spot_at_alert=spot, raw_alert=raw)
+    except Exception as e:
+        print(f"[spx_stars] {alert_type} log failed: {e}", flush=True)
+
+
+def _log_opposite(sig: StarsAlignSignal) -> None:
+    """Opposite-direction (PUT) control — same strike/exp/moment as the fire. If
+    the SPX_STARS call doesn't beat this, the setup has no directional edge."""
+    _log_ctrl("SPX_STARS_PUT", sig.fired_at, sig.sugg_strike, sig.sugg_exp,
+              sig.sugg_dte, sig.spot, "BEAR", "put",
+              {"control": "opposite_direction", "support": sig.support_level})
+
+
+def _maybe_log_random_moment(state: dict[str, Any], now: float) -> None:
+    """Random-MOMENT control — an ATM weekly call at random RTH moments, regardless
+    of the gates (~MAX/day). Tests whether the gate-aligned moment beats a random
+    one (the selectivity baseline)."""
+    if not _is_rth() or _rand_today.get(_et_day(now), 0) >= MAX_FIRES_PER_DAY:
+        return
+    if _random.random() >= RANDOM_CONTROL_P:
+        return
+    spot = state.get("actual_spot") or state.get("spot")
+    exp, dte = _pick_weekly(state, now)
+    if not spot or not exp:
+        return
+    _rand_today[_et_day(now)] = _rand_today.get(_et_day(now), 0) + 1
+    _log_ctrl("SPX_STARS_RANDMOMENT", now,
+              round(float(spot) / SPX_STRIKE_STEP) * SPX_STRIKE_STEP, exp, dte,
+              float(spot), "BULL", "call", {"control": "random_moment"})
+
+
 async def run_spx_stars_loop(stop_event: asyncio.Event) -> None:
     """Background loop. Evaluates SPX every EVAL_INTERVAL_S. Shadow by default:
     logs a paper ticket on every fire; Telegram (critical=True) only when
@@ -303,12 +349,14 @@ async def run_spx_stars_loop(stop_event: asyncio.Event) -> None:
                       f"${sig.support_level:,.0f} -> ${sig.target:,.0f} "
                       f"{sig.sugg_exp}({sig.sugg_dte}DTE)  active={_active()}", flush=True)
                 _log_paper(sig)
+                _log_opposite(sig)   # opposite-direction (PUT) control
                 if _active():
                     try:
                         from .telegram import send
                         await send(format_telegram(sig), ticker="SPX", critical=True)
                     except Exception as e:
                         print(f"[spx_stars] telegram failed: {e}", flush=True)
+            _maybe_log_random_moment(state, time.time())   # random-moment control
             cycles += 1
             if cycles % 120 == 0:  # ~1h heartbeat
                 print(f"[spx_stars] heartbeat cycles={cycles} fires={fires} last_block={reason}", flush=True)

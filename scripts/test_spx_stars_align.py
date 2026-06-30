@@ -111,6 +111,45 @@ def test_soft_gate_vetoes():
         g._opening_drive_ok, g._directional_ok, g._flow_not_fighting = saved
 
 
+def test_adversarial_controls_logged():
+    import server.alert_outcomes as ao
+    calls: list = []
+    saved = ao.log_alert
+    ao.log_alert = lambda **kw: (calls.append(kw), "id")[1]
+    try:
+        _reset()
+        sig, r = g.evaluate(_state(), now=time.time())
+        check("setup fires for control test", r == "FIRE" and sig is not None, r)
+        g._log_opposite(sig)
+        put = [c for c in calls if c.get("alert_type") == "SPX_STARS_PUT"]
+        check("opposite-direction PUT control logged (put/BEAR, same strike)",
+              len(put) == 1 and put[0]["option_type"] == "put" and put[0]["direction"] == "BEAR"
+              and put[0]["strike"] == sig.sugg_strike, str(put))
+        # random-moment: force RTH + random trigger
+        calls.clear(); g._rand_today.clear()
+        orig = g._random.random
+        g._random.random = lambda: 0.0
+        try:
+            g._maybe_log_random_moment(_state(), time.time())
+        finally:
+            g._random.random = orig
+        rm = [c for c in calls if c.get("alert_type") == "SPX_STARS_RANDMOMENT"]
+        check("random-moment CALL control logged (call/BULL)",
+              len(rm) == 1 and rm[0]["option_type"] == "call" and rm[0]["direction"] == "BULL", str(rm))
+        # random-moment respects its own daily cap
+        calls.clear()
+        g._random.random = lambda: 0.0
+        try:
+            for _ in range(5):
+                g._maybe_log_random_moment(_state(), time.time())
+        finally:
+            g._random.random = orig
+        check("random-moment capped at MAX_FIRES_PER_DAY",
+              len([c for c in calls if c.get("alert_type") == "SPX_STARS_RANDMOMENT"]) <= g.MAX_FIRES_PER_DAY, str(len(calls)))
+    finally:
+        ao.log_alert = saved
+
+
 def test_shadow_default_no_telegram():
     check("STARS_ALIGN_ACTIVE defaults off (shadow)", g._active() is False)
     sig, _ = g.evaluate(_state(), now=time.time()) if not g._fires_today else (None, "")
@@ -127,6 +166,7 @@ if __name__ == "__main__":
     test_fire_path()
     test_gate_vetoes()
     test_soft_gate_vetoes()
+    test_adversarial_controls_logged()
     test_daily_throttle()
     test_shadow_default_no_telegram()
     print(f"\n{_P} passed, {_F} failed")
