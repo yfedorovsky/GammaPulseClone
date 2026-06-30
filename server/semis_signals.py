@@ -242,6 +242,17 @@ async def maybe_fire_semis_signals() -> int:
             if ok:
                 sent += 1
                 print(f"[SEMIS] fired {a['kind']} {a['ticker']} {a['direction']}", flush=True)
+                # Log dispatched CLUSTERs to alert_outcomes as alert_type='CLUSTER_SEMIS'
+                # so this curated, actually-traded tier gets realized option-P&L +
+                # short-horizon markout backfill (#92) — segmented from the universe-wide
+                # 'CLUSTER' so the two populations never double-count. (Built 2026-06-29:
+                # the SEMIS tier had been dispatching with NO outcome telemetry.)
+                if a.get("kind") == "CLUSTER":
+                    try:
+                        from .informed_cluster import log_cluster_outcomes
+                        log_cluster_outcomes(a, alert_type="CLUSTER_SEMIS")
+                    except Exception as le:
+                        print(f"[SEMIS] outcome-log failed for {a.get('ticker')}: {le!r}", flush=True)
         except Exception as e:
             print(f"[SEMIS] send failed for {a.get('ticker')}: {e!r}", flush=True)
     return sent

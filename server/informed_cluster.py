@@ -41,6 +41,21 @@ MIN_CLUSTER_TELEGRAM_STRIKES = 3
 # cluster from re-firing as new strikes accumulate within the window)
 CLUSTER_DEDUP_TTL_SEC = 30 * 60
 
+# Broad-market index / ETF roots whose 0DTE "clusters" are the NOISE FLOOR, not
+# informed single-name ladders. 2026-06-29 reconstruction (5/27-6/29, n=24,709
+# reconstructed cluster legs): these were ~half of all fires, with the worst
+# realized option P&L of any segment — short-horizon markout EXHAUST and a median
+# option-MAE of -80% (vs -32% for single-names). They get their own
+# alert_type='CLUSTER_INDEX' bucket so the universe-wide CLUSTER tier stays clean.
+INDEX_ETF_ROOTS: frozenset[str] = frozenset({
+    "SPY", "SPX", "SPXW", "QQQ", "QQQM", "IWM", "NDX", "DIA", "RUT", "XSP",
+    "VIX", "VIXW", "XND",
+})
+
+
+def _is_index_etf(ticker: str) -> bool:
+    return (ticker or "").upper() in INDEX_ETF_ROOTS
+
 
 # In-memory roster of recent INFORMED FLOW fires keyed by
 # (ticker, expiration, direction) where direction is "BULL" or "BEAR"
@@ -67,9 +82,16 @@ def _direction_of(alert: dict[str, Any]) -> str:
     return "NEUTRAL"
 
 
-def record_and_check(alert: dict[str, Any]) -> dict[str, Any] | None:
+def record_and_check(alert: dict[str, Any],
+                     db_path: str | None = None,
+                     now: float | None = None) -> dict[str, Any] | None:
     """Record an INFORMED FLOW fire. Returns a cluster-fire dict if this
     fire completes (or grows) a cluster of N+ strikes; else None.
+
+    `now` is injectable (defaults to wall-clock) so the historical
+    reconstruction (scripts/reconstruct_clusters.py) can replay past insider
+    fires chronologically through this EXACT logic — guaranteeing reconstructed
+    clusters match what the live detector produces, no reimplementation drift.
 
     Cluster-fire dict format:
       {
@@ -93,7 +115,7 @@ def record_and_check(alert: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
     key = (ticker, exp, direction)
-    now = time.time()
+    now = now if now is not None else time.time()
     strike = alert.get("strike", 0)
 
     # GC: drop expired siblings from the roster (outside window)
@@ -121,16 +143,8 @@ def record_and_check(alert: dict[str, Any]) -> dict[str, Any] | None:
     if len(distinct_strikes) < MIN_CLUSTER_STRIKES:
         return None
 
-    # Cluster dedup — only fire CLUSTER once per (ticker, exp, direction)
-    # per 30 min. The cluster GROWS within that window but we don't spam
-    # one alert per added strike.
-    last_cluster_fire = _cluster_dedup.get(key, 0.0)
-    if now - last_cluster_fire < CLUSTER_DEDUP_TTL_SEC:
-        return None
-
-    _cluster_dedup[key] = now
-
-    # Cluster fire payload
+    # Cluster fire payload — built for every 2+ -strike state. The caller decides
+    # what to do by n_strikes (Telegram fires only at >= MIN_CLUSTER_TELEGRAM_STRIKES).
     first_ts = min(f["ts"] for f in roster)
     last_ts = max(f["ts"] for f in roster)
     cluster = {
@@ -150,41 +164,68 @@ def record_and_check(alert: dict[str, Any]) -> dict[str, Any] | None:
         "avg_vol_oi": sum(f["vol_oi"] for f in roster) / max(len(roster), 1),
         "duration_min": (last_ts - first_ts) / 60.0,
     }
-    # Log Telegram-firing clusters to alert_outcomes so their REALIZED option
-    # P&L can be backfilled (#92) and the audit's C10 claim — "INFORMED CLUSTER
-    # 89% WR is forward-spot, not option P&L, unproven" — finally tested. The
-    # dedup above guarantees one log per (ticker,exp,direction) per 30 min.
+
+    # Telegram / outcome-log tier. THE DEDUP IS STAMPED HERE — at the first time the
+    # cluster reaches the 3-strike conviction tier — NOT at the 2-strike record floor.
+    # BUG FIXED 2026-06-29 (4-LLM-audit root-cause): the dedup used to be stamped at
+    # the 2-strike floor, so the 3rd/4th strike returned None before n_strikes could
+    # reach 3 → the >=3 log/Telegram tier never executed → 0 alert_type='CLUSTER' rows
+    # in alert_outcomes for 60 days (the crown-jewel detector had NO live outcome
+    # telemetry). Logging it once here (idempotent) backfills realized option P&L +
+    # short-horizon markout (#92) so the "INFORMED CLUSTER 89% WR" claim can be tested.
     if len(distinct_strikes) >= MIN_CLUSTER_TELEGRAM_STRIKES:
-        log_cluster_outcomes(cluster)
+        last_cluster_fire = _cluster_dedup.get(key, 0.0)
+        if now - last_cluster_fire < CLUSTER_DEDUP_TTL_SEC:
+            return None  # already fired the 3+ tier this window — don't spam/double-log
+        _cluster_dedup[key] = now
+        log_cluster_outcomes(cluster, db_path=db_path)
+
     return cluster
 
 
-def log_cluster_outcomes(cluster: dict[str, Any], db_path: str | None = None) -> int:
-    """Log each distinct leg of a fired INFORMED CLUSTER to alert_outcomes as
-    alert_type='CLUSTER', grade='{n}strike' (so the validation harness can
-    segment 3- vs 4-strike — the actual C10 question). Best-effort, never raises;
-    env CLUSTER_OUTCOME_LOG=0 disables (tests). Returns rows logged."""
+def log_cluster_outcomes(cluster: dict[str, Any], db_path: str | None = None,
+                         alert_type: str = "CLUSTER") -> int:
+    """Log each distinct leg of a fired cluster to alert_outcomes (grade='{n}strike'
+    so the validation harness can segment 3- vs 4-strike — the C10 question), so its
+    realized option P&L + short-horizon markout can be backfilled (#92). Best-effort,
+    never raises; env CLUSTER_OUTCOME_LOG=0 disables (tests). Returns rows logged.
+
+    `alert_type` segments the source: 'CLUSTER' = the universe-wide INFORMED CLUSTER
+    detector (record_and_check); 'CLUSTER_SEMIS' = the curated 🔬 SEMIS tier
+    (semis_signals) — the actually-traded tier — kept in its own bucket so the two
+    populations don't double-count in the markout report.
+
+    Tolerates BOTH leg shapes: record_and_check emits tuples (strike, ts, ...);
+    semis_signals emits a bare list of float strikes."""
     if os.getenv("CLUSTER_OUTCOME_LOG", "1").strip().lower() not in ("1", "true", "yes", "on"):
         return 0
     try:
         from .alert_outcomes import log_alert
     except Exception:
         return 0
+    ticker = cluster.get("ticker", "")
+    # Keep the universe-wide CLUSTER bucket single-name-clean: route broad-market
+    # index/ETF 0DTE (the noise floor) to CLUSTER_INDEX. An explicit non-default
+    # alert_type (e.g. CLUSTER_SEMIS, already scoped to non-index names) is
+    # respected as-is.
+    if alert_type == "CLUSTER" and _is_index_etf(ticker):
+        alert_type = "CLUSTER_INDEX"
     n = cluster.get("n_strikes", 0)
     otype = (cluster.get("option_type") or "").lower() or None
     fired = float(cluster.get("last_ts") or time.time())
+    notional = cluster.get("total_notional", cluster.get("notional"))
     logged, seen = 0, set()
     for leg in cluster.get("strikes", []):
-        strike = leg[0]
+        strike = leg[0] if isinstance(leg, (list, tuple)) else leg
         if strike in seen:
             continue
         seen.add(strike)
         kw: dict[str, Any] = dict(
-            alert_type="CLUSTER", ticker=cluster.get("ticker", ""),
+            alert_type=alert_type, ticker=ticker,
             direction=cluster.get("direction"), grade=f"{n}strike",
             score=cluster.get("max_score"), strike=float(strike),
             expiration=cluster.get("expiration"), option_type=otype, fired_at=fired,
-            raw_alert={"n_strikes": n, "total_notional": cluster.get("total_notional"),
+            raw_alert={"n_strikes": n, "total_notional": notional,
                        "avg_vol_oi": cluster.get("avg_vol_oi")},
         )
         if db_path:

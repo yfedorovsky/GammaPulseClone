@@ -15,6 +15,12 @@ backtest_*.json
 
 # Phase 6 cleanup: runtime DBs and ad-hoc JSON dumps
 flow_alerts.db
+# 2026-06-29: historical INFORMED CLUSTER reconstruction scratch DBs (regenerate
+# from scripts/reconstruct_clusters.py; the verdict lives in docs, not the DB)
+cluster_recon*.db
+cluster_recon*.db-*
+scratch_*.db
+scratch_*.db-*
 king_breakouts.db
 king_migrations.db
 zero_dte_alerts.db

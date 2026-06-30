@@ -97,6 +97,11 @@ CREATE TABLE IF NOT EXISTS alert_outcomes (
     opt_mae_pct        REAL,
     opt_close_eod      REAL,             -- option close on alert day
     opt_close_next_day REAL,             -- next trading day close
+    -- Short-horizon MID-to-MID markout (adverse-selection / "exhaust" test)
+    opt_entry_mid      REAL,             -- NBBO mid at first bar at/after fire
+    opt_mark_1m_pct    REAL,             -- signed mid markout at +1 min
+    opt_mark_5m_pct    REAL,             -- signed mid markout at +5 min
+    opt_mark_15m_pct   REAL,             -- signed mid markout at +15 min
     -- Win/loss verdict by window
     verdict_1h         TEXT,             -- WIN/LOSS/FLAT relative to 1-hour
     verdict_eod        TEXT,             -- WIN/LOSS/FLAT relative to alert-day close
@@ -139,6 +144,19 @@ def _ensure_schema(db_path: str = DB_PATH) -> None:
             ("oi_confirmed", "INTEGER"),     # 1 opening / 0 closing-churn / NULL pending
             ("oi_status", "TEXT"),           # confirmed/unconfirmed/no_data/expired_no_data
             ("oi_checked_at", "REAL"),
+            # 2026-06-29 (4-LLM audit, Gemini's existential claim): the cluster
+            # ~89% WR may be "delayed hedging exhaust" — i.e. the option mid FALLS
+            # right after we'd buy. Short-horizon MID-to-MID markout is the
+            # adverse-selection test that adjudicates it: positive = the move is
+            # in front of the flow (real); negative = we're buying the top (exhaust).
+            # Mid-to-mid (not ask-in) isolates information content from spread cost.
+            # opt_entry_mid is ALSO the markout-pending sentinel (always set when a
+            # row is processed) so historical opt_mfe rows backfill exactly once and
+            # data-gap rows don't re-select forever.
+            ("opt_entry_mid", "REAL"),       # NBBO mid at first bar at/after fire
+            ("opt_mark_1m_pct", "REAL"),     # (mid@+1m  - entry_mid)/entry_mid * 100
+            ("opt_mark_5m_pct", "REAL"),     # (mid@+5m  - entry_mid)/entry_mid * 100
+            ("opt_mark_15m_pct", "REAL"),    # (mid@+15m - entry_mid)/entry_mid * 100
         ]:
             try:
                 conn.execute(f"ALTER TABLE alert_outcomes ADD COLUMN {col} {decl}")
@@ -819,11 +837,35 @@ def fetch_option_nbbo_bars(
         return []
 
 
+# Short-horizon markout offsets (minutes) and the gap tolerance for picking the
+# bar that represents "+N min". 1-min OPRA bars mean +N usually lands exactly;
+# tol=180s accepts the next bar across a small data gap and rejects a stale bar
+# hours later (illiquid contract near close) so the markout stays honest.
+_MARKOUT_OFFSETS = (1, 5, 15)
+_MARKOUT_TOL_S = 180
+
+
+def _markout_at(after: list[dict[str, Any]], entry_mid: float,
+                fire_ts: float, minutes: int) -> float | None:
+    """Signed MID-to-MID markout at fire+`minutes`, in %.
+    Positive = option mid rose (move is in front of the flow); negative = mid
+    fell (buying exhaust). Picks the first bar at/after the target time, accepted
+    only if within `_MARKOUT_TOL_S` of the target (else a data gap → None)."""
+    if not entry_mid or entry_mid <= 0:
+        return None
+    target = fire_ts + minutes * 60
+    cand = next((b for b in after if b["ts"] >= target), None)
+    if cand is None or (cand["ts"] - target) > _MARKOUT_TOL_S:
+        return None
+    return round((cand["mid"] - entry_mid) / entry_mid * 100, 2)
+
+
 def compute_option_outcome(
     bars: list[dict[str, Any]], fire_ts: float, fire_date: str,
 ) -> dict[str, Any] | None:
-    """ASK-IN / BID-OUT realized option outcome from NBBO bars.
-    Returns the 6 opt_* columns (+ diagnostic _entry_ask), or None if there are
+    """ASK-IN / BID-OUT realized option outcome from NBBO bars, plus short-horizon
+    MID-to-MID markout (the adverse-selection / "exhaust" test).
+    Returns the opt_* columns (+ diagnostic _entry_ask), or None if there are
     no usable bars at/after fire on the fire day."""
     after = [b for b in bars if b["ts"] >= fire_ts and b["date"] == fire_date]
     if not after:
@@ -844,6 +886,14 @@ def compute_option_outcome(
         nd_bars = [b for b in bars if b["date"] == next_dates[0] and b.get("bid")]
         if nd_bars:
             opt_close_next = nd_bars[-1]["bid"]
+    # Markout basis = NBBO mid at the entry bar. Always set when we return (so it
+    # doubles as the markout-pending sentinel); individual offsets may be NULL on
+    # a data gap or if the fire was within N min of close.
+    entry_mid = after[0].get("mid")
+    if not entry_mid or entry_mid <= 0:
+        entry_mid = entry_ask  # fall back so the sentinel is never NULL on a live row
+    marks = {f"opt_mark_{m}m_pct": _markout_at(after, entry_mid, fire_ts, m)
+             for m in _MARKOUT_OFFSETS}
     return {
         "opt_high_after": round(opt_high, 4),
         "opt_low_after": round(opt_low, 4),
@@ -851,28 +901,38 @@ def compute_option_outcome(
         "opt_mae_pct": round((opt_low - entry_ask) / entry_ask * 100, 2),
         "opt_close_eod": round(opt_close_eod, 4),
         "opt_close_next_day": round(opt_close_next, 4) if opt_close_next is not None else None,
+        "opt_entry_mid": round(entry_mid, 4),
+        **marks,
         "_entry_ask": round(entry_ask, 4),
     }
 
 
 def _select_option_pnl_pending(db_path: str, now: float, max_age_days: int,
-                               limit: int | None = None) -> list:
+                               limit: int | None = None,
+                               alert_type: str | None = None) -> list:
     """Contract-bearing rows that still have no option-P&L, fired in window and
-    at least 1h old. Idempotent gate: opt_mfe_pct IS NULL. `limit` bounds the
-    batch (newest first) — used for smoke tests and gentle backlog draining."""
+    at least 1h old. Idempotent gate: opt_mfe_pct IS NULL (never priced) OR
+    opt_entry_mid IS NULL (priced pre-markout — backfill markout once). The
+    entry_mid sentinel is always set on a processed row, so data-gap rows don't
+    re-select forever. `limit` bounds the batch (newest first). `alert_type`
+    scopes the backfill to one detector (e.g. 'CLUSTER') — used by the historical
+    cluster reconstruction so it doesn't reprice the whole 100k-row FLOW backlog."""
     _ensure_schema(db_path)
     cutoff_min = now - max_age_days * 86400
     sql = (
         """SELECT alert_id, ticker, expiration, strike, option_type,
                   entry_price, fired_at
            FROM alert_outcomes
-           WHERE opt_mfe_pct IS NULL
+           WHERE (opt_mfe_pct IS NULL OR opt_entry_mid IS NULL)
              AND strike IS NOT NULL AND expiration IS NOT NULL
              AND option_type IS NOT NULL
-             AND fired_at > ? AND fired_at < ?
-           ORDER BY fired_at DESC"""
+             AND fired_at > ? AND fired_at < ?"""
     )
     params: list = [cutoff_min, now - 3600]
+    if alert_type is not None:
+        sql += " AND alert_type = ?"
+        params.append(alert_type)
+    sql += " ORDER BY fired_at DESC"
     if limit is not None:
         sql += " LIMIT ?"
         params.append(int(limit))
@@ -890,10 +950,14 @@ def _write_option_pnl(db_path: str, alert_id: str, o: dict[str, Any]) -> None:
             """UPDATE alert_outcomes SET
                 opt_high_after = ?, opt_low_after = ?,
                 opt_mfe_pct = ?, opt_mae_pct = ?,
-                opt_close_eod = ?, opt_close_next_day = ?
+                opt_close_eod = ?, opt_close_next_day = ?,
+                opt_entry_mid = ?, opt_mark_1m_pct = ?,
+                opt_mark_5m_pct = ?, opt_mark_15m_pct = ?
                WHERE alert_id = ?""",
             (o["opt_high_after"], o["opt_low_after"], o["opt_mfe_pct"],
              o["opt_mae_pct"], o["opt_close_eod"], o["opt_close_next_day"],
+             o["opt_entry_mid"], o["opt_mark_1m_pct"],
+             o["opt_mark_5m_pct"], o["opt_mark_15m_pct"],
              alert_id),
         )
         conn.commit()
@@ -904,14 +968,17 @@ def _write_option_pnl(db_path: str, alert_id: str, o: dict[str, Any]) -> None:
 async def run_option_pnl_backfill(
     db_path: str = DB_PATH, max_age_days: int = 14,
     now: float | None = None, fetcher=None, limit: int | None = None,
+    alert_type: str | None = None,
 ) -> dict:
     """Populate the opt_* columns for contract-bearing alerts via ThetaData NBBO
     (ask-in / bid-out). Idempotent — only touches rows where opt_mfe_pct IS NULL.
     `fetcher(sym, exp, strike, right, start, end) -> list[bar]` is injectable for
     tests; the default runs the live ThetaData lookup off-thread so it never
-    blocks the event loop. `limit` bounds the batch (newest first)."""
+    blocks the event loop. `limit` bounds the batch (newest first). `alert_type`
+    scopes the backfill to one detector (e.g. 'CLUSTER')."""
     now = now if now is not None else time.time()
-    rows = _select_option_pnl_pending(db_path, now, max_age_days, limit=limit)
+    rows = _select_option_pnl_pending(db_path, now, max_age_days, limit=limit,
+                                      alert_type=alert_type)
     stats = {"processed": 0, "updated": 0, "no_data": 0, "errors": 0}
     if not rows:
         return stats
@@ -1238,3 +1305,73 @@ def get_win_rate_by_type_and_regime(
         "n": r[2], "wins": r[3],
         "win_rate": (r[3] / r[2]) * 100 if r[2] > 0 else None,
     } for r in rows]
+
+
+def get_markout_by_type(
+    days: int = 30, db_path: str = DB_PATH, alert_type: str | None = None,
+) -> list[dict[str, Any]]:
+    """Short-horizon MID-to-MID markout per detector (the 2026-06-29 audit's
+    adverse-selection / "exhaust" test).
+
+    For each alert_type, the signed option-mid markout at +1/+5/+15 min after fire.
+    Median > 0 ⇒ the move is IN FRONT of the flow (the signal leads price — real).
+    Median ≤ 0 ⇒ the mid falls right after we'd buy (we're buying exhaust — the
+    Gemini claim about INFORMED CLUSTER). `pct_pos_*` is the share of fires that
+    were favorable at that horizon. Pass `alert_type='CLUSTER'` to isolate the
+    crown jewel. Rows are included once opt_mark_5m_pct is populated (the headline
+    horizon)."""
+    import statistics
+    _ensure_schema(db_path)
+    cutoff = time.time() - days * 86400
+    where = ["fired_at > ?", "opt_mark_5m_pct IS NOT NULL"]
+    params: list = [cutoff]
+    if alert_type:
+        where.append("alert_type = ?")
+        params.append(alert_type)
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            f"""SELECT alert_type, opt_mark_1m_pct, opt_mark_5m_pct, opt_mark_15m_pct
+                FROM alert_outcomes
+                WHERE {' AND '.join(where)}""",
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+
+    by_type: dict[str, dict[str, list[float]]] = {}
+    for atype, m1, m5, m15 in rows:
+        d = by_type.setdefault(atype, {"m1": [], "m5": [], "m15": []})
+        if m1 is not None:
+            d["m1"].append(m1)
+        if m5 is not None:
+            d["m5"].append(m5)
+        if m15 is not None:
+            d["m15"].append(m15)
+
+    def _agg(vals: list[float]) -> dict[str, float | None]:
+        if not vals:
+            return {"n": 0, "median": None, "mean": None, "pct_pos": None}
+        return {
+            "n": len(vals),
+            "median": round(statistics.median(vals), 3),
+            "mean": round(statistics.mean(vals), 3),
+            "pct_pos": round(sum(1 for v in vals if v > 0) / len(vals) * 100, 1),
+        }
+
+    out = []
+    for atype, d in by_type.items():
+        out.append({
+            "alert_type": atype,
+            "n": len(d["m5"]),            # headline n = rows with a +5m markout
+            "mark_1m": _agg(d["m1"]),
+            "mark_5m": _agg(d["m5"]),
+            "mark_15m": _agg(d["m15"]),
+            # headline verdict shortcut: is the +5m median favorable?
+            "verdict_5m": (
+                None if not d["m5"]
+                else ("LEADS" if statistics.median(d["m5"]) > 0 else "EXHAUST")
+            ),
+        })
+    out.sort(key=lambda r: r["n"], reverse=True)
+    return out
