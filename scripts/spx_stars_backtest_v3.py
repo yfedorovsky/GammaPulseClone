@@ -46,8 +46,8 @@ from scripts.theta_bulk_pull import scan  # noqa: E402
 GEX_TABLE = ROOT / "data" / "spx_gex_eod.parquet"
 
 
-def _load_gex():
-    df = pl.read_parquet(GEX_TABLE).sort("d")
+def _load_gex(path=GEX_TABLE):
+    df = pl.read_parquet(path).sort("d")
     days = df["d"].to_list()
     rec = {r["d"]: r for r in df.iter_rows(named=True)}
     return days, rec
@@ -64,11 +64,11 @@ def _prev_trading_day(sorted_days, D):
     return prev
 
 
-def run(store, atsupport, spread_max, slip):
+def run(store, atsupport, spread_max, slip, gex_table=GEX_TABLE):
     lf = scan(store, "ohlc")
     print("building trend/drive signals + loading GEX structure ...", flush=True)
     sig = build_signals(lf)
-    gdays, gex = _load_gex()
+    gdays, gex = _load_gex(gex_table)
 
     funnel = {"considered": 0, "regime": 0, "at_support": 0, "spread": 0, "trend": 0, "drive": 0, "fire": 0}
     cand = {}  # day -> list of (dte, R, reached, stopped)
@@ -168,13 +168,14 @@ def report(fires, funnel, atsupport, spread_max, slip):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--store", default=STORE)
+    ap.add_argument("--gex-table", default=str(GEX_TABLE))
     ap.add_argument("--atsupport", type=float, default=0.4, help="max %% dist ATM->king")
     ap.add_argument("--spread-max", type=float, default=0.10, help="max ATM spread fraction")
     ap.add_argument("--slippage", type=float, default=0.0075)
     a = ap.parse_args()
-    if not GEX_TABLE.exists():
-        raise SystemExit(f"missing {GEX_TABLE} — run scripts/spx_gex_eod_build.py first")
-    fires, funnel = run(a.store, a.atsupport, a.spread_max, a.slippage)
+    if not Path(a.gex_table).exists():
+        raise SystemExit(f"missing {a.gex_table} — run scripts/spx_gex_eod_build.py first")
+    fires, funnel = run(a.store, a.atsupport, a.spread_max, a.slippage, a.gex_table)
     report(fires, funnel, a.atsupport, a.spread_max, a.slippage)
     return 0
 

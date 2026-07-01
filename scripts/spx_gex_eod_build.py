@@ -78,10 +78,16 @@ def build(store=STORE):
 
 
 def main():
-    daily = build()
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    daily.write_parquet(OUT)
-    print(f"wrote {OUT}  ({daily.height} trading days, "
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--store", default=STORE)
+    ap.add_argument("--out", default=str(OUT))
+    a = ap.parse_args()
+    daily = build(a.store)
+    out = Path(a.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    daily.write_parquet(out)
+    print(f"wrote {out}  ({daily.height} trading days, "
           f"{daily['d'].min()} .. {daily['d'].max()})")
     reg = daily.group_by("regime").len().sort("regime")
     print("regime split:", {r["regime"]: r["len"] for r in reg.iter_rows(named=True)})
