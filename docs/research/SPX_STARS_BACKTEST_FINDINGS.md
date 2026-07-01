@@ -33,18 +33,15 @@ Positive but **NOT significant** — n=51 on fat-tailed option returns can't pro
   0.03–0.12), +0.021..+0.062. Not cherry-picked. But every CI includes 0 (max t≈1.3).
 - **Slippage:** positive to ~1.5%/side (gross +0.036 → 0.75% +0.021 → 1.5% +0.005).
 
-## ⭐ Key finding — exit policy: CAP the winner, don't run it (for SPX index weeklies)
-| policy | meanR | medR | H1 | H2 |
-|---|---|---|---|---|
-| scale ⅓ @ +33% + **run** | +0.021 | −0.104 | **−0.033** | +0.072 |
-| **all-out @ +33%** (no runner) | +0.022 | **+0.120** | **+0.023** | +0.022 |
-
-"All-out at +33%" matches the mean, **beats the median (+0.12 vs −0.10), tightest CI, and is
-positive in BOTH temporal halves** — whereas scale-and-run's edge is *entirely* second-half
-(H1 negative → fragile). **For SPX index weeklies, capping the winner is the robust edge;
-letting it run is the fragile part.** This is the OPPOSITE of the single-name "don't cap
-winners" rule (`session_jun21_research_and_exit_sizing`) — different instrument: index
-weeklies pin / mean-revert, so runners give back gains. Hypothesis, not verdict (n=51).
+## Exit policy — an all-out "win" that DID NOT survive a bigger sample (walked back)
+On the **51-fire set**, "all-out @ +33%" (no runner) looked better than scale-⅓+run —
+matched mean (+0.022 vs +0.021), better median (+0.120 vs −0.104), positive in both halves.
+Tempting. **But on the FULL 254-candidate set it REVERSES: all-out −0.029 vs scale-run −0.014
+(both halves, t=−1.6 vs −0.6).** So the all-out advantage was **small-n noise specific to the
+51-fire selection**, not a real property — capping the winner kills the fat right tail long
+options depend on. **Conclusion: keep scale-⅓-and-run; the "don't cap winners" rule HOLDS at
+scale** (consistent with `session_jun21_research_and_exit_sizing`). Lesson: n=51 with wide
+overlapping CIs proves nothing — always re-test a "finding" on the largest available sample.
 
 ## DTE (thin per-bucket — suggestive only)
 Sweet spot is **2 DTE** (scale-run +0.072, the only strong scale-run bucket). 1DTE (theta
