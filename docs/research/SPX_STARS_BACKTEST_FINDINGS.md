@@ -73,10 +73,34 @@ positive, but **n=4 is statistically meaningless** (CI [−0.16, +0.30]). The va
 takeaway is the **self-suppression**: the risk-management thesis validated in a second regime.
 (Note: v3's verdict text hardcodes "bull-year" — cosmetic, ignore on the OOS run.)
 
-## Open / next
-- Bigger / more bear samples (2022 H1, 2018-Q4, 2020-Mar) to grow n toward significance.
-- Bearish mirror (puts in NEG regime + downtrend).
-- Live forward proving-window remains the only path to significance for the strict fire-set.
+## ⭐ CAPSTONE — significance is UNREACHABLE; the directional edge is unprovable
+Pooled bull(2025-26, 51 fires) + bear(Apr-Oct 2022, 5 fires) = **n=56, mean +0.013, sd 0.359**.
+The per-trade option-return sd is **~28× the effect size**. Power analysis:
+
+| target | fires needed | ≈ years of history (@ ~55 fires/yr) |
+|---|---|---|
+| 95% CI excludes 0 | ~3,000 | **~55 years** |
+| 95%/80% power | ~6,200 | **~113 years** |
+
+**So "grow n toward significance" is FUTILE** — the strict gates fire ~3-20% of days, and the
+variance dwarfs any +1-2%/trade edge. No realistic amount of historical pooling (or forward
+trading) can prove it. Pulling more years was tested and abandoned on this basis (2022 was
+extended Apr-Oct; adding it moved n 51→56 and the bull "+0.111" bear result to −0.066 on n=5,
+i.e. noise).
+
+**This is the rigorous confirmation of `edge_verdict`:** there is NO provable standalone
+directional alpha — the effect is statistically invisible against option-return variance.
+What IS observable (and doesn't need mean-significance) is the **risk-management**:
+- exit policy beats hold-to-close (v1: −0.018 vs −0.031),
+- gates **self-suppress 4× in hostile regimes** (bull fires 20% of days, bear 3.4%),
+- selectivity ladder is monotone.
+**The scanner is a risk-managed selectivity tool, not a proven-alpha directional engine.**
+Run it live for the discipline (defined risk, self-suppression, forced exits) — never expect
+provable directional edge from the backtest, because one cannot exist at this signal-to-noise.
+
+## Open / next (non-significance work only)
+- Bearish mirror (puts in NEG regime + downtrend) — a different question, not more n.
+- The live proving-window is for the DISCIPLINE record, not statistical proof of alpha.
 
 ## Traps fixed along the way (so they don't recur)
 - **Int8 overflow:** `dt.hour()*60` overflows i8 (23×60≫127) → cast Int32 before minute math.
