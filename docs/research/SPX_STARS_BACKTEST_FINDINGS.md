@@ -58,10 +58,28 @@ The scanner's live forward proving-window is the only path to significance. Two 
 hypotheses to carry forward: **(1) switch SPX exit to all-out @ +33%** (robust, positive
 median, both halves); **(2) concentrate at ~2 DTE.**
 
+## 2022 bear out-of-sample (Aug-Oct 2022, SPX 4119→3577 low→3872, regime NEG 36 / POS 29)
+`data/theta_hist_2022` + `data/spx_gex_eod_2022.parquet`. The gates behaved EXACTLY as a
+selectivity filter should — they **self-suppressed in the hostile regime**:
+
+| | bull 2025-26 | bear Aug-Oct 2022 |
+|---|---|---|
+| regime POS | 55% | 44% |
+| at-support | 60% | 34% |
+| trend up | 59% | 42% |
+| ALL-ALIGNED | 20% → **51 fires** | 5.6% → **4 fires** |
+| fire meanR | +0.021 | +0.111 (n=4, win 75%) |
+
+The scanner fired **4× less** in the bear (fewer +gamma days, fewer uptrends, price away from
+the king) — it stayed OUT of the selloff rather than plowing in. The 4 that aligned were
+positive, but **n=4 is statistically meaningless** (CI [−0.16, +0.30]). The valuable, robust
+takeaway is the **self-suppression**: the risk-management thesis validated in a second regime.
+(Note: v3's verdict text hardcodes "bull-year" — cosmetic, ignore on the OOS run.)
+
 ## Open / next
-- **2022 bear out-of-sample** (in progress, `data/theta_hist_2022`) — does the edge survive a
-  non-bull regime? The decisive confound test.
-- Bearish mirror (puts in NEG regime + downtrend). Bigger universe for significance.
+- Bigger / more bear samples (2022 H1, 2018-Q4, 2020-Mar) to grow n toward significance.
+- Bearish mirror (puts in NEG regime + downtrend).
+- Live forward proving-window remains the only path to significance for the strict fire-set.
 
 ## Traps fixed along the way (so they don't recur)
 - **Int8 overflow:** `dt.hour()*60` overflows i8 (23×60≫127) → cast Int32 before minute math.
