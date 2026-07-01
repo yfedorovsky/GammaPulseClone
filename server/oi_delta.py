@@ -181,6 +181,29 @@ def get_prior_oi(
         return None
 
 
+def get_oi_asof(
+    ticker: str, exp: str, strike: float, option_type: str,
+    asof_date: str, mode: str = "before",
+) -> tuple[int | None, str | None]:
+    """OI snapshot nearest `asof_date` (ISO) for one contract.
+    mode='before' → most recent snapshot with date <= asof_date;
+    mode='after'  → earliest snapshot with date >= asof_date.
+    Returns (oi, snapshot_date) or (None, None). Used to compute the OI change
+    ACROSS a flow event (post - pre) = did the flow OPEN (accumulation) or CLOSE (exit)."""
+    op, order = ("<=", "DESC") if mode == "before" else (">=", "ASC")
+    try:
+        with _conn() as c:
+            row = c.execute(
+                f"""SELECT oi, date FROM daily_oi_snapshot
+                    WHERE ticker=? AND exp=? AND strike=? AND option_type=? AND date {op} ?
+                    ORDER BY date {order} LIMIT 1""",
+                (ticker, exp, float(strike), option_type.lower(), asof_date),
+            ).fetchone()
+            return (int(row["oi"]), row["date"]) if row else (None, None)
+    except Exception:
+        return (None, None)
+
+
 def get_ticker_deltas(
     ticker: str, lookback_days: int = 1,
 ) -> dict[tuple[str, float, str], dict[str, Any]]:
