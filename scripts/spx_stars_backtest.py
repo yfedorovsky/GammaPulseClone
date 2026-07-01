@@ -76,10 +76,10 @@ def sim_policy(entry: float, path: list[tuple[float, float, float]], s: float):
     return _net(run, s), False, False
 
 
-def _atm_and_paths(day: pl.DataFrame):
-    """From one (expiration, day) frame, infer ATM via parity at ENTRY_TOD and return
+def _atm_and_paths(day: pl.DataFrame, entry_tod: int = ENTRY_TOD):
+    """From one (expiration, day) frame, infer ATM via parity at entry_tod and return
     (atm_strike, call_entry, call_path, put_entry, put_path). None if unusable."""
-    snap = (day.filter(pl.col("tod") <= ENTRY_TOD).sort("tod")
+    snap = (day.filter(pl.col("tod") <= entry_tod).sort("tod")
             .group_by("strike", "right").agg(pl.col("close").last().alias("px")))
     c = snap.filter(pl.col("right") == "CALL").select("strike", pl.col("px").alias("call"))
     p = snap.filter(pl.col("right") == "PUT").select("strike", pl.col("px").alias("put"))
@@ -95,7 +95,7 @@ def _atm_and_paths(day: pl.DataFrame):
 
     def path_for(right):
         b = (day.filter((pl.col("strike") == k) & (pl.col("right") == right)
-                        & (pl.col("tod") >= ENTRY_TOD)).sort("tod"))
+                        & (pl.col("tod") >= entry_tod)).sort("tod"))
         if b.height < 2:
             return None, None
         rows = list(zip(b["high"].to_list(), b["low"].to_list(), b["close"].to_list()))
