@@ -55,6 +55,29 @@ def _df(rows):
     })
 
 
+def _greeks_df(rows, right, spot=746.51):
+    """rows: (strike, expiration, gamma, iv, charm, vanna)."""
+    n = len(rows)
+    return pd.DataFrame({
+        "strike": [r[0] for r in rows],
+        "expiration": [r[1] for r in rows],
+        "right": [right.upper()] * n,
+        "delta": [0.5] * n, "gamma": [r[2] for r in rows],
+        "theta": [-0.1] * n, "vega": [0.2] * n,
+        "implied_vol": [r[3] for r in rows],
+        "charm": [r[4] for r in rows], "vanna": [r[5] for r in rows],
+        "underlying_price": [spot] * n,
+    })
+
+
+class FakeGreeksClient:
+    def __init__(self, calls_df, puts_df):
+        self._c, self._p = calls_df, puts_df
+
+    def option_snapshot_greeks_all(self, **kw):
+        return self._c if kw.get("right") == "call" else self._p
+
+
 def _install(df):
     """Force _get_client() to return a FakeClient wrapping df."""
     tl._client = FakeClient(df)
@@ -138,6 +161,39 @@ def test_auto_prefers_library_then_falls_back():
         _uninstall()
 
 
+def test_snapshot_chain_greeks_all():
+    calls = _greeks_df([
+        (747.0, "2026-07-01", 0.092, 0.11, -9.7, 0.35),   # real ATM 1DTE
+        (750.0, "2026-07-08", 0.050, 0.12, -3.0, 0.20),   # later exp
+        (740.0, "2026-07-01", 0.000, 0.00, 0.0, 0.0),     # iv<=0 -> dropped
+    ], "call")
+    puts = _greeks_df([(745.0, "2026-07-01", 0.10, 0.12, -8.0, -0.3)], "put")
+    tl._client = FakeGreeksClient(calls, puts)
+    tl._init_failed = False
+    try:
+        g, spot, ts = tl.snapshot_chain_greeks_all("SPY")
+        check("spot from underlying_price", spot == 746.51, str(spot))
+        check("iv<=0 row filtered", (740.0, "2026-07-01", "call") not in g)
+        k = (747.0, "2026-07-01", "call")
+        check("real gamma passthrough (not synth)", g.get(k, {}).get("gamma") == 0.092, str(g.get(k)))
+        check("charm + vanna passthrough",
+              g[k]["charm"] == -9.7 and g[k]["vanna"] == 0.35, str(g.get(k)))
+        check("put side keyed too", (745.0, "2026-07-01", "put") in g)
+        # range filter mirrors snapshot_greeks gte/lte
+        g2, _, _ = tl.snapshot_chain_greeks_all("SPY", expiration_gte="2026-07-05")
+        check("gte filters earlier expirations",
+              all(key[1] >= "2026-07-05" for key in g2) and len(g2) >= 1, str(list(g2)))
+    finally:
+        _uninstall()
+
+
+def test_greeks_unavailable_returns_empty():
+    _uninstall()
+    g, spot, ts = tl.snapshot_chain_greeks_all("SPY")
+    check("no client -> ({}, None, 0.0)", g == {} and spot is None and ts == 0.0,
+          f"{len(g)},{spot},{ts}")
+
+
 if __name__ == "__main__":
     print("test_thetadata_lib")
     test_basic_parse()
@@ -145,5 +201,7 @@ if __name__ == "__main__":
     test_request_mapping()
     test_unavailable_returns_empty()
     test_auto_prefers_library_then_falls_back()
+    test_snapshot_chain_greeks_all()
+    test_greeks_unavailable_returns_empty()
     print(f"\n{_P} passed, {_F} failed")
     sys.exit(1 if _F else 0)

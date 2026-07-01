@@ -116,3 +116,86 @@ def fetch_option_nbbo_bars(
     except Exception as e:
         print(f"[thetadata_lib] bar parse failed for {symbol} {expiration}: {e!r}")
         return []
+
+
+def _pick(cols, *names):
+    lc = {str(c).lower(): c for c in cols}
+    for n in names:
+        if n in lc:
+            return lc[n]
+    for n in names:
+        for c in cols:
+            if n in str(c).lower():
+                return c
+    return None
+
+
+def snapshot_chain_greeks_all(
+    symbol: str, expiration_gte: str = "", expiration_lte: str = "",
+) -> tuple[dict[tuple[float, str, str], dict[str, float]], float | None, float]:
+    """REAL chain greeks via the library's option_snapshot_greeks_all — native gamma
+    (plus charm + vanna), NO BSM synthesis. Keyed exactly like
+    server.thetadata.snapshot_greeks so it can shadow or replace it:
+        {(strike, exp_date, otype): {delta, gamma, theta, vega, iv, charm, vanna}}
+    Returns (lookup, underlying_spot, ts). ({}, None, 0.0) if unavailable/error.
+
+    Sync (the library is sync); the live worker would call it via asyncio.to_thread
+    like the backfill. expiration_gte/lte filter the wildcard response, mirroring
+    snapshot_greeks. Rows with iv<=0 are skipped (stale/illiquid), same as prod."""
+    import time as _time
+    client = _get_client()
+    if client is None:
+        return {}, None, 0.0
+    ts = _time.time()
+    out: dict[tuple[float, str, str], dict[str, float]] = {}
+    spot: float | None = None
+    for otype in ("call", "put"):
+        try:
+            df = client.option_snapshot_greeks_all(
+                symbol=symbol, expiration="*", right=otype)
+        except Exception as e:
+            print(f"[thetadata_lib] greeks_all failed for {symbol} {otype}: {e!r}")
+            continue
+        if df is None or len(df) == 0:
+            continue
+        c = df.columns
+        cS, cE = _pick(c, "strike"), _pick(c, "expiration")
+        cd, cg = _pick(c, "delta"), _pick(c, "gamma")
+        cth, cv = _pick(c, "theta"), _pick(c, "vega")
+        civ = _pick(c, "implied_vol", "iv")
+        cch, cvn = _pick(c, "charm"), _pick(c, "vanna")
+        cu = _pick(c, "underlying_price", "underlying")
+        for row in df.itertuples(index=False):
+            d = row._asdict()
+            try:
+                strike = float(d[cS]); exp = str(d[cE])[:10]
+                iv = float(d[civ])
+            except (TypeError, ValueError, KeyError):
+                continue
+            if iv <= 0 or not exp:
+                continue
+            if expiration_gte and exp < expiration_gte:
+                continue
+            if expiration_lte and exp > expiration_lte:
+                continue
+            if cu is not None:
+                try:
+                    u = float(d[cu])
+                    if u > 0:
+                        spot = u
+                except (TypeError, ValueError):
+                    pass
+
+            def _f(col):
+                if col is None:
+                    return 0.0
+                try:
+                    v = float(d[col])
+                    return v if v == v else 0.0  # NaN -> 0
+                except (TypeError, ValueError):
+                    return 0.0
+            out[(strike, exp, otype)] = {
+                "delta": _f(cd), "gamma": _f(cg), "theta": _f(cth),
+                "vega": _f(cv), "iv": iv, "charm": _f(cch), "vanna": _f(cvn),
+            }
+    return out, spot, ts
