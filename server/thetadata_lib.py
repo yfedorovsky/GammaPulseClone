@@ -66,6 +66,31 @@ def available() -> bool:
     return _get_client() is not None
 
 
+_pl_client = None
+
+
+def get_polars_client():
+    """Polars-backed client sharing the pandas client's authed session.
+
+    Use this ONLY for BULK history pulls (millions of rows) so results can be written
+    to parquet and queried lazily (pl.scan_parquet). The default pandas client stays for
+    the small-frame live paths (backfill/snapshots) where the frame is transient. Returns
+    None if the library is unavailable."""
+    global _pl_client
+    if _pl_client is not None:
+        return _pl_client
+    base = _get_client()
+    if base is None:
+        return None
+    try:
+        from thetadata import ThetaClient
+        _pl_client = ThetaClient(existing_authorized_client=base, dataframe_type="polars")
+        return _pl_client
+    except Exception as e:
+        print(f"[thetadata_lib] polars client init failed ({e!r})")
+        return None
+
+
 def _right_word(right: str) -> str:
     return "call" if str(right).upper().startswith("C") else "put"
 

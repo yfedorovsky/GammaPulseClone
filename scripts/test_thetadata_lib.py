@@ -194,6 +194,21 @@ def test_greeks_unavailable_returns_empty():
           f"{len(g)},{spot},{ts}")
 
 
+def test_bulk_chunks():
+    import datetime as dt
+    from scripts.theta_bulk_pull import _chunks
+    # 2026-01-01 .. 2026-03-15 with 28-day chunks -> contiguous, none > 28 days
+    ch = list(_chunks(dt.date(2026, 1, 1), dt.date(2026, 3, 15), 28))
+    check("chunks contiguous + cover the range",
+          ch[0][0] == dt.date(2026, 1, 1) and ch[-1][1] == dt.date(2026, 3, 15)
+          and all(ch[i + 1][0] == ch[i][1] + dt.timedelta(days=1) for i in range(len(ch) - 1)),
+          str(ch))
+    check("no chunk exceeds size",
+          all((c1 - c0).days + 1 <= 28 for c0, c1 in ch), str([(str(a), str(b)) for a, b in ch]))
+    single = list(_chunks(dt.date(2026, 6, 24), dt.date(2026, 6, 24), 28))
+    check("single-day range -> one chunk", single == [(dt.date(2026, 6, 24), dt.date(2026, 6, 24))], str(single))
+
+
 if __name__ == "__main__":
     print("test_thetadata_lib")
     test_basic_parse()
@@ -203,5 +218,6 @@ if __name__ == "__main__":
     test_auto_prefers_library_then_falls_back()
     test_snapshot_chain_greeks_all()
     test_greeks_unavailable_returns_empty()
+    test_bulk_chunks()
     print(f"\n{_P} passed, {_F} failed")
     sys.exit(1 if _F else 0)
