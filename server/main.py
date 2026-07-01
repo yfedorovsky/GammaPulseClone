@@ -219,6 +219,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[STARTUP] SPX stars-align scanner NOT started: {e}")
 
+    # SPX stars-align WEEKLY track-record post to Discord (transparency backbone —
+    # posts SPX_STARS vs its controls to #spx-alerts each Fri after close, only when
+    # STARS_ALIGN_ACTIVE=1). No-op in shadow / without a webhook.
+    _spx_stars_weekly_task = None
+    try:
+        from .spx_stars_align import run_spx_stars_weekly_loop
+        _spx_stars_weekly_task = asyncio.create_task(run_spx_stars_weekly_loop(_stop))
+        print("[STARTUP] SPX stars-align weekly track-record loop enabled")
+    except Exception as e:
+        print(f"[STARTUP] SPX stars-align weekly loop NOT started: {e}")
+
     # Snapshot persist watchdog — alarms via Telegram if snapshots table
     # goes >10 min without a write during RTH (the 5/14-5/19 4-day silent
     # bug must never repeat undetected).

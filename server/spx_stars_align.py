@@ -397,3 +397,68 @@ async def run_spx_stars_loop(stop_event: asyncio.Event) -> None:
         except Exception as e:
             print(f"[spx_stars] loop error: {e}", flush=True)
     print(f"[spx_stars] loop stopped — fires={fires}", flush=True)
+
+
+# ── Weekly TRACK-RECORD post to Discord (the transparency backbone — show members
+#    the real receipts, win or lose, as the shadow window builds) ──
+
+def _track_record_buckets(days: int) -> dict:
+    from scripts.spx_stars_shadow_report import bucket_stats, _rows
+    return {k: bucket_stats(_rows(k, days)) for k in
+            ("SPX_STARS", "SPX_STARS_PUT", "SPX_STARS_RANDMOMENT")}
+
+
+def format_track_record(buckets: dict) -> str:
+    """Discord weekly summary — SPX_STARS vs its two controls, full transparency."""
+    def pnl(b):
+        return f"{b['median_pnl']:+.1f}%" if b.get("n") else "n/a"
+    hdr = ("📊 **SPX SETUP TRACKER — weekly transparency update**\n"
+           "_NOT financial advice · full receipts, win or lose_\n\n")
+    s = buckets.get("SPX_STARS", {})
+    if not s.get("n"):
+        return hdr + ("No qualifying setups fired this window — the gates stayed strict "
+                      "(that's the point). Still in the proving window.")
+    put, rnd = buckets.get("SPX_STARS_PUT", {}), buckets.get("SPX_STARS_RANDMOMENT", {})
+    accruing = s["n"] < 30 or s["n_days"] < 15
+    status = (f"still accruing — {s['n']}/30 fires, {s['n_days']}/15 days before a verdict"
+              if accruing else "verdict window reached — evaluating vs the controls")
+    return hdr + "\n".join([
+        f"**Setups fired:** {s['n']} across {s['n_days']} days",
+        f"**Exit-policy P&L** (scale 1/3 @+33%, stop -30%): median **{s['median_pnl']:+.1f}%**, win {s['pct_pos']}%",
+        f"**vs opposite-PUT control:** {pnl(put)} · **vs random-moment:** {pnl(rnd)}",
+        f"**Reached +33%:** {s['pct_reach_target']}% · **stopped -30%:** {s['pct_hit_stop']}%",
+        f"_Status: {status}._",
+    ])
+
+
+def format_track_record_discord(days: int = 45) -> str:
+    return format_track_record(_track_record_buckets(days))
+
+
+_last_report_week = None
+
+
+async def run_spx_stars_weekly_loop(stop_event: asyncio.Event) -> None:
+    """Post the track-record summary to #spx-alerts once a week (Fri after close),
+    only when live (STARS_ALIGN_ACTIVE=1). Deduped by ISO week."""
+    global _last_report_week
+    print("[spx_stars] weekly track-record loop starting", flush=True)
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=3600)  # hourly tick
+            break
+        except asyncio.TimeoutError:
+            pass
+        try:
+            if not _active():
+                continue  # only publish the public record once live
+            now = _dt.datetime.now()
+            wk = now.isocalendar()[:2]
+            if now.weekday() == 4 and (now.hour, now.minute) >= (16, 15) and _last_report_week != wk:
+                from .discord_out import post
+                if post(format_track_record_discord()):
+                    _last_report_week = wk
+                    print("[spx_stars] weekly track-record posted to #spx-alerts", flush=True)
+        except Exception as e:
+            print(f"[spx_stars] weekly loop error: {e}", flush=True)
+    print("[spx_stars] weekly track-record loop stopped", flush=True)

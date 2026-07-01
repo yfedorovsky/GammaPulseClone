@@ -196,6 +196,20 @@ def test_discord_delivery():
           ok is True and sent.get("content") == "hello world", str(sent))
 
 
+def test_track_record_format():
+    txt0 = g.format_track_record({"SPX_STARS": {"n": 0}})
+    check("track-record no-data message", "No qualifying setups" in txt0 and "NOT financial advice" in txt0, txt0[:50])
+    buckets = {
+        "SPX_STARS": {"n": 12, "n_days": 8, "median_pnl": 5.5, "pct_pos": 42,
+                      "pct_reach_target": 45, "pct_hit_stop": 40},
+        "SPX_STARS_PUT": {"n": 12, "median_pnl": -12.0},
+        "SPX_STARS_RANDMOMENT": {"n": 10, "median_pnl": -8.0},
+    }
+    txt = g.format_track_record(buckets)
+    check("track-record shows setups + P&L + controls + accruing status",
+          all(x in txt for x in ("Setups fired:** 12", "+5.5%", "-12.0%", "-8.0%", "accruing", "12/30")), txt[:140])
+
+
 def test_shadow_default_no_telegram():
     check("STARS_ALIGN_ACTIVE defaults off (shadow)", g._active() is False)
     sig, _ = g.evaluate(_state(), now=time.time()) if not g._fires_today else (None, "")
@@ -215,6 +229,7 @@ if __name__ == "__main__":
     test_adversarial_controls_logged()
     test_market_risk_off_veto()
     test_discord_delivery()
+    test_track_record_format()
     test_daily_throttle()
     test_shadow_default_no_telegram()
     print(f"\n{_P} passed, {_F} failed")
