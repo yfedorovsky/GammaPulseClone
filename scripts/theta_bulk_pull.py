@@ -122,6 +122,8 @@ def main():
     ap.add_argument("--chunk-days", type=int, default=28, help="<= ~1mo API cap")
     ap.add_argument("--strike-range", type=int, default=0,
                     help="only ATM +/- N strikes (2N+1); 0 = whole chain. Use for SPX-class roots.")
+    ap.add_argument("--workers", type=int, default=1,
+                    help="concurrent pulls (Options PRO allows 8 concurrent requests; 6 is safe)")
     ap.add_argument("--out", default="data/theta_hist")
     ap.add_argument("--max-expirations", type=int, default=0, help="0 = all")
     ap.add_argument("--dry-run", action="store_true")
@@ -145,56 +147,76 @@ def main():
     man = out / "manifest.jsonl"
 
     print(f"BULK PULL  kind={a.kind} interval={a.interval} window=[{start}..{end}] "
-          f"lookback={a.lookback_days}d chunk={a.chunk_days}d out={out}")
-    tot_rows = tot_bytes = files = 0
-    t0 = time.time()
+          f"lookback={a.lookback_days}d chunk={a.chunk_days}d workers={a.workers} out={out}")
+    # Build the task list once (resumable: skip partitions already on disk).
+    tasks = []
     for root in a.roots:
         exps = _expirations_in(client, root, start, end)
         if a.max_expirations:
             exps = exps[:a.max_expirations]
-        print(f"\n{root}: {len(exps)} expirations in window")
+        print(f"{root}: {len(exps)} expirations in window")
         for exp in exps:
             d0 = max(start, exp - _dt.timedelta(days=a.lookback_days))
             d1 = min(end, exp)
             for c0, c1 in _chunks(d0, d1, a.chunk_days):
                 part = (out / f"kind={a.kind}" / f"root={root}"
                         / f"exp={exp.isoformat()}" / f"{c0}_{c1}.parquet")
-                if part.exists():
-                    continue
-                if a.dry_run:
-                    print(f"  [plan] {root} exp={exp} {c0}..{c1}")
-                    files += 1
-                    continue
-                try:
-                    ts = time.time()
-                    df = _pull(client, a.kind, root, exp, c0, c1, a.interval, a.strike_range)
-                    secs = time.time() - ts
-                except Exception as e:
-                    print(f"  ERR {root} {exp} {c0}..{c1}: {repr(e)[:150]}")
-                    continue
-                if df is None or df.height == 0:
-                    continue
-                part.parent.mkdir(parents=True, exist_ok=True)
-                df.write_parquet(part, compression="zstd")
-                b = part.stat().st_size
-                tot_rows += df.height
-                tot_bytes += b
-                files += 1
-                with man.open("a") as f:
-                    f.write(json.dumps({
-                        "root": root, "exp": exp.isoformat(), "kind": a.kind,
-                        "d0": c0.isoformat(), "d1": c1.isoformat(),
-                        "rows": df.height, "bytes": b, "secs": round(secs, 1)}) + "\n")
-                print(f"  {root} exp={exp} {c0}..{c1}: {df.height:>8,} rows "
-                      f"{b/1e6:>6.1f}MB {secs:>4.1f}s")
+                if not part.exists():
+                    tasks.append((root, exp, c0, c1, part))
 
-    print("\n" + "-" * 60)
     if a.dry_run:
-        print(f"DRY RUN: {files} partitions planned (nothing written)")
-    else:
-        print(f"DONE: {files} files, {tot_rows:,} rows, {tot_bytes/1e6:.1f} MB, "
-              f"{time.time()-t0:.0f}s -> {out}")
-        print(f'Lazy read: python scripts/theta_bulk_pull.py --scan {out} --kind {a.kind}')
+        print(f"DRY RUN: {len(tasks)} partitions planned (nothing written)")
+        return 0
+    if not tasks:
+        print("nothing to do — all partitions already on disk")
+        return 0
+
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    lock = threading.Lock()
+    agg = {"files": 0, "rows": 0, "bytes": 0}
+    total = len(tasks)
+
+    def work(task):
+        root, exp, c0, c1, part = task
+        try:
+            ts = time.time()
+            df = _pull(client, a.kind, root, exp, c0, c1, a.interval, a.strike_range)
+            secs = time.time() - ts
+        except Exception as e:
+            return f"  ERR {root} {exp} {c0}..{c1}: {repr(e)[:120]}"
+        if df is None or df.height == 0:
+            return None
+        # write to a .tmp then rename so a killed mid-write never leaves a half
+        # parquet that the resumable check would skip as 'done'.
+        part.parent.mkdir(parents=True, exist_ok=True)
+        tmp = part.with_suffix(".parquet.tmp")
+        df.write_parquet(tmp, compression="zstd")
+        tmp.replace(part)
+        b = part.stat().st_size
+        with lock:
+            agg["files"] += 1
+            agg["rows"] += df.height
+            agg["bytes"] += b
+            done = agg["files"]
+            with man.open("a") as f:
+                f.write(json.dumps({
+                    "root": root, "exp": exp.isoformat(), "kind": a.kind,
+                    "d0": c0.isoformat(), "d1": c1.isoformat(),
+                    "rows": df.height, "bytes": b, "secs": round(secs, 1)}) + "\n")
+        return f"  [{done}/{total}] {root} exp={exp} {c0}..{c1}: {df.height:,} rows {b/1e6:.1f}MB {secs:.1f}s"
+
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=max(1, a.workers)) as ex:
+        for fut in as_completed([ex.submit(work, t) for t in tasks]):
+            msg = fut.result()
+            if msg:
+                print(msg, flush=True)
+
+    print("-" * 60)
+    print(f"DONE: {agg['files']} files, {agg['rows']:,} rows, {agg['bytes']/1e6:.1f} MB, "
+          f"{time.time()-t0:.0f}s -> {out}")
+    print(f"Lazy read: python scripts/theta_bulk_pull.py --scan {out} --kind {a.kind}")
     return 0
 
 
