@@ -85,6 +85,14 @@ def _pull(client, kind, root, exp, d0, d1, interval, strike_range=0):
         return client.option_history_trade_quote(
             symbol=root, expiration=exp, strike="*", right="both",
             start_date=d0, end_date=d1, strike_range=sr)
+    if kind == "greeks_eod":   # EOD greeks (gamma/charm/vanna) + NBBO + underlying_price
+        return client.option_history_greeks_eod(
+            symbol=root, expiration=exp, strike="*", right="both",
+            start_date=d0, end_date=d1, strike_range=sr)
+    if kind == "oi":           # EOD open interest per strike/right
+        return client.option_history_open_interest(
+            symbol=root, expiration=exp, strike="*", right="both",
+            start_date=d0, end_date=d1, strike_range=sr)
     raise SystemExit(f"unknown kind: {kind}")
 
 
@@ -115,7 +123,8 @@ def main():
     ap.add_argument("--roots", nargs="+")
     ap.add_argument("--start")
     ap.add_argument("--end")
-    ap.add_argument("--kind", default="ohlc", choices=["ohlc", "quote", "trade_quote"])
+    ap.add_argument("--kind", default="ohlc",
+                    choices=["ohlc", "quote", "trade_quote", "greeks_eod", "oi"])
     ap.add_argument("--interval", default="1m")
     ap.add_argument("--lookback-days", type=int, default=45,
                     help="per-expiration life window to pull, ending at expiry")
