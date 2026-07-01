@@ -766,6 +766,12 @@ def get_oi_confirmation_report(days: int = 30, db_path: str = DB_PATH) -> list[d
 THETA_URL = os.environ.get("THETA_BASE_URL", "http://127.0.0.1:25503")
 _OPT_NEXTDAY_LOOKAHEAD_DAYS = 5
 
+# Backfill transport: the Terminal-free Python library (server/thetadata_lib) is
+# preferred when it is installed + authenticated (THETADATA_API_KEY), with automatic
+# fallback to the REST/Terminal path below. Set THETA_FORCE_REST=1 to force REST.
+# Parity is validated to the cent by scripts/theta_lib_parity.py.
+_FORCE_REST = os.environ.get("THETA_FORCE_REST", "0") == "1"
+
 # ThetaData v3 returns NAIVE exchange-time (ET) timestamps. We localize them to
 # ET explicitly rather than rely on the host clock: pandas 3.0's
 # Timestamp.timestamp() treats a naive Timestamp as UTC, which would shift every
@@ -835,6 +841,27 @@ def fetch_option_nbbo_bars(
         return out
     except Exception:
         return []
+
+
+def _fetch_bars_auto(symbol: str, expiration: str, strike: float, right: str,
+                     start_date: str, end_date: str) -> list[dict[str, Any]]:
+    """Default backfill fetcher: library-first (Terminal-free), REST fallback.
+
+    Tries server.thetadata_lib (gRPC direct to Theta, no Terminal). It returns [] when
+    the library is missing/unauthenticated, so any environment without the key falls
+    straight through to the REST/Terminal path — no behavior change there. A non-empty
+    library result is byte-identical to REST (scripts/theta_lib_parity.py) and is at
+    least as complete. THETA_FORCE_REST=1 skips the library entirely."""
+    if not _FORCE_REST:
+        try:
+            from . import thetadata_lib
+            bars = thetadata_lib.fetch_option_nbbo_bars(
+                symbol, expiration, strike, right, start_date, end_date)
+            if bars:
+                return bars
+        except Exception as e:
+            print(f"[alert_outcomes] library fetch errored, REST fallback: {e!r}")
+    return fetch_option_nbbo_bars(symbol, expiration, strike, right, start_date, end_date)
 
 
 # Short-horizon markout offsets (minutes) and the gap tolerance for picking the
@@ -986,7 +1013,7 @@ async def run_option_pnl_backfill(
     if fetcher is None:
         async def fetcher(sym, exp, strike, right, start, end):  # noqa: ANN001
             return await asyncio.to_thread(
-                fetch_option_nbbo_bars, sym, exp, strike, right, start, end)
+                _fetch_bars_auto, sym, exp, strike, right, start, end)
 
     today = _dt.datetime.now(_ET).date() if _ET else _dt.date.today()
     print(f"[alert_outcomes] option-P&L backfill: {len(rows)} contract rows")

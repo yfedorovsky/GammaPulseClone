@@ -4,6 +4,10 @@ httpx>=0.27
 pydantic>=2.7
 pydantic-settings>=2.2
 python-dotenv>=1.0
+# thetadata: Terminal-free gRPC backend for the option-P&L backfill
+# (server/thetadata_lib). >=1.0.9 for API-key auth; needs python-dotenv above
+# (an undeclared runtime import in 1.0.9). Pulls grpcio, protobuf, pandas, polars.
+thetadata>=1.0.9
 sse-starlette>=2.0
 numpy>=1.26
 scipy>=1.12
