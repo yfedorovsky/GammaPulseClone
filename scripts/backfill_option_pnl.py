@@ -7,8 +7,12 @@ ThetaData OPRA NBBO 1-min bars (ask-in / bid-out). Idempotent + self-limiting
 
 This is the #92 keystone: the cross-LLM audit (2026-06-23) found these columns
 100% NULL, which blocks validating INFORMED CLUSTER on real option P&L (audit
-C10) and activating the #95 conviction-v2 filter. Requires the local ThetaData
-Terminal at http://127.0.0.1:25503 (override with THETA_BASE_URL).
+C10) and activating the #95 conviction-v2 filter.
+
+Terminal-free: routes through run_option_pnl_backfill -> _fetch_bars_auto, which
+prefers the ThetaData Python library (gRPC direct, no Terminal) and falls back to
+the REST Terminal only if the library is unavailable. Set THETA_FORCE_REST=1 to
+force the old REST path.
 
 Run:
   python scripts/backfill_option_pnl.py            # last 14 days
