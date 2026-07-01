@@ -162,6 +162,40 @@ def test_adversarial_controls_logged():
         ao.log_alert = saved
 
 
+def test_discord_delivery():
+    import os
+    import sys
+    import types
+    import server.discord_out as do
+    os.environ.pop("DISCORD_SPX_WEBHOOK", None)
+    check("discord post no-op without webhook (fail-safe)", do.post("hi") is False)
+    # format renders the tracked-setup framing (not a raw buy signal)
+    _reset()
+    sig, _ = g.evaluate(_state(), now=time.time())
+    txt = g.format_discord(sig)
+    check("discord format: tracker framing + 'NOT financial advice' + defined-risk",
+          all(s in txt for s in ("SPX SETUP TRACKER", "NOT financial advice", "BUY-LIMIT", "Stop")), txt[:60])
+    # mocked webhook -> posts the content, returns True on 204
+    os.environ["DISCORD_SPX_WEBHOOK"] = "https://discord.test/wh"
+    sent: dict = {}
+
+    class _R:
+        status_code = 204
+    fake = types.SimpleNamespace(post=lambda url, json, timeout: (sent.update(json) or _R()))
+    saved = sys.modules.get("requests")
+    sys.modules["requests"] = fake
+    try:
+        ok = do.post("hello world")
+    finally:
+        if saved is not None:
+            sys.modules["requests"] = saved
+        else:
+            sys.modules.pop("requests", None)
+        os.environ.pop("DISCORD_SPX_WEBHOOK", None)
+    check("discord post returns True on 204 + sends content",
+          ok is True and sent.get("content") == "hello world", str(sent))
+
+
 def test_shadow_default_no_telegram():
     check("STARS_ALIGN_ACTIVE defaults off (shadow)", g._active() is False)
     sig, _ = g.evaluate(_state(), now=time.time()) if not g._fires_today else (None, "")
@@ -180,6 +214,7 @@ if __name__ == "__main__":
     test_soft_gate_vetoes()
     test_adversarial_controls_logged()
     test_market_risk_off_veto()
+    test_discord_delivery()
     test_daily_throttle()
     test_shadow_default_no_telegram()
     print(f"\n{_P} passed, {_F} failed")

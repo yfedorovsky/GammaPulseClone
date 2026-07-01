@@ -274,6 +274,23 @@ def format_telegram(s: StarsAlignSignal) -> str:
     )
 
 
+def format_discord(s: StarsAlignSignal) -> str:
+    """Discord (#spx-alerts) — framed as a TRACKED experimental setup, not advice.
+    Honest, defined-risk, transparent (we validate this in public)."""
+    up = (s.target - s.spot) / s.spot * 100
+    spread = f" · spread {s.spread_pct*100:.1f}%" if s.spread_pct is not None else ""
+    return (
+        f"📊 **SPX SETUP TRACKER** — experimental, tracking live\n"
+        f"*defined-risk anticipatory setup · NOT financial advice · validating in public*\n\n"
+        f"Spot **${s.spot:,.2f}** · regime {s.regime}{spread}\n"
+        f"🎯 Rest a **BUY-LIMIT at {s.support_name} ${s.support_level:,.0f}** — the level "
+        f"comes to you, no chasing\n"
+        f"Contract idea: ~${s.sugg_strike:,.0f}C {s.sugg_exp} ({s.sugg_dte}DTE weekly)\n"
+        f"Target (scale ⅓): ${s.target:,.0f} (+{up:.2f}%) · Stop: ${s.stop:,.0f}\n"
+        f"⏳ Outcome tracked live — this engine is in its proving window."
+    )
+
+
 def _log_paper(sig: StarsAlignSignal) -> None:
     try:
         from .alert_outcomes import log_alert
@@ -360,7 +377,13 @@ async def run_spx_stars_loop(stop_event: asyncio.Event) -> None:
                 _log_paper(sig)
                 _log_opposite(sig)   # opposite-direction (PUT) control
                 if _active():
-                    try:
+                    try:   # Discord #spx-alerts (members) — tracked-setup framing
+                        from .discord_out import post as _dpost
+                        if _dpost(format_discord(sig)):
+                            print("[spx_stars] -> Discord #spx-alerts", flush=True)
+                    except Exception as e:
+                        print(f"[spx_stars] discord failed: {e}", flush=True)
+                    try:   # Telegram (your own DM)
                         from .telegram import send
                         await send(format_telegram(sig), ticker="SPX", critical=True)
                     except Exception as e:
