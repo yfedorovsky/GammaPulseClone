@@ -57,7 +57,8 @@ def build(store=STORE):
                   .agg(pl.col("gxoi").sum().alias("total_gxoi"),
                        pl.col("signed").sum().alias("signed_gxoi")))
     king = (strike_lvl.sort(["d", "total_gxoi"], descending=[False, True])
-            .group_by("d").agg(pl.col("strike").first().alias("king")))
+            .group_by("d").agg(pl.col("strike").first().alias("king"),
+                               pl.col("total_gxoi").first().alias("king_gamma_oi")))
     net = strike_lvl.group_by("d").agg(pl.col("signed_gxoi").sum().alias("net_gex"))
 
     # ATM spread: the call at the strike nearest that day's spot
@@ -73,7 +74,8 @@ def build(store=STORE):
              .with_columns(pl.when(pl.col("net_gex") > 0).then(pl.lit("POS")).otherwise(pl.lit("NEG")).alias("regime"),
                            ((pl.col("spot") - pl.col("king")).abs() / pl.col("spot") * 100).alias("dist_king_pct"))
              .sort("d")
-             .select("d", "spot", "king", "dist_king_pct", "net_gex", "regime", "atm_spread_pct"))
+             .select("d", "spot", "king", "king_gamma_oi", "dist_king_pct", "net_gex",
+                     "regime", "atm_spread_pct"))
     return daily
 
 
