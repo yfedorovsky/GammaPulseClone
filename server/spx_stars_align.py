@@ -279,11 +279,13 @@ def format_discord(s: StarsAlignSignal) -> str:
     Honest, defined-risk, transparent (we validate this in public)."""
     up = (s.target - s.spot) / s.spot * 100
     spread = f" · spread {s.spread_pct*100:.1f}%" if s.spread_pct is not None else ""
+    sname = {"king_pos": "gamma king", "floor": "put-wall floor",
+             "zgl": "zero-gamma flip"}.get(s.support_name, s.support_name)
     return (
         f"📊 **SPX SETUP TRACKER** — experimental, tracking live\n"
         f"*defined-risk anticipatory setup · NOT financial advice · validating in public*\n\n"
         f"Spot **${s.spot:,.2f}** · regime {s.regime}{spread}\n"
-        f"🎯 Rest a **BUY-LIMIT at {s.support_name} ${s.support_level:,.0f}** — the level "
+        f"🎯 Rest a **BUY-LIMIT at the {sname} ${s.support_level:,.0f}** — the level "
         f"comes to you, no chasing\n"
         f"Contract idea: ~${s.sugg_strike:,.0f}C {s.sugg_exp} ({s.sugg_dte}DTE weekly)\n"
         f"Target (scale ⅓): ${s.target:,.0f} (+{up:.2f}%) · Stop: ${s.stop:,.0f}\n"
