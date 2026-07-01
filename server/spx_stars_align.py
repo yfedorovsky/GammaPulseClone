@@ -44,6 +44,40 @@ SUPPORT_BAND_PCT = 0.004       # spot must be within 0.4% of a positive-gamma su
 STOP_BUFFER_PCT = 0.003        # hard stop = support × (1 − 0.3%) close-through
 TICKET_DTE_MIN, TICKET_DTE_MAX = 1, 5   # WEEKLY, never 0DTE (theta incineration)
 SPX_STRIKE_STEP = 5.0
+LOTTO_MAX_PREMIUM = 5.0        # cap for the cheap OTM "lotto" alt (defined-risk flyer)
+
+
+def _call_mid(state: dict[str, Any], exp: str, strike: float) -> float | None:
+    """Mid premium of the call at (exp, strike) from the live chain; None if absent.
+    Runs at FIRE time so the NBBO is fresh (stale pre-open, live during RTH)."""
+    for c in (state.get("_raw_contracts") or {}).get(exp, []):
+        if (c.get("option_type") or "").lower().startswith("c") \
+                and abs(float(c.get("strike") or 0) - strike) < 0.01:
+            b, a = float(c.get("bid") or 0), float(c.get("ask") or 0)
+            if b > 0 and a > 0:
+                return round((b + a) / 2, 2)
+            return round(a, 2) if a > 0 else None
+    return None
+
+
+def _lotto_call(state: dict[str, Any], exp: str, spot: float,
+                max_prem: float = LOTTO_MAX_PREMIUM) -> tuple[float | None, float | None]:
+    """Nearest-ATM OTM call whose mid <= max_prem — the most delta for the budget
+    (a cheap defined-risk flyer, NOT the at-support setup). (strike, premium) or (None, None)."""
+    best: tuple[float, float] | None = None
+    for c in (state.get("_raw_contracts") or {}).get(exp, []):
+        if not (c.get("option_type") or "").lower().startswith("c"):
+            continue
+        k = float(c.get("strike") or 0)
+        if k <= spot:
+            continue
+        b, a = float(c.get("bid") or 0), float(c.get("ask") or 0)
+        if b <= 0 or a <= 0:
+            continue
+        mid = (b + a) / 2
+        if 0.05 < mid <= max_prem and (best is None or k < best[0]):
+            best = (k, round(mid, 2))
+    return best if best else (None, None)
 
 
 def _active() -> bool:
@@ -85,11 +119,17 @@ class StarsAlignSignal:
     regime: str
     spread_pct: float | None
     gates: list[str] = field(default_factory=list)
+    sugg_premium: float | None = None      # near-ATM SPX call mid (the validated setup)
+    spy_strike: float | None = None        # SPY equiv (~1/10 SPX) — same setup, accessible
+    spy_premium: float | None = None
+    lotto_strike: float | None = None      # cheap OTM SPX flyer <= $5 (NOT the setup)
+    lotto_premium: float | None = None
 
     def to_row(self) -> dict[str, Any]:
         return {k: getattr(self, k) for k in (
             "spot", "support_name", "support_level", "target", "stop",
-            "sugg_strike", "sugg_exp", "sugg_dte", "regime", "spread_pct", "gates")}
+            "sugg_strike", "sugg_exp", "sugg_dte", "regime", "spread_pct", "gates",
+            "sugg_premium", "spy_strike", "spy_premium", "lotto_strike", "lotto_premium")}
 
 
 def _nearest_support(spot: float, king_pos, floor, zgl) -> tuple[str | None, float | None]:
@@ -247,15 +287,22 @@ def evaluate(state: dict[str, Any], now: float | None = None) -> tuple[StarsAlig
     exp, dte = _pick_weekly(state, now)
     if not exp:
         return None, "no_weekly_expiry"
+    sugg_strike = round(spot / SPX_STRIKE_STEP) * SPX_STRIKE_STEP
+    atm_prem = _call_mid(state, exp, sugg_strike)         # the validated near-ATM setup
+    lotto_k, lotto_p = _lotto_call(state, exp, spot)       # cheap OTM flyer <= $5
     sig = StarsAlignSignal(
         ticker="SPX", fired_at=now, spot=spot,
         support_name=sname or "?", support_level=float(slvl),
         target=float(target), stop=round(float(slvl) * (1 - STOP_BUFFER_PCT), 2),
-        sugg_strike=round(spot / SPX_STRIKE_STEP) * SPX_STRIKE_STEP,
+        sugg_strike=sugg_strike,
         sugg_exp=exp, sugg_dte=dte, regime=regime,
         spread_pct=sr.get("current_spread_pct"),
         gates=["spread_ok", "pos_gamma", f"signal_{signal or 'na'}",
                "not_risk_off", f"at_{sname}", od_r, dp_r, fl_r],
+        sugg_premium=atm_prem,
+        spy_strike=round(spot / 10.0),                     # SPY ~= SPX/10, same setup
+        spy_premium=round(atm_prem / 10.0, 2) if atm_prem else None,
+        lotto_strike=lotto_k, lotto_premium=lotto_p,
     )
     _fires_today[_et_day(now)] = _fires_today.get(_et_day(now), 0) + 1
     return sig, "FIRE"
@@ -264,11 +311,20 @@ def evaluate(state: dict[str, Any], now: float | None = None) -> tuple[StarsAlig
 def format_telegram(s: StarsAlignSignal) -> str:
     up = (s.target - s.spot) / s.spot * 100
     spread_str = f" · spread {s.spread_pct*100:.1f}%" if s.spread_pct is not None else ""
+    prem = f" · ~${s.sugg_premium:.2f}" if s.sugg_premium else ""
+    spy = (f"≈ SPY ${s.spy_strike:,.0f}C ~${s.spy_premium:.2f} (same setup, ~1/10 size)\n"
+           if s.spy_premium else "")
+    lotto = ""
+    if s.lotto_premium and s.lotto_strike:
+        otm = (s.lotto_strike - s.spot) / s.spot * 100
+        lotto = (f"🎰 Lotto (flyer, not the setup): ${s.lotto_strike:,.0f}C "
+                 f"~${s.lotto_premium:.2f} (~{otm:.1f}% OTM)\n")
     return (
         f"⭐ <b>SPX STARS-ALIGN</b> (anticipatory limit)\n\n"
         f"Spot ${s.spot:,.2f} · regime {s.regime}{spread_str}\n"
         f"<b>Rest a BUY-LIMIT at {s.support_name} ${s.support_level:,.0f}</b>\n"
-        f"Contract: ~${s.sugg_strike:,.0f}C {s.sugg_exp} ({s.sugg_dte}DTE weekly)\n"
+        f"Contract: ~${s.sugg_strike:,.0f}C {s.sugg_exp} ({s.sugg_dte}DTE weekly){prem}\n"
+        f"{spy}{lotto}"
         f"Target (scale ⅓): ${s.target:,.0f} (+{up:.2f}%) · Stop: ${s.stop:,.0f}\n"
         f"<i>Limit only — move comes to you. Scale at the magnet, don't hold to close.</i>"
     )
@@ -281,13 +337,22 @@ def format_discord(s: StarsAlignSignal) -> str:
     spread = f" · spread {s.spread_pct*100:.1f}%" if s.spread_pct is not None else ""
     sname = {"king_pos": "gamma king", "floor": "put-wall floor",
              "zgl": "zero-gamma flip"}.get(s.support_name, s.support_name)
+    prem = f" · ~${s.sugg_premium:.2f}" if s.sugg_premium else ""
+    spy = (f"↳ ≈ **SPY ${s.spy_strike:,.0f}C ~${s.spy_premium:.2f}** — same setup, ~1/10 the "
+           f"size, real-time tape\n" if s.spy_premium else "")
+    lotto = ""
+    if s.lotto_premium and s.lotto_strike:
+        otm = (s.lotto_strike - s.spot) / s.spot * 100
+        lotto = (f"🎰 Lotto (cheap defined-risk flyer, **not** the at-support setup): "
+                 f"SPX ${s.lotto_strike:,.0f}C ~${s.lotto_premium:.2f} (~{otm:.1f}% OTM)\n")
     return (
         f"📊 **SPX SETUP TRACKER** — experimental, tracking live\n"
         f"*defined-risk anticipatory setup · NOT financial advice · validating in public*\n\n"
         f"Spot **${s.spot:,.2f}** · regime {s.regime}{spread}\n"
         f"🎯 Rest a **BUY-LIMIT at the {sname} ${s.support_level:,.0f}** — the level "
         f"comes to you, no chasing\n"
-        f"Contract idea: ~${s.sugg_strike:,.0f}C {s.sugg_exp} ({s.sugg_dte}DTE weekly)\n"
+        f"Contract idea: ~${s.sugg_strike:,.0f}C {s.sugg_exp} ({s.sugg_dte}DTE weekly){prem}\n"
+        f"{spy}{lotto}"
         f"Target (scale ⅓): ${s.target:,.0f} (+{up:.2f}%) · Stop: ${s.stop:,.0f}\n"
         f"⏳ Outcome tracked live — this engine is in its proving window."
     )
