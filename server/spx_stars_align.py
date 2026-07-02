@@ -43,6 +43,7 @@ MAX_FIRES_PER_DAY = 2          # self-throttle — keeps critical=True spam-safe
 SUPPORT_BAND_PCT = 0.004       # spot must be within 0.4% of a positive-gamma support
 STOP_BUFFER_PCT = 0.003        # hard stop = support × (1 − 0.3%) close-through
 TICKET_DTE_MIN, TICKET_DTE_MAX = 1, 5   # WEEKLY, never 0DTE (theta incineration)
+TICKET_DTE_TARGET = 2                    # backtest sweet spot; 1DTE was the WORST bucket → prefer ~2DTE
 SPX_STRIKE_STEP = 5.0
 LOTTO_MAX_PREMIUM = 5.0        # cap for the cheap OTM "lotto" alt (defined-risk flyer)
 
@@ -144,17 +145,26 @@ def _nearest_support(spot: float, king_pos, floor, zgl) -> tuple[str | None, flo
 
 
 def _pick_weekly(state: dict[str, Any], now: float) -> tuple[str | None, int]:
-    """Nearest real available expiration with DTE in [MIN,MAX] (weekly, not 0DTE)."""
+    """Real available expiration with DTE in [MIN,MAX] (weekly, not 0DTE), preferring
+    the ~2DTE sweet spot. Backtest: DTE-2 was the strongest bucket, 1DTE the worst
+    (theta cliff). Selection order: (1) escape the 1DTE cliff — any dte>=TARGET beats a
+    1DTE, so 1DTE is taken only when it's the ONLY expiry available; (2) among the rest,
+    closest to TARGET (=2); (3) longer wins any remaining tie."""
     today = _dt.datetime.fromtimestamp(now).date()
-    best, best_dte = None, 999
+    best, best_dte, best_key = None, 0, None
     for e in (state.get("exps") or []):
         try:
             d = _dt.date.fromisoformat(str(e))
         except ValueError:
             continue  # MACRO key etc.
         dte = (d - today).days
-        if TICKET_DTE_MIN <= dte <= TICKET_DTE_MAX and dte < best_dte:
-            best, best_dte = str(e), dte
+        if not (TICKET_DTE_MIN <= dte <= TICKET_DTE_MAX):
+            continue
+        key = (0 if dte >= TICKET_DTE_TARGET else 1,  # escape the 1DTE theta cliff first...
+               abs(dte - TICKET_DTE_TARGET),          # ...then closest to the 2DTE sweet spot...
+               -dte)                                  # ...longer wins any remaining tie
+        if best_key is None or key < best_key:
+            best, best_dte, best_key = str(e), dte, key
     return best, (best_dte if best else 0)
 
 

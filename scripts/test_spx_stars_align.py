@@ -221,9 +221,30 @@ def test_shadow_default_no_telegram():
         check("format_telegram renders", "SPX STARS-ALIGN" in txt and "BUY-LIMIT" in txt, txt[:60])
 
 
+def test_pick_weekly_2dte():
+    # DTE-2 sweet spot / 1DTE worst → prefer ~2DTE, escape the 1DTE cliff, fall back only if alone.
+    today = _dt.date.today()
+    now = time.time()
+
+    def st(dtes):
+        return {"exps": ["MACRO"] + [(today + _dt.timedelta(days=d)).isoformat() for d in dtes]}
+
+    def dte_of(dtes):
+        return g._pick_weekly(st(dtes), now)[1]
+
+    check("prefers exact 2DTE", dte_of([1, 2, 4]) == 2, str(dte_of([1, 2, 4])))
+    check("escapes 1DTE cliff (1,4 -> 4)", dte_of([1, 4]) == 4, str(dte_of([1, 4])))
+    check("escapes 1DTE cliff (1,5 -> 5)", dte_of([1, 5]) == 5, str(dte_of([1, 5])))
+    check("closest-to-2 among >=2 (1,3,5 -> 3)", dte_of([1, 3, 5]) == 3, str(dte_of([1, 3, 5])))
+    check("1DTE taken only when alone", dte_of([1]) == 1, str(dte_of([1])))
+    check("no valid expiry -> None", g._pick_weekly(st([0, 7]), now)[0] is None)
+    check("skips MACRO / non-date keys", g._pick_weekly({"exps": ["MACRO", "ALL"]}, now)[0] is None)
+
+
 if __name__ == "__main__":
     print("test_spx_stars_align")
     test_fire_path()
+    test_pick_weekly_2dte()
     test_gate_vetoes()
     test_soft_gate_vetoes()
     test_adversarial_controls_logged()
